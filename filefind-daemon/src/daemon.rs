@@ -207,7 +207,7 @@ impl Daemon {
         self.build_path_cache()?;
 
         // Start monitoring
-        self.start_monitors().await?;
+        self.start_monitors()?;
 
         // Update monitored volumes count
         self.ipc_state
@@ -222,11 +222,10 @@ impl Daemon {
     }
 
     /// Stop the daemon.
-    #[allow(clippy::unused_async)]
-    pub async fn stop(&mut self) -> Result<()> {
+    pub fn stop(&mut self) {
         if self.state == DaemonState::Stopped {
             print_warning!("Daemon is already stopped");
-            return Ok(());
+            return;
         }
 
         self.state = DaemonState::Stopping;
@@ -260,8 +259,6 @@ impl Daemon {
         self.state = DaemonState::Stopped;
         self.ipc_state.state.store(DaemonStateInfo::Stopped);
         print_success!("Daemon stopped");
-
-        Ok(())
     }
 
     /// Run the daemon's main loop.
@@ -288,7 +285,7 @@ impl Daemon {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        self.stop().await?;
+        self.stop();
 
         Ok(())
     }
@@ -345,18 +342,12 @@ impl Daemon {
     }
 
     /// Start all monitors (USN Journal and file watcher).
-    async fn start_monitors(&mut self) -> Result<()> {
+    fn start_monitors(&mut self) -> Result<()> {
         // Detect NTFS volumes and start USN monitors
-        match detect_ntfs_volumes() {
-            Ok(ntfs_drives) => {
-                for drive_letter in ntfs_drives {
-                    if let Err(error) = self.start_usn_monitor(drive_letter).await {
-                        warn!("Failed to start USN monitor for {}:\\: {}", drive_letter, error);
-                    }
-                }
-            }
-            Err(error) => {
-                warn!("Failed to detect NTFS volumes: {}", error);
+        let ntfs_drives = detect_ntfs_volumes();
+        for drive_letter in ntfs_drives {
+            if let Err(error) = self.start_usn_monitor(drive_letter) {
+                warn!("Failed to start USN monitor for {}:\\: {}", drive_letter, error);
             }
         }
 
@@ -370,8 +361,7 @@ impl Daemon {
     }
 
     /// Start USN Journal monitor for a specific drive.
-    #[allow(clippy::unused_async)]
-    async fn start_usn_monitor(&mut self, drive_letter: char) -> Result<()> {
+    fn start_usn_monitor(&mut self, drive_letter: char) -> Result<()> {
         // Get last USN from database
         let last_usn = self
             .database
@@ -441,6 +431,7 @@ impl Daemon {
     }
 
     /// Process any pending file changes.
+    #[allow(clippy::unused_async)]
     async fn process_changes(&mut self) -> Result<()> {
         // Collect raw USN changes first to avoid borrow issues
         let mut raw_changes: Vec<(char, Vec<crate::usn::UsnChange>, i64)> = Vec::new();
@@ -740,15 +731,14 @@ pub fn start_daemon(foreground: bool, rescan: bool, config: &Config) -> Result<(
 }
 
 /// Stop the running daemon.
-#[allow(clippy::unnecessary_wraps)]
-pub fn stop_daemon() -> Result<()> {
+pub fn stop_daemon() {
     print_info!("Stopping daemon...");
 
     let client = IpcClient::new();
 
     if !client.is_daemon_running() {
         print_warning!("Daemon is not running");
-        return Ok(());
+        return;
     }
 
     match client.stop_daemon() {
@@ -766,8 +756,6 @@ pub fn stop_daemon() -> Result<()> {
             print_error!("Failed to stop daemon: {}", error);
         }
     }
-
-    Ok(())
 }
 
 /// Show daemon status.
@@ -834,19 +822,13 @@ pub fn detect_drives() {
     println!("{}", "Detected Drives".bold());
     println!();
 
-    match detect_ntfs_volumes() {
-        Ok(volumes) => {
-            if volumes.is_empty() {
-                println!("  No NTFS volumes detected.");
-            } else {
-                println!("  NTFS volumes (fast MFT scanning available):");
-                for letter in &volumes {
-                    println!("    {letter}:\\");
-                }
-            }
-        }
-        Err(error) => {
-            print_error!("Failed to detect volumes: {}", error);
+    let volumes = detect_ntfs_volumes();
+    if volumes.is_empty() {
+        println!("  No NTFS volumes detected.");
+    } else {
+        println!("  NTFS volumes (fast MFT scanning available):");
+        for letter in &volumes {
+            println!("    {letter}:\\");
         }
     }
 
@@ -886,7 +868,6 @@ pub fn show_stats(config: &Config) -> Result<()> {
 }
 
 /// List indexed volumes.
-#[allow(clippy::unnecessary_wraps)]
 pub fn list_volumes(detailed: bool, config: &Config) -> Result<()> {
     let database_path = config.database_path();
 

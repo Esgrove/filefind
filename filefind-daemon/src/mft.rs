@@ -221,11 +221,11 @@ impl MftScanner {
         info!("MFT contains approximately {} records", total_mft_records);
 
         // Read all MFT entries
-        let mft_entries = self.enumerate_mft_entries()?;
+        let mft_entries = self.enumerate_mft_entries();
         info!("Read {} MFT entries", mft_entries.len());
 
         // Build directory tree and resolve full paths
-        let file_entries = self.resolve_paths(mft_entries)?;
+        let file_entries = self.resolve_paths(&mft_entries);
         info!("Resolved {} file entries with full paths", file_entries.len());
 
         // Filter out system directories that should never be indexed
@@ -292,10 +292,7 @@ impl MftScanner {
 
     /// Enumerate all MFT entries using `FSCTL_ENUM_USN_DATA`.
     #[cfg(windows)]
-    fn enumerate_mft_entries(&self) -> Result<Vec<MftEntry>> {
-        let mut entries = Vec::new();
-        let mut buffer = vec![0u8; MFT_BUFFER_SIZE];
-
+    fn enumerate_mft_entries(&self) -> Vec<MftEntry> {
         // Input structure for FSCTL_ENUM_USN_DATA
         #[repr(C)]
         struct MftEnumData {
@@ -305,6 +302,9 @@ impl MftScanner {
             min_major_version: u16,
             max_major_version: u16,
         }
+
+        let mut entries = Vec::new();
+        let mut buffer = vec![0u8; MFT_BUFFER_SIZE];
 
         let mut enum_data = MftEnumData {
             start_file_reference_number: 0,
@@ -356,7 +356,7 @@ impl MftScanner {
                     break;
                 }
 
-                if let Some(entry) = self.parse_usn_record(&buffer[offset..offset + record_length]) {
+                if let Some(entry) = Self::parse_usn_record(&buffer[offset..offset + record_length]) {
                     // Skip system files and special entries
                     if entry.file_reference >= 24 && !entry.name.is_empty() {
                         entries.push(entry);
@@ -375,12 +375,12 @@ impl MftScanner {
             }
         }
 
-        Ok(entries)
+        entries
     }
 
     /// Parse a USN record from raw bytes.
     #[cfg(windows)]
-    fn parse_usn_record(&self, data: &[u8]) -> Option<MftEntry> {
+    fn parse_usn_record(data: &[u8]) -> Option<MftEntry> {
         if data.len() < 60 {
             return None;
         }
@@ -389,15 +389,15 @@ impl MftScanner {
         let major_version = u16::from_le_bytes(data[4..6].try_into().ok()?);
 
         match major_version {
-            2 => self.parse_usn_record_v2(data),
-            3 => self.parse_usn_record_v3(data),
+            2 => Self::parse_usn_record_v2(data),
+            3 => Self::parse_usn_record_v3(data),
             _ => None,
         }
     }
 
     /// Parse a `USN_RECORD_V2` structure.
     #[cfg(windows)]
-    fn parse_usn_record_v2(&self, data: &[u8]) -> Option<MftEntry> {
+    fn parse_usn_record_v2(data: &[u8]) -> Option<MftEntry> {
         if data.len() < 60 {
             return None;
         }
@@ -434,7 +434,7 @@ impl MftScanner {
 
     /// Parse a `USN_RECORD_V3` structure.
     #[cfg(windows)]
-    fn parse_usn_record_v3(&self, data: &[u8]) -> Option<MftEntry> {
+    fn parse_usn_record_v3(data: &[u8]) -> Option<MftEntry> {
         if data.len() < 76 {
             return None;
         }
@@ -472,20 +472,20 @@ impl MftScanner {
 
     /// Resolve full paths for all MFT entries.
     #[cfg(windows)]
-    fn resolve_paths(&self, mft_entries: Vec<MftEntry>) -> Result<Vec<FileEntry>> {
-        // Build a map of file reference -> entry for path resolution
-        let mut ref_to_entry: HashMap<u64, &MftEntry> = HashMap::with_capacity(mft_entries.len());
-        for entry in &mft_entries {
-            ref_to_entry.insert(entry.file_reference, entry);
-        }
-
+    fn resolve_paths(&self, mft_entries: &[MftEntry]) -> Vec<FileEntry> {
         // Root directory reference number is 5
         const ROOT_REF: u64 = 5;
+
+        // Build a map of file reference -> entry for path resolution
+        let mut ref_to_entry: HashMap<u64, &MftEntry> = HashMap::with_capacity(mft_entries.len());
+        for entry in mft_entries {
+            ref_to_entry.insert(entry.file_reference, entry);
+        }
 
         let mut file_entries = Vec::with_capacity(mft_entries.len());
         let volume_id = 0i64; // Will be set by caller
 
-        for entry in &mft_entries {
+        for entry in mft_entries {
             // Skip entries without names
             if entry.name.is_empty() {
                 continue;
@@ -510,16 +510,17 @@ impl MftScanner {
             file_entries.push(file_entry);
         }
 
-        Ok(file_entries)
+        file_entries
     }
 
     /// Build the full path for an entry by walking up the directory tree.
     #[cfg(windows)]
     fn build_full_path(&self, entry: &MftEntry, ref_map: &HashMap<u64, &MftEntry>, root_ref: u64) -> String {
+        const MAX_DEPTH: usize = 256;
+
         let mut path_parts = vec![entry.name.clone()];
         let mut current_ref = entry.parent_reference;
         let mut depth = 0;
-        const MAX_DEPTH: usize = 256;
 
         while current_ref != root_ref && depth < MAX_DEPTH {
             if let Some(parent) = ref_map.get(&current_ref) {
@@ -601,7 +602,7 @@ impl Drop for MftScanner {
 /// This excludes network drives, even if they report as NTFS.
 /// Network drives don't support MFT scanning since MFT is a local NTFS structure.
 #[cfg(windows)]
-pub fn detect_ntfs_volumes() -> Result<Vec<char>> {
+pub fn detect_ntfs_volumes() -> Vec<char> {
     let mut volumes = Vec::new();
 
     for letter in 'A'..='Z' {
@@ -641,13 +642,13 @@ pub fn detect_ntfs_volumes() -> Result<Vec<char>> {
         }
     }
 
-    Ok(volumes)
+    volumes
 }
 
 /// Detect all available NTFS volumes (non-Windows stub).
 #[cfg(not(windows))]
-pub fn detect_ntfs_volumes() -> Result<Vec<char>> {
-    Ok(Vec::new())
+pub fn detect_ntfs_volumes() -> Vec<char> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -657,7 +658,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_detect_ntfs_volumes() {
-        let volumes = detect_ntfs_volumes().unwrap();
+        let volumes = detect_ntfs_volumes();
         // Most Windows systems have at least C: as NTFS
         assert!(!volumes.is_empty(), "Should detect at least one NTFS volume");
         assert!(volumes.contains(&'C'), "C: drive should be NTFS");
@@ -666,7 +667,7 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn test_detect_ntfs_volumes_non_windows() {
-        let volumes = detect_ntfs_volumes().unwrap();
+        let volumes = detect_ntfs_volumes();
         assert!(volumes.is_empty());
     }
 }

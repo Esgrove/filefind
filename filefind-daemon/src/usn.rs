@@ -8,13 +8,12 @@
 //! - Administrator privileges are required to read the USN Journal.
 //! - Only works on NTFS-formatted volumes.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use filefind::types::FileChangeEvent;
+
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -248,7 +247,12 @@ impl UsnMonitor {
     ///
     /// # Returns
     /// A vector of changes and the new last USN value.
+    ///
+    /// # Note
+    /// Returns `Result` for cross-platform API consistency - the non-Windows stub
+    /// returns an error since USN Journal only exists on Windows/NTFS.
     #[cfg(windows)]
+    #[allow(clippy::unnecessary_wraps)]
     pub fn read_changes(&mut self) -> Result<(Vec<UsnChange>, i64)> {
         let mut changes = Vec::new();
         let mut buffer = vec![0u8; USN_BUFFER_SIZE];
@@ -320,7 +324,7 @@ impl UsnMonitor {
                     break;
                 }
 
-                if let Some(change) = self.parse_usn_record(&buffer[offset..offset + record_length]) {
+                if let Some(change) = Self::parse_usn_record(&buffer[offset..offset + record_length]) {
                     changes.push(change);
                 }
 
@@ -348,7 +352,7 @@ impl UsnMonitor {
 
     /// Parse a USN record from raw bytes.
     #[cfg(windows)]
-    fn parse_usn_record(&self, data: &[u8]) -> Option<UsnChange> {
+    fn parse_usn_record(data: &[u8]) -> Option<UsnChange> {
         if data.len() < 60 {
             return None;
         }
@@ -357,15 +361,15 @@ impl UsnMonitor {
         let major_version = u16::from_le_bytes(data[4..6].try_into().ok()?);
 
         match major_version {
-            2 => self.parse_usn_record_v2(data),
-            3 => self.parse_usn_record_v3(data),
+            2 => Self::parse_usn_record_v2(data),
+            3 => Self::parse_usn_record_v3(data),
             _ => None,
         }
     }
 
     /// Parse a `USN_RECORD_V2` structure.
     #[cfg(windows)]
-    fn parse_usn_record_v2(&self, data: &[u8]) -> Option<UsnChange> {
+    fn parse_usn_record_v2(data: &[u8]) -> Option<UsnChange> {
         if data.len() < 60 {
             return None;
         }
@@ -405,7 +409,7 @@ impl UsnMonitor {
 
     /// Parse a `USN_RECORD_V3` structure.
     #[cfg(windows)]
-    fn parse_usn_record_v3(&self, data: &[u8]) -> Option<UsnChange> {
+    fn parse_usn_record_v3(data: &[u8]) -> Option<UsnChange> {
         if data.len() < 76 {
             return None;
         }
@@ -441,45 +445,6 @@ impl UsnMonitor {
             attributes: file_attributes,
             is_directory,
         })
-    }
-
-    /// Convert a USN change to a file change event.
-    #[expect(dead_code, reason = "public API for event conversion")]
-    #[cfg(windows)]
-    pub fn change_to_event(&self, change: &UsnChange, full_path: &str) -> Option<FileChangeEvent> {
-        use reason_flags::{
-            USN_REASON_BASIC_INFO_CHANGE, USN_REASON_DATA_EXTEND, USN_REASON_DATA_OVERWRITE,
-            USN_REASON_DATA_TRUNCATION, USN_REASON_FILE_CREATE, USN_REASON_FILE_DELETE, USN_REASON_RENAME_NEW_NAME,
-        };
-
-        let path = PathBuf::from(full_path);
-
-        if change.reason & USN_REASON_FILE_CREATE != 0 {
-            Some(FileChangeEvent::Created(path))
-        } else if change.reason & USN_REASON_FILE_DELETE != 0 {
-            Some(FileChangeEvent::Deleted(path))
-        } else if change.reason & USN_REASON_RENAME_NEW_NAME != 0 {
-            // For renames, we only handle the new name event
-            // The old name would need to be tracked separately
-            Some(FileChangeEvent::Created(path))
-        } else if change.reason
-            & (USN_REASON_DATA_OVERWRITE
-                | USN_REASON_DATA_EXTEND
-                | USN_REASON_DATA_TRUNCATION
-                | USN_REASON_BASIC_INFO_CHANGE)
-            != 0
-        {
-            Some(FileChangeEvent::Modified(path))
-        } else {
-            None
-        }
-    }
-
-    /// Convert a USN change to a file change event (non-Windows stub).
-    #[expect(dead_code, reason = "public API for event conversion")]
-    #[cfg(not(windows))]
-    pub fn change_to_event(&self, _change: &UsnChange, _full_path: &str) -> Option<FileChangeEvent> {
-        None
     }
 
     /// Start monitoring the USN Journal in the background.
@@ -519,7 +484,7 @@ impl UsnMonitor {
     }
 
     /// Get the current last USN value.
-    #[expect(dead_code, reason = "public API for USN tracking")]
+    #[cfg(test)]
     #[must_use]
     pub const fn get_last_usn(&self) -> i64 {
         self.last_usn

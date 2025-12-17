@@ -110,7 +110,10 @@ fn main() -> Result<()> {
     // Execute the requested command.
     match args.command {
         Some(Command::Start { foreground, rescan }) => daemon::start_daemon(foreground, rescan, &config),
-        Some(Command::Stop) => daemon::stop_daemon(),
+        Some(Command::Stop) => {
+            daemon::stop_daemon();
+            Ok(())
+        }
         Some(Command::Status) => daemon::show_status(&config),
         Some(Command::Scan { path, force }) => {
             // Use tokio runtime for async scan

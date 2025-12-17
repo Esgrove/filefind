@@ -132,6 +132,7 @@ pub async fn scan_single_path(database: &mut Database, scan_path: &Path, force: 
 }
 
 /// Scan all configured paths, or auto-detect NTFS volumes if none are configured.
+#[allow(clippy::too_many_lines)]
 pub async fn scan_configured_paths(database: &mut Database, force: bool, config: &Config) -> Result<()> {
     let total_start = Instant::now();
     let mut total_entries = 0usize;
@@ -139,7 +140,7 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
     if config.daemon.paths.is_empty() {
         // Auto-detect NTFS volumes when no paths are configured
         print_info!("No paths configured, auto-detecting NTFS volumes...");
-        let ntfs_drives = detect_ntfs_volumes()?;
+        let ntfs_drives = detect_ntfs_volumes();
 
         if ntfs_drives.is_empty() {
             print_warning!("No NTFS volumes detected. Configure paths in the config file.");

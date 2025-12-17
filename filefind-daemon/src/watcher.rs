@@ -43,6 +43,7 @@ pub struct WatcherConfig {
     pub exclude_patterns: Vec<String>,
 
     /// Debounce duration in milliseconds.
+    #[allow(dead_code)]
     pub debounce_ms: u64,
 
     /// Whether to watch recursively.
@@ -299,13 +300,14 @@ pub async fn scan_directory(root: &Path, exclude_patterns: &[String]) -> Result<
     let exclude_patterns = exclude_patterns.to_vec();
 
     // Run the scan in a blocking task since walkdir is synchronous
-    tokio::task::spawn_blocking(move || scan_directory_sync(&root, &exclude_patterns))
+    let entries = tokio::task::spawn_blocking(move || scan_directory_sync(&root, &exclude_patterns))
         .await
-        .context("Directory scan task failed")?
+        .context("Directory scan task failed")?;
+    Ok(entries)
 }
 
 /// Synchronous directory scanning implementation.
-fn scan_directory_sync(root: &Path, exclude_patterns: &[String]) -> Result<Vec<ScanEntry>> {
+fn scan_directory_sync(root: &Path, exclude_patterns: &[String]) -> Vec<ScanEntry> {
     use walkdir::WalkDir;
 
     let mut entries = Vec::new();
@@ -347,7 +349,7 @@ fn scan_directory_sync(root: &Path, exclude_patterns: &[String]) -> Result<Vec<S
     }
 
     info!("Scanned {} entries from {}", entries.len(), root.display());
-    Ok(entries)
+    entries
 }
 
 /// Check if a walkdir entry should be skipped.
