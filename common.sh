@@ -64,9 +64,10 @@ print_usage_and_exit() {
 
 # Get all Rust executable names from workspace crates
 get_rust_executable_names() {
-    local executables="filefind filefindd"
+    local executables
+    executables=$(find "$REPO_ROOT" -name "Cargo.toml" -exec awk -F'=' '/\[\[bin\]\]/,/^name/ {if($1 ~ /^name/) print $2}' {} \; | tr -d ' "' | sort -u)
     if [ "$BASH_PLATFORM" = "windows" ]; then
-        executables="filefind.exe filefindd.exe"
+        executables=$(echo "$executables" | sed 's/$/.exe/')
     fi
     echo "$executables"
 }
