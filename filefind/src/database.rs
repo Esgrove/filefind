@@ -580,6 +580,52 @@ fn glob_to_sql_like(pattern: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Helper to create a test volume.
+    fn create_test_volume(serial: &str, mount_point: &str) -> IndexedVolume {
+        IndexedVolume {
+            id: None,
+            serial_number: serial.to_string(),
+            label: Some(format!("Test Volume {serial}")),
+            mount_point: mount_point.to_string(),
+            volume_type: VolumeType::Ntfs,
+            last_scan_time: None,
+            last_usn: None,
+            is_online: true,
+        }
+    }
+
+    /// Helper to create a test file entry.
+    fn create_test_file(volume_id: i64, name: &str, path: &str, size: u64) -> FileEntry {
+        FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: name.to_string(),
+            full_path: path.to_string(),
+            is_directory: false,
+            size,
+            created_time: Some(SystemTime::now()),
+            modified_time: Some(SystemTime::now()),
+            mft_reference: None,
+        }
+    }
+
+    /// Helper to create a test directory entry.
+    fn create_test_directory(volume_id: i64, name: &str, path: &str) -> FileEntry {
+        FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: name.to_string(),
+            full_path: path.to_string(),
+            is_directory: true,
+            size: 0,
+            created_time: Some(SystemTime::now()),
+            modified_time: Some(SystemTime::now()),
+            mft_reference: None,
+        }
+    }
+
     #[test]
     fn test_open_in_memory() {
         let database = Database::open_in_memory().unwrap();
@@ -589,35 +635,30 @@ mod tests {
     }
 
     #[test]
+    fn test_open_with_temp_file() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("test_filefind_{}.db", std::process::id()));
+
+        // Open/create database
+        let database = Database::open(&db_path).unwrap();
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 0);
+
+        // Clean up
+        drop(database);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
     fn test_insert_and_search_file() {
         let database = Database::open_in_memory().unwrap();
 
         // Insert a volume first
-        let volume = IndexedVolume {
-            id: None,
-            serial_number: "TEST123".to_string(),
-            label: Some("Test Volume".to_string()),
-            mount_point: "C:".to_string(),
-            volume_type: VolumeType::Ntfs,
-            last_scan_time: None,
-            last_usn: None,
-            is_online: true,
-        };
+        let volume = create_test_volume("TEST123", "C:");
         let volume_id = database.upsert_volume(&volume).unwrap();
 
         // Insert a file
-        let file = FileEntry {
-            id: None,
-            volume_id,
-            parent_id: None,
-            name: "test_document.pdf".to_string(),
-            full_path: "C:\\Documents\\test_document.pdf".to_string(),
-            is_directory: false,
-            size: 1024,
-            created_time: Some(SystemTime::now()),
-            modified_time: Some(SystemTime::now()),
-            mft_reference: None,
-        };
+        let file = create_test_file(volume_id, "test_document.pdf", "C:\\Documents\\test_document.pdf", 1024);
         database.insert_file(&file).unwrap();
 
         // Search for the file
@@ -632,38 +673,23 @@ mod tests {
         assert_eq!(glob_to_sql_like("file?.txt"), "file_.txt");
         assert_eq!(glob_to_sql_like("test%file"), "test\\%file");
         assert_eq!(glob_to_sql_like("test_file"), "test\\_file");
+        assert_eq!(glob_to_sql_like("\\path\\to\\file"), "\\\\path\\\\to\\\\file");
+        assert_eq!(glob_to_sql_like("*.*"), "%.%");
+        assert_eq!(glob_to_sql_like("???"), "___");
+        assert_eq!(glob_to_sql_like("file"), "file");
+        assert_eq!(glob_to_sql_like(""), "");
     }
 
     #[test]
     fn test_search_by_glob() {
         let database = Database::open_in_memory().unwrap();
 
-        let volume = IndexedVolume {
-            id: None,
-            serial_number: "TEST456".to_string(),
-            label: None,
-            mount_point: "D:".to_string(),
-            volume_type: VolumeType::Ntfs,
-            last_scan_time: None,
-            last_usn: None,
-            is_online: true,
-        };
+        let volume = create_test_volume("TEST456", "D:");
         let volume_id = database.upsert_volume(&volume).unwrap();
 
         // Insert test files
         for name in ["report.txt", "report.pdf", "data.txt", "image.png"] {
-            let file = FileEntry {
-                id: None,
-                volume_id,
-                parent_id: None,
-                name: name.to_string(),
-                full_path: format!("D:\\{name}"),
-                is_directory: false,
-                size: 100,
-                created_time: None,
-                modified_time: None,
-                mft_reference: None,
-            };
+            let file = create_test_file(volume_id, name, &format!("D:\\{name}"), 100);
             database.insert_file(&file).unwrap();
         }
 
@@ -679,48 +705,43 @@ mod tests {
     }
 
     #[test]
+    fn test_search_by_glob_with_special_characters() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("SPECIAL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert files with special characters in names
+        let files = ["file_with_underscore.txt", "file%with%percent.txt", "normal.txt"];
+
+        for name in files {
+            let file = create_test_file(volume_id, name, &format!("C:\\{name}"), 100);
+            database.insert_file(&file).unwrap();
+        }
+
+        // Searching for literal underscore should match only files with underscore
+        let results = database.search_by_glob("*_*", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "file_with_underscore.txt");
+
+        // Searching for literal percent should match only files with percent
+        let results = database.search_by_glob("*%*", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "file%with%percent.txt");
+    }
+
+    #[test]
     fn test_database_stats() {
         let database = Database::open_in_memory().unwrap();
 
-        let volume = IndexedVolume {
-            id: None,
-            serial_number: "STATS123".to_string(),
-            label: None,
-            mount_point: "E:".to_string(),
-            volume_type: VolumeType::Ntfs,
-            last_scan_time: None,
-            last_usn: None,
-            is_online: true,
-        };
+        let volume = create_test_volume("STATS123", "E:");
         let volume_id = database.upsert_volume(&volume).unwrap();
 
         // Insert files and directories
-        let file = FileEntry {
-            id: None,
-            volume_id,
-            parent_id: None,
-            name: "file.txt".to_string(),
-            full_path: "E:\\file.txt".to_string(),
-            is_directory: false,
-            size: 1000,
-            created_time: None,
-            modified_time: None,
-            mft_reference: None,
-        };
+        let file = create_test_file(volume_id, "file.txt", "E:\\file.txt", 1000);
         database.insert_file(&file).unwrap();
 
-        let directory = FileEntry {
-            id: None,
-            volume_id,
-            parent_id: None,
-            name: "folder".to_string(),
-            full_path: "E:\\folder".to_string(),
-            is_directory: true,
-            size: 0,
-            created_time: None,
-            modified_time: None,
-            mft_reference: None,
-        };
+        let directory = create_test_directory(volume_id, "folder", "E:\\folder");
         database.insert_file(&directory).unwrap();
 
         let stats = database.get_stats().unwrap();
@@ -728,5 +749,698 @@ mod tests {
         assert_eq!(stats.total_directories, 1);
         assert_eq!(stats.volume_count, 1);
         assert_eq!(stats.total_size, 1000);
+    }
+
+    #[test]
+    fn test_database_stats_empty() {
+        let database = Database::open_in_memory().unwrap();
+
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_directories, 0);
+        assert_eq!(stats.volume_count, 0);
+        assert_eq!(stats.total_size, 0);
+    }
+
+    #[test]
+    fn test_database_stats_with_multiple_volumes() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Create multiple volumes
+        let volume1 = create_test_volume("VOL1", "C:");
+        let volume2 = create_test_volume("VOL2", "D:");
+        let volume_id1 = database.upsert_volume(&volume1).unwrap();
+        let volume_id2 = database.upsert_volume(&volume2).unwrap();
+
+        // Add files to both volumes
+        database
+            .insert_file(&create_test_file(volume_id1, "file1.txt", "C:\\file1.txt", 500))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id1, "file2.txt", "C:\\file2.txt", 300))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id2, "file3.txt", "D:\\file3.txt", 200))
+            .unwrap();
+
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 3);
+        assert_eq!(stats.volume_count, 2);
+        assert_eq!(stats.total_size, 1000);
+    }
+
+    #[test]
+    fn test_upsert_volume_insert() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("NEW_VOL", "F:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+        assert!(volume_id > 0);
+
+        let retrieved = database.get_volume_by_serial("NEW_VOL").unwrap();
+        assert!(retrieved.is_some());
+
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.serial_number, "NEW_VOL");
+        assert_eq!(retrieved.mount_point, "F:");
+        assert!(retrieved.is_online);
+    }
+
+    #[test]
+    fn test_upsert_volume_update() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Insert initial volume
+        let mut volume = create_test_volume("UPDATE_VOL", "G:");
+        volume.label = Some("Original Label".to_string());
+        database.upsert_volume(&volume).unwrap();
+
+        // Update the same volume with new data
+        volume.label = Some("Updated Label".to_string());
+        volume.mount_point = "H:".to_string();
+        database.upsert_volume(&volume).unwrap();
+
+        // Verify update
+        let retrieved = database.get_volume_by_serial("UPDATE_VOL").unwrap().unwrap();
+        assert_eq!(retrieved.label, Some("Updated Label".to_string()));
+        assert_eq!(retrieved.mount_point, "H:");
+
+        // Should still be only one volume
+        let all_volumes = database.get_all_volumes().unwrap();
+        assert_eq!(all_volumes.len(), 1);
+    }
+
+    #[test]
+    fn test_get_volume_by_serial_not_found() {
+        let database = Database::open_in_memory().unwrap();
+
+        let result = database.get_volume_by_serial("NONEXISTENT").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_all_volumes() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Start empty
+        let volumes = database.get_all_volumes().unwrap();
+        assert!(volumes.is_empty());
+
+        // Add some volumes
+        database.upsert_volume(&create_test_volume("VOL_A", "A:")).unwrap();
+        database.upsert_volume(&create_test_volume("VOL_B", "B:")).unwrap();
+        database.upsert_volume(&create_test_volume("VOL_C", "C:")).unwrap();
+
+        let volumes = database.get_all_volumes().unwrap();
+        assert_eq!(volumes.len(), 3);
+
+        let serials: Vec<_> = volumes.iter().map(|v| v.serial_number.as_str()).collect();
+        assert!(serials.contains(&"VOL_A"));
+        assert!(serials.contains(&"VOL_B"));
+        assert!(serials.contains(&"VOL_C"));
+    }
+
+    #[test]
+    fn test_insert_files_batch() {
+        let mut database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("BATCH_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let files: Vec<FileEntry> = (0..100)
+            .map(|index| {
+                create_test_file(
+                    volume_id,
+                    &format!("file{index}.txt"),
+                    &format!("C:\\file{index}.txt"),
+                    100,
+                )
+            })
+            .collect();
+
+        let count = database.insert_files_batch(&files).unwrap();
+        assert_eq!(count, 100);
+
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 100);
+    }
+
+    #[test]
+    fn test_insert_files_batch_empty() {
+        let mut database = Database::open_in_memory().unwrap();
+
+        let files: Vec<FileEntry> = vec![];
+        let count = database.insert_files_batch(&files).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_delete_file_by_path() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("DELETE_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let file_path = "C:\\to_delete.txt";
+        database
+            .insert_file(&create_test_file(volume_id, "to_delete.txt", file_path, 100))
+            .unwrap();
+
+        // Verify file exists
+        let results = database.search_by_name("to_delete", 10).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Delete the file
+        let deleted = database.delete_file_by_path(file_path).unwrap();
+        assert!(deleted);
+
+        // Verify file is gone
+        let results = database.search_by_name("to_delete", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_delete_file_by_path_not_found() {
+        let database = Database::open_in_memory().unwrap();
+
+        let deleted = database.delete_file_by_path("C:\\nonexistent.txt").unwrap();
+        assert!(!deleted);
+    }
+
+    #[test]
+    fn test_delete_files_for_volume() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume1 = create_test_volume("VOL_DEL1", "C:");
+        let volume2 = create_test_volume("VOL_DEL2", "D:");
+        let volume_id1 = database.upsert_volume(&volume1).unwrap();
+        let volume_id2 = database.upsert_volume(&volume2).unwrap();
+
+        // Add files to both volumes
+        for index in 0..5 {
+            database
+                .insert_file(&create_test_file(
+                    volume_id1,
+                    &format!("file{index}.txt"),
+                    &format!("C:\\file{index}.txt"),
+                    100,
+                ))
+                .unwrap();
+        }
+        for index in 0..3 {
+            database
+                .insert_file(&create_test_file(
+                    volume_id2,
+                    &format!("other{index}.txt"),
+                    &format!("D:\\other{index}.txt"),
+                    100,
+                ))
+                .unwrap();
+        }
+
+        // Delete files for volume 1
+        let deleted_count = database.delete_files_for_volume(volume_id1).unwrap();
+        assert_eq!(deleted_count, 5);
+
+        // Volume 2 files should remain
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 3);
+    }
+
+    #[test]
+    fn test_search_by_name_case_insensitive() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("CASE_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id, "Document.PDF", "C:\\Document.PDF", 100))
+            .unwrap();
+
+        // Search should be case-insensitive
+        let results = database.search_by_name("document", 10).unwrap();
+        assert_eq!(results.len(), 1);
+
+        let results = database.search_by_name("DOCUMENT", 10).unwrap();
+        assert_eq!(results.len(), 1);
+
+        let results = database.search_by_name("pdf", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_by_name_limit() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("LIMIT_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert many matching files
+        for index in 0..50 {
+            database
+                .insert_file(&create_test_file(
+                    volume_id,
+                    &format!("document{index}.txt"),
+                    &format!("C:\\document{index}.txt"),
+                    100,
+                ))
+                .unwrap();
+        }
+
+        // Search with limit
+        let results = database.search_by_name("document", 10).unwrap();
+        assert_eq!(results.len(), 10);
+
+        let results = database.search_by_name("document", 25).unwrap();
+        assert_eq!(results.len(), 25);
+
+        let results = database.search_by_name("document", 100).unwrap();
+        assert_eq!(results.len(), 50);
+    }
+
+    #[test]
+    fn test_search_by_exact_name() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("EXACT_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id, "readme.txt", "C:\\readme.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "README.txt", "C:\\docs\\README.txt", 200))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "readme_backup.txt",
+                "C:\\readme_backup.txt",
+                150,
+            ))
+            .unwrap();
+
+        // Exact name search should only match exact names (case-insensitive)
+        let results = database.search_by_exact_name("readme.txt", 10).unwrap();
+        assert_eq!(results.len(), 2); // readme.txt and README.txt
+
+        // Should not match partial names
+        let results = database.search_by_exact_name("readme", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_by_path() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("PATH_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "file.txt",
+                "C:\\Users\\test\\Documents\\file.txt",
+                100,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "other.txt",
+                "C:\\Users\\admin\\Documents\\other.txt",
+                100,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "readme.txt", "C:\\readme.txt", 100))
+            .unwrap();
+
+        // Search by path fragment
+        let results = database.search_by_path("Documents", 10).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let results = database.search_by_path("Users\\test", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "file.txt");
+    }
+
+    #[test]
+    fn test_update_volume_usn() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("USN_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Update USN
+        database.update_volume_usn(volume_id, 12345).unwrap();
+
+        // Verify update
+        let retrieved = database.get_volume_by_serial("USN_VOL").unwrap().unwrap();
+        assert_eq!(retrieved.last_usn, Some(12345));
+        assert!(retrieved.last_scan_time.is_some());
+    }
+
+    #[test]
+    fn test_update_volume_usn_by_drive() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Test with mount point without trailing slash
+        let mut volume1 = create_test_volume("DRIVE_USN1", "C:");
+        volume1.mount_point = "C:".to_string();
+        database.upsert_volume(&volume1).unwrap();
+
+        // Test with mount point with trailing slash
+        let mut volume2 = create_test_volume("DRIVE_USN2", "D:\\");
+        volume2.mount_point = "D:\\".to_string();
+        database.upsert_volume(&volume2).unwrap();
+
+        // Update USN by drive letter
+        database.update_volume_usn_by_drive('C', 111).unwrap();
+        database.update_volume_usn_by_drive('D', 222).unwrap();
+
+        // Verify updates
+        let vol1 = database.get_volume_by_serial("DRIVE_USN1").unwrap().unwrap();
+        assert_eq!(vol1.last_usn, Some(111));
+
+        let vol2 = database.get_volume_by_serial("DRIVE_USN2").unwrap().unwrap();
+        assert_eq!(vol2.last_usn, Some(222));
+    }
+
+    #[test]
+    fn test_get_volume_last_usn() {
+        let database = Database::open_in_memory().unwrap();
+
+        // No volume yet
+        let usn = database.get_volume_last_usn('X').unwrap();
+        assert!(usn.is_none());
+
+        // Add volume with USN
+        let mut volume = create_test_volume("USN_GET", "X:");
+        volume.last_usn = Some(99999);
+        database.upsert_volume(&volume).unwrap();
+
+        let usn = database.get_volume_last_usn('X').unwrap();
+        assert_eq!(usn, Some(99999));
+
+        // Test lowercase drive letter
+        let usn = database.get_volume_last_usn('x').unwrap();
+        assert_eq!(usn, Some(99999));
+    }
+
+    #[test]
+    fn test_set_volume_online() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("ONLINE_VOL", "Z:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Initially online
+        let vol = database.get_volume_by_serial("ONLINE_VOL").unwrap().unwrap();
+        assert!(vol.is_online);
+
+        // Set offline
+        database.set_volume_online(volume_id, false).unwrap();
+        let vol = database.get_volume_by_serial("ONLINE_VOL").unwrap().unwrap();
+        assert!(!vol.is_online);
+
+        // Set back online
+        database.set_volume_online(volume_id, true).unwrap();
+        let vol = database.get_volume_by_serial("ONLINE_VOL").unwrap().unwrap();
+        assert!(vol.is_online);
+    }
+
+    #[test]
+    fn test_volume_type_preserved() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume_types = [
+            (VolumeType::Ntfs, "NTFS_VOL"),
+            (VolumeType::Local, "LOCAL_VOL"),
+            (VolumeType::Network, "NET_VOL"),
+            (VolumeType::Removable, "REM_VOL"),
+        ];
+
+        for (volume_type, serial) in volume_types {
+            let volume = IndexedVolume {
+                id: None,
+                serial_number: serial.to_string(),
+                label: None,
+                mount_point: "X:".to_string(),
+                volume_type,
+                last_scan_time: None,
+                last_usn: None,
+                is_online: true,
+            };
+            database.upsert_volume(&volume).unwrap();
+
+            let retrieved = database.get_volume_by_serial(serial).unwrap().unwrap();
+            assert_eq!(retrieved.volume_type, volume_type);
+        }
+    }
+
+    #[test]
+    fn test_file_with_timestamps() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("TIME_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let now = SystemTime::now();
+        let created = now - std::time::Duration::from_secs(3600);
+        let modified = now - std::time::Duration::from_secs(60);
+
+        let file = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "timed_file.txt".to_string(),
+            full_path: "C:\\timed_file.txt".to_string(),
+            is_directory: false,
+            size: 500,
+            created_time: Some(created),
+            modified_time: Some(modified),
+            mft_reference: Some(12345),
+        };
+
+        database.insert_file(&file).unwrap();
+
+        let results = database.search_by_exact_name("timed_file.txt", 10).unwrap();
+        assert_eq!(results.len(), 1);
+
+        let retrieved = &results[0];
+        assert!(retrieved.created_time.is_some());
+        assert!(retrieved.modified_time.is_some());
+        assert_eq!(retrieved.mft_reference, Some(12345));
+
+        // Verify timestamps are approximately correct (within 1 second due to precision loss)
+        let created_diff = retrieved
+            .created_time
+            .unwrap()
+            .duration_since(created)
+            .unwrap_or_default();
+        assert!(created_diff.as_secs() < 2);
+    }
+
+    #[test]
+    fn test_file_entry_id_assigned() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("ID_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let file = create_test_file(volume_id, "test.txt", "C:\\test.txt", 100);
+        let file_id = database.insert_file(&file).unwrap();
+        assert!(file_id > 0);
+
+        let results = database.search_by_exact_name("test.txt", 10).unwrap();
+        assert!(results[0].id.is_some());
+        assert_eq!(results[0].id.unwrap(), file_id);
+    }
+
+    #[test]
+    fn test_system_time_conversions() {
+        // Test epoch
+        let epoch = SystemTime::UNIX_EPOCH;
+        let unix = system_time_to_unix(epoch);
+        assert_eq!(unix, 0);
+
+        let back = unix_to_system_time(unix);
+        assert_eq!(back, epoch);
+
+        // Test a known timestamp
+        let timestamp = 1_700_000_000i64;
+        let time = unix_to_system_time(timestamp);
+        let back = system_time_to_unix(time);
+        assert_eq!(back, timestamp);
+    }
+
+    #[test]
+    fn test_search_empty_pattern() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("EMPTY_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id, "file.txt", "C:\\file.txt", 100))
+            .unwrap();
+
+        // Empty pattern matches all (because of %% pattern)
+        let results = database.search_by_name("", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_no_results() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("NO_RES_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id, "file.txt", "C:\\file.txt", 100))
+            .unwrap();
+
+        let results = database.search_by_name("nonexistent_xyz", 10).unwrap();
+        assert!(results.is_empty());
+
+        let results = database.search_by_glob("*.xyz", 10).unwrap();
+        assert!(results.is_empty());
+
+        let results = database.search_by_exact_name("nothere.txt", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_large_file_size() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("LARGE_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Test with a very large file size (10 TB)
+        let large_size: u64 = 10 * 1024 * 1024 * 1024 * 1024;
+        let file = create_test_file(volume_id, "huge.bin", "C:\\huge.bin", large_size);
+        database.insert_file(&file).unwrap();
+
+        let results = database.search_by_exact_name("huge.bin", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].size, large_size);
+
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_size, large_size);
+    }
+
+    #[test]
+    fn test_unicode_filenames() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("UNICODE_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let unicode_names = [
+            "文档.txt",
+            "документ.pdf",
+            "αρχείο.doc",
+            "ファイル.txt",
+            "emoji_😀_file.txt",
+        ];
+
+        for name in unicode_names {
+            let file = create_test_file(volume_id, name, &format!("C:\\{name}"), 100);
+            database.insert_file(&file).unwrap();
+        }
+
+        // Search for unicode files
+        let results = database.search_by_name("文档", 10).unwrap();
+        assert_eq!(results.len(), 1);
+
+        let results = database.search_by_glob("*.txt", 10).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let results = database.search_by_name("emoji", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].name.contains("😀"));
+    }
+
+    #[test]
+    fn test_file_with_parent_id() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("PARENT_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert parent directory
+        let parent_dir = create_test_directory(volume_id, "Documents", "C:\\Documents");
+        let parent_id = database.insert_file(&parent_dir).unwrap();
+
+        // Insert child file with parent reference
+        let mut child_file = create_test_file(volume_id, "file.txt", "C:\\Documents\\file.txt", 100);
+        child_file.parent_id = Some(parent_id);
+        database.insert_file(&child_file).unwrap();
+
+        // Search and verify parent_id is preserved
+        let results = database.search_by_exact_name("file.txt", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].parent_id, Some(parent_id));
+    }
+
+    #[test]
+    fn test_database_stats_default() {
+        let stats = DatabaseStats::default();
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_directories, 0);
+        assert_eq!(stats.volume_count, 0);
+        assert_eq!(stats.total_size, 0);
+    }
+
+    #[test]
+    fn test_connection_accessor() {
+        let database = Database::open_in_memory().unwrap();
+        let connection = database.connection();
+
+        // Verify we can use the connection for raw queries
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM volumes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_volume_label_optional() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Volume without label
+        let mut volume = create_test_volume("NO_LABEL", "X:");
+        volume.label = None;
+        database.upsert_volume(&volume).unwrap();
+
+        let retrieved = database.get_volume_by_serial("NO_LABEL").unwrap().unwrap();
+        assert!(retrieved.label.is_none());
+    }
+
+    #[test]
+    fn test_glob_single_character_wildcard() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("SINGLE_WILD", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let files = ["file1.txt", "file2.txt", "file10.txt", "fileX.txt"];
+        for name in files {
+            database
+                .insert_file(&create_test_file(volume_id, name, &format!("C:\\{name}"), 100))
+                .unwrap();
+        }
+
+        // ? should match single character
+        let results = database.search_by_glob("file?.txt", 10).unwrap();
+        assert_eq!(results.len(), 3); // file1, file2, fileX
+
+        // Multiple ? wildcards
+        let results = database.search_by_glob("file??.txt", 10).unwrap();
+        assert_eq!(results.len(), 1); // file10
     }
 }

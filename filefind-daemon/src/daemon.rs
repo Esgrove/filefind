@@ -929,12 +929,70 @@ mod tests {
     }
 
     #[test]
+    fn test_daemon_state_display_all_variants() {
+        // Verify all variants have distinct display strings
+        let states = [
+            DaemonState::Stopped,
+            DaemonState::Starting,
+            DaemonState::Running,
+            DaemonState::Stopping,
+        ];
+
+        let displays: Vec<String> = states.iter().map(|s| s.to_string()).collect();
+
+        // All should be unique
+        for (index, display) in displays.iter().enumerate() {
+            for (index_other, other) in displays.iter().enumerate() {
+                if index != index_other {
+                    assert_ne!(display, other, "State displays should be unique");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_daemon_state_debug() {
+        let state = DaemonState::Running;
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("Running"));
+    }
+
+    #[test]
+    fn test_daemon_state_clone_copy() {
+        let state = DaemonState::Starting;
+        let copied = state;
+        assert_eq!(state, copied);
+    }
+
+    #[test]
+    fn test_daemon_state_equality() {
+        assert_eq!(DaemonState::Stopped, DaemonState::Stopped);
+        assert_ne!(DaemonState::Stopped, DaemonState::Running);
+        assert_ne!(DaemonState::Starting, DaemonState::Stopping);
+    }
+
+    #[test]
     fn test_daemon_options_default() {
         let options = DaemonOptions::default();
         assert!(!options.foreground);
         assert!(!options.rescan);
         assert_eq!(options.usn_poll_interval_ms, DEFAULT_USN_POLL_INTERVAL_MS);
         assert_eq!(options.watcher_debounce_ms, DEFAULT_WATCHER_DEBOUNCE_MS);
+    }
+
+    #[test]
+    fn test_daemon_options_custom() {
+        let options = DaemonOptions {
+            foreground: true,
+            rescan: true,
+            usn_poll_interval_ms: 500,
+            watcher_debounce_ms: 200,
+        };
+
+        assert!(options.foreground);
+        assert!(options.rescan);
+        assert_eq!(options.usn_poll_interval_ms, 500);
+        assert_eq!(options.watcher_debounce_ms, 200);
     }
 
     #[test]
@@ -948,5 +1006,157 @@ mod tests {
         assert!(daemon.database.is_none());
         assert!(daemon.volume_monitors.is_empty());
         assert!(daemon.file_watcher.is_none());
+    }
+
+    #[test]
+    fn test_daemon_new_with_foreground_option() {
+        let config = Config::default();
+        let options = DaemonOptions {
+            foreground: true,
+            ..Default::default()
+        };
+        let daemon = Daemon::new(config, options);
+
+        assert!(daemon.options.foreground);
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+    }
+
+    #[test]
+    fn test_daemon_new_with_rescan_option() {
+        let config = Config::default();
+        let options = DaemonOptions {
+            rescan: true,
+            ..Default::default()
+        };
+        let daemon = Daemon::new(config, options);
+
+        assert!(daemon.options.rescan);
+    }
+
+    #[test]
+    fn test_daemon_shutdown_handle() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let shutdown = daemon.shutdown_handle();
+        assert!(!shutdown.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_daemon_shutdown_handle_set() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let shutdown = daemon.shutdown_handle();
+
+        // Initially not set
+        assert!(!shutdown.load(std::sync::atomic::Ordering::Relaxed));
+
+        // Set shutdown
+        shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Verify it's set
+        assert!(shutdown.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_daemon_initial_state() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        // Verify initial state is Stopped
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+        assert!(!daemon.is_running());
+
+        // Verify no monitors are set up
+        assert!(daemon.volume_monitors.is_empty());
+        assert!(daemon.file_watcher.is_none());
+        assert!(daemon.watcher_receiver.is_none());
+
+        // Verify path cache is empty
+        assert!(daemon.path_cache.is_empty());
+    }
+
+    #[test]
+    fn test_daemon_is_paused_initially_false() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        assert!(!daemon.is_paused);
+    }
+
+    #[test]
+    fn test_daemon_options_debug() {
+        let options = DaemonOptions::default();
+        let debug_str = format!("{:?}", options);
+        assert!(debug_str.contains("DaemonOptions"));
+        assert!(debug_str.contains("foreground"));
+    }
+
+    #[test]
+    fn test_volume_monitor_struct() {
+        // VolumeMonitor is private, but we can test it exists via its usage in Daemon
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        // Volume monitors should be empty initially
+        assert!(daemon.volume_monitors.is_empty());
+    }
+
+    #[test]
+    fn test_daemon_state_not_running_when_stopped() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+        assert!(!daemon.is_running());
+    }
+
+    #[test]
+    fn test_daemon_options_usn_poll_interval_range() {
+        // Test that custom poll intervals work
+        let options = DaemonOptions {
+            usn_poll_interval_ms: 1,
+            ..Default::default()
+        };
+        assert_eq!(options.usn_poll_interval_ms, 1);
+
+        let options = DaemonOptions {
+            usn_poll_interval_ms: 10000,
+            ..Default::default()
+        };
+        assert_eq!(options.usn_poll_interval_ms, 10000);
+    }
+
+    #[test]
+    fn test_daemon_options_watcher_debounce_range() {
+        let options = DaemonOptions {
+            watcher_debounce_ms: 0,
+            ..Default::default()
+        };
+        assert_eq!(options.watcher_debounce_ms, 0);
+
+        let options = DaemonOptions {
+            watcher_debounce_ms: 5000,
+            ..Default::default()
+        };
+        assert_eq!(options.watcher_debounce_ms, 5000);
+    }
+
+    #[test]
+    fn test_daemon_ipc_state_initialized() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        // IPC state should be initialized
+        assert_eq!(daemon.ipc_state.state.load(), filefind::DaemonStateInfo::Stopped);
+        assert!(!daemon.ipc_state.is_paused.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

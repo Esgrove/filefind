@@ -223,6 +223,8 @@ const fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_default_config() {
@@ -234,9 +236,47 @@ mod tests {
     }
 
     #[test]
+    fn test_daemon_config_default() {
+        let config = DaemonConfig::default();
+
+        assert!(config.paths.is_empty());
+        assert!(!config.exclude.is_empty()); // Has default exclusions
+        assert!(config.exclude_patterns.is_empty());
+        assert_eq!(config.scan_interval, 3600);
+        assert_eq!(config.log_level, "info");
+        assert!(config.database_path.is_none());
+
+        // Verify default exclusions
+        assert!(config.exclude.contains(&"C:\\Windows".to_string()));
+        assert!(config.exclude.contains(&"C:\\$Recycle.Bin".to_string()));
+        assert!(config.exclude.contains(&"C:\\System Volume Information".to_string()));
+    }
+
+    #[test]
+    fn test_cli_config_default() {
+        let config = CliConfig::default();
+
+        assert_eq!(config.format, OutputFormat::Simple);
+        assert_eq!(config.max_results, 100);
+        assert!(config.color);
+        assert!(!config.case_sensitive);
+        assert!(!config.show_hidden);
+    }
+
+    #[test]
     fn test_load_nonexistent_config() {
         let config = UserConfig::load_from_path(Some(std::path::Path::new("/nonexistent/path.toml")));
         assert!(config.daemon.paths.is_empty());
+    }
+
+    #[test]
+    fn test_load_from_none_path() {
+        let config = UserConfig::load_from_path(None);
+
+        // Should return default config
+        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.daemon.scan_interval, 3600);
+        assert_eq!(config.cli.max_results, 100);
     }
 
     #[test]
@@ -249,6 +289,255 @@ mod tests {
     fn test_output_format_from_str() {
         assert_eq!("simple".parse::<OutputFormat>().unwrap(), OutputFormat::Simple);
         assert_eq!("DETAILED".parse::<OutputFormat>().unwrap(), OutputFormat::Detailed);
+        assert_eq!("Simple".parse::<OutputFormat>().unwrap(), OutputFormat::Simple);
+        assert_eq!("SIMPLE".parse::<OutputFormat>().unwrap(), OutputFormat::Simple);
         assert!("invalid".parse::<OutputFormat>().is_err());
+        assert!("".parse::<OutputFormat>().is_err());
+    }
+
+    #[test]
+    fn test_output_format_default() {
+        let format = OutputFormat::default();
+        assert_eq!(format, OutputFormat::Simple);
+    }
+
+    #[test]
+    fn test_output_format_equality() {
+        assert_eq!(OutputFormat::Simple, OutputFormat::Simple);
+        assert_eq!(OutputFormat::Detailed, OutputFormat::Detailed);
+        assert_ne!(OutputFormat::Simple, OutputFormat::Detailed);
+    }
+
+    #[test]
+    fn test_output_format_clone_copy() {
+        let original = OutputFormat::Detailed;
+        let cloned = original;
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_load_valid_config_file() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        let config_content = r#"
+[daemon]
+paths = ["C:\\", "D:\\"]
+exclude = ["C:\\Windows", "C:\\Temp"]
+scan_interval = 7200
+log_level = "debug"
+
+[cli]
+format = "detailed"
+max_results = 50
+color = false
+case_sensitive = true
+show_hidden = true
+"#;
+
+        temp_file.write_all(config_content.as_bytes()).expect("write config");
+
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+
+        assert_eq!(config.daemon.paths, vec!["C:\\", "D:\\"]);
+        assert_eq!(config.daemon.exclude, vec!["C:\\Windows", "C:\\Temp"]);
+        assert_eq!(config.daemon.scan_interval, 7200);
+        assert_eq!(config.daemon.log_level, "debug");
+        assert_eq!(config.cli.format, OutputFormat::Detailed);
+        assert_eq!(config.cli.max_results, 50);
+        assert!(!config.cli.color);
+        assert!(config.cli.case_sensitive);
+        assert!(config.cli.show_hidden);
+    }
+
+    #[test]
+    fn test_load_partial_config_file() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        // Only specify some fields, others should use defaults
+        let config_content = r#"
+[daemon]
+paths = ["E:\\"]
+
+[cli]
+max_results = 200
+"#;
+
+        temp_file.write_all(config_content.as_bytes()).expect("write config");
+
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+
+        // Specified values
+        assert_eq!(config.daemon.paths, vec!["E:\\"]);
+        assert_eq!(config.cli.max_results, 200);
+
+        // Default values
+        assert_eq!(config.daemon.scan_interval, 3600);
+        assert_eq!(config.cli.format, OutputFormat::Simple);
+        assert!(config.cli.color);
+    }
+
+    #[test]
+    fn test_load_invalid_toml_config() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        let invalid_content = "this is not valid toml [[[";
+        temp_file.write_all(invalid_content.as_bytes()).expect("write config");
+
+        // Should return default config on parse error
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.cli.max_results, 100);
+    }
+
+    #[test]
+    fn test_load_empty_config_file() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        temp_file.write_all(b"").expect("write empty config");
+
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+
+        // Should use defaults
+        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.daemon.scan_interval, 3600);
+    }
+
+    #[test]
+    fn test_database_path_from_config() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        let config_content = r#"
+[daemon]
+database_path = "C:\\custom\\path\\filefind.db"
+"#;
+
+        temp_file.write_all(config_content.as_bytes()).expect("write config");
+
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+
+        assert_eq!(config.database_path(), PathBuf::from("C:\\custom\\path\\filefind.db"));
+    }
+
+    #[test]
+    fn test_database_path_default() {
+        let config = UserConfig::default();
+
+        // Should use the default DATABASE_PATH
+        let db_path = config.database_path();
+        assert!(db_path.to_string_lossy().contains("filefind"));
+    }
+
+    #[test]
+    fn test_database_path_static() {
+        // DATABASE_PATH should be initialized and contain expected components
+        let path = &*DATABASE_PATH;
+        assert!(path.to_string_lossy().contains("filefind"));
+    }
+
+    #[test]
+    fn test_config_with_exclude_patterns() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        let config_content = r#"
+[daemon]
+exclude_patterns = ["*.tmp", "*.bak", "~*"]
+"#;
+
+        temp_file.write_all(config_content.as_bytes()).expect("write config");
+
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+
+        assert_eq!(config.daemon.exclude_patterns.len(), 3);
+        assert!(config.daemon.exclude_patterns.contains(&"*.tmp".to_string()));
+        assert!(config.daemon.exclude_patterns.contains(&"*.bak".to_string()));
+        assert!(config.daemon.exclude_patterns.contains(&"~*".to_string()));
+    }
+
+    #[test]
+    fn test_default_scan_interval_value() {
+        assert_eq!(default_scan_interval(), 3600);
+    }
+
+    #[test]
+    fn test_default_log_level_value() {
+        assert_eq!(default_log_level(), "info");
+    }
+
+    #[test]
+    fn test_default_format_value() {
+        assert_eq!(default_format(), OutputFormat::Simple);
+    }
+
+    #[test]
+    fn test_default_max_results_value() {
+        assert_eq!(default_max_results(), 100);
+    }
+
+    #[test]
+    fn test_default_true_value() {
+        assert!(default_true());
+    }
+
+    #[test]
+    fn test_output_format_from_str_error_message() {
+        let result = "unknown_format".parse::<OutputFormat>();
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert!(error.contains("Unknown output format"));
+        assert!(error.contains("unknown_format"));
+    }
+
+    #[test]
+    fn test_daemon_config_clone() {
+        let original = DaemonConfig::default();
+        let cloned = original.clone();
+
+        assert_eq!(original.scan_interval, cloned.scan_interval);
+        assert_eq!(original.log_level, cloned.log_level);
+    }
+
+    #[test]
+    fn test_cli_config_clone() {
+        let original = CliConfig::default();
+        let cloned = original.clone();
+
+        assert_eq!(original.max_results, cloned.max_results);
+        assert_eq!(original.format, cloned.format);
+    }
+
+    #[test]
+    fn test_user_config_clone() {
+        let original = UserConfig::default();
+        let cloned = original.clone();
+
+        assert_eq!(original.daemon.scan_interval, cloned.daemon.scan_interval);
+        assert_eq!(original.cli.max_results, cloned.cli.max_results);
+    }
+
+    #[test]
+    fn test_output_format_debug() {
+        let format = OutputFormat::Simple;
+        let debug_str = format!("{:?}", format);
+        assert!(debug_str.contains("Simple"));
+    }
+
+    #[test]
+    fn test_config_with_network_paths() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        let config_content = r#"
+[daemon]
+paths = ["\\\\server\\share", "Z:\\", "C:\\Local"]
+"#;
+
+        temp_file.write_all(config_content.as_bytes()).expect("write config");
+
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+
+        assert_eq!(config.daemon.paths.len(), 3);
+        assert!(config.daemon.paths.contains(&"\\\\server\\share".to_string()));
+        assert!(config.daemon.paths.contains(&"Z:\\".to_string()));
+        assert!(config.daemon.paths.contains(&"C:\\Local".to_string()));
     }
 }

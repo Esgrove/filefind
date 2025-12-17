@@ -242,7 +242,17 @@ mod tests {
     #[test]
     fn test_volume_type_display() {
         assert_eq!(VolumeType::Ntfs.to_string(), "NTFS");
+        assert_eq!(VolumeType::Local.to_string(), "Local");
         assert_eq!(VolumeType::Network.to_string(), "Network");
+        assert_eq!(VolumeType::Removable.to_string(), "Removable");
+    }
+
+    #[test]
+    fn test_volume_type_as_str() {
+        assert_eq!(VolumeType::Ntfs.as_str(), "ntfs");
+        assert_eq!(VolumeType::Local.as_str(), "local");
+        assert_eq!(VolumeType::Network.as_str(), "network");
+        assert_eq!(VolumeType::Removable.as_str(), "removable");
     }
 
     #[test]
@@ -260,6 +270,59 @@ mod tests {
     }
 
     #[test]
+    fn test_volume_type_parse() {
+        assert_eq!(VolumeType::parse("ntfs"), VolumeType::Ntfs);
+        assert_eq!(VolumeType::parse("NTFS"), VolumeType::Ntfs);
+        assert_eq!(VolumeType::parse("NtFs"), VolumeType::Ntfs);
+        assert_eq!(VolumeType::parse("local"), VolumeType::Local);
+        assert_eq!(VolumeType::parse("LOCAL"), VolumeType::Local);
+        assert_eq!(VolumeType::parse("network"), VolumeType::Network);
+        assert_eq!(VolumeType::parse("NETWORK"), VolumeType::Network);
+        assert_eq!(VolumeType::parse("removable"), VolumeType::Removable);
+        assert_eq!(VolumeType::parse("REMOVABLE"), VolumeType::Removable);
+    }
+
+    #[test]
+    fn test_volume_type_parse_unknown() {
+        // Unknown values should default to Local
+        assert_eq!(VolumeType::parse("unknown"), VolumeType::Local);
+        assert_eq!(VolumeType::parse(""), VolumeType::Local);
+        assert_eq!(VolumeType::parse("invalid"), VolumeType::Local);
+        assert_eq!(VolumeType::parse("fat32"), VolumeType::Local);
+    }
+
+    #[test]
+    fn test_volume_type_from_str() {
+        let result: Result<VolumeType, _> = "ntfs".parse();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), VolumeType::Ntfs);
+
+        // FromStr should never fail due to Infallible error type
+        let result: Result<VolumeType, _> = "anything".parse();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_volume_type_equality() {
+        assert_eq!(VolumeType::Ntfs, VolumeType::Ntfs);
+        assert_ne!(VolumeType::Ntfs, VolumeType::Local);
+        assert_ne!(VolumeType::Network, VolumeType::Removable);
+    }
+
+    #[test]
+    fn test_volume_type_clone() {
+        let original = VolumeType::Network;
+        let cloned = original;
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_volume_type_debug() {
+        let debug_str = format!("{:?}", VolumeType::Ntfs);
+        assert!(debug_str.contains("Ntfs"));
+    }
+
+    #[test]
     fn test_file_entry_extension() {
         let file = FileEntry::new(
             1,
@@ -274,11 +337,385 @@ mod tests {
     }
 
     #[test]
+    fn test_file_entry_extension_various_cases() {
+        // Multiple dots
+        let file = FileEntry::new(1, "file.tar.gz".to_string(), "C:\\file.tar.gz".to_string(), false);
+        assert_eq!(file.extension(), Some("gz"));
+
+        // No extension
+        let file = FileEntry::new(1, "README".to_string(), "C:\\README".to_string(), false);
+        assert_eq!(file.extension(), None);
+
+        // Hidden file with extension
+        let file = FileEntry::new(1, ".gitignore".to_string(), "C:\\.gitignore".to_string(), false);
+        assert_eq!(file.extension(), None); // .gitignore has no extension
+
+        // Hidden file with extension
+        let file = FileEntry::new(1, ".config.json".to_string(), "C:\\.config.json".to_string(), false);
+        assert_eq!(file.extension(), Some("json"));
+
+        // Empty name
+        let file = FileEntry::new(1, "".to_string(), "C:\\".to_string(), false);
+        assert_eq!(file.extension(), None);
+
+        // Just a dot
+        let file = FileEntry::new(1, ".".to_string(), "C:\\.".to_string(), false);
+        assert_eq!(file.extension(), None);
+
+        // Trailing dot
+        let file = FileEntry::new(1, "file.".to_string(), "C:\\file.".to_string(), false);
+        assert_eq!(file.extension(), Some(""));
+    }
+
+    #[test]
+    fn test_file_entry_extension_directories_always_none() {
+        // Directories should always return None, even if name looks like it has extension
+        let dir = FileEntry::new(1, "folder.d".to_string(), "C:\\folder.d".to_string(), true);
+        assert_eq!(dir.extension(), None);
+
+        let dir = FileEntry::new(1, "archive.zip".to_string(), "C:\\archive.zip".to_string(), true);
+        assert_eq!(dir.extension(), None);
+    }
+
+    #[test]
+    fn test_file_entry_new() {
+        let file = FileEntry::new(42, "test.txt".to_string(), "C:\\folder\\test.txt".to_string(), false);
+
+        assert!(file.id.is_none());
+        assert_eq!(file.volume_id, 42);
+        assert!(file.parent_id.is_none());
+        assert_eq!(file.name, "test.txt");
+        assert_eq!(file.full_path, "C:\\folder\\test.txt");
+        assert!(!file.is_directory);
+        assert_eq!(file.size, 0);
+        assert!(file.created_time.is_none());
+        assert!(file.modified_time.is_none());
+        assert!(file.mft_reference.is_none());
+    }
+
+    #[test]
+    fn test_file_entry_new_directory() {
+        let dir = FileEntry::new(1, "Documents".to_string(), "C:\\Documents".to_string(), true);
+
+        assert!(dir.is_directory);
+        assert_eq!(dir.size, 0);
+    }
+
+    #[test]
     fn test_indexed_volume_new() {
         let volume = IndexedVolume::new("ABC123".to_string(), "C:".to_string(), VolumeType::Ntfs);
-        assert_eq!(volume.serial_number, "ABC123");
-        assert_eq!(volume.mount_point, "C:");
-        assert!(volume.is_online);
+
         assert!(volume.id.is_none());
+        assert_eq!(volume.serial_number, "ABC123");
+        assert!(volume.label.is_none());
+        assert_eq!(volume.mount_point, "C:");
+        assert_eq!(volume.volume_type, VolumeType::Ntfs);
+        assert!(volume.is_online);
+        assert!(volume.last_scan_time.is_none());
+        assert!(volume.last_usn.is_none());
+    }
+
+    #[test]
+    fn test_indexed_volume_with_different_types() {
+        for volume_type in [
+            VolumeType::Ntfs,
+            VolumeType::Local,
+            VolumeType::Network,
+            VolumeType::Removable,
+        ] {
+            let volume = IndexedVolume::new("SERIAL".to_string(), "X:".to_string(), volume_type);
+            assert_eq!(volume.volume_type, volume_type);
+        }
+    }
+
+    #[test]
+    fn test_search_result_fields() {
+        let entry = FileEntry::new(1, "test.txt".to_string(), "C:\\test.txt".to_string(), false);
+
+        let result = SearchResult {
+            entry: entry.clone(),
+            score: 100,
+            highlighted_name: Some("*test*.txt".to_string()),
+        };
+
+        assert_eq!(result.score, 100);
+        assert_eq!(result.highlighted_name, Some("*test*.txt".to_string()));
+        assert_eq!(result.entry.name, "test.txt");
+    }
+
+    #[test]
+    fn test_search_result_without_highlight() {
+        let entry = FileEntry::new(1, "file.txt".to_string(), "C:\\file.txt".to_string(), false);
+
+        let result = SearchResult {
+            entry,
+            score: 50,
+            highlighted_name: None,
+        };
+
+        assert!(result.highlighted_name.is_none());
+    }
+
+    #[test]
+    fn test_index_stats_default() {
+        let stats = IndexStats::default();
+
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_directories, 0);
+        assert_eq!(stats.total_size, 0);
+        assert_eq!(stats.volume_count, 0);
+        assert_eq!(stats.database_size, 0);
+        assert!(stats.last_updated.is_none());
+    }
+
+    #[test]
+    fn test_index_stats_with_values() {
+        let now = SystemTime::now();
+
+        let stats = IndexStats {
+            total_files: 1000,
+            total_directories: 100,
+            total_size: 1_000_000,
+            volume_count: 3,
+            database_size: 50_000,
+            last_updated: Some(now),
+        };
+
+        assert_eq!(stats.total_files, 1000);
+        assert_eq!(stats.total_directories, 100);
+        assert_eq!(stats.total_size, 1_000_000);
+        assert_eq!(stats.volume_count, 3);
+        assert_eq!(stats.database_size, 50_000);
+        assert!(stats.last_updated.is_some());
+    }
+
+    #[test]
+    fn test_file_change_event_created() {
+        let path = PathBuf::from("C:\\new_file.txt");
+        let event = FileChangeEvent::Created(path.clone());
+
+        if let FileChangeEvent::Created(p) = event {
+            assert_eq!(p, path);
+        } else {
+            panic!("Expected Created event");
+        }
+    }
+
+    #[test]
+    fn test_file_change_event_modified() {
+        let path = PathBuf::from("C:\\modified.txt");
+        let event = FileChangeEvent::Modified(path.clone());
+
+        if let FileChangeEvent::Modified(p) = event {
+            assert_eq!(p, path);
+        } else {
+            panic!("Expected Modified event");
+        }
+    }
+
+    #[test]
+    fn test_file_change_event_deleted() {
+        let path = PathBuf::from("C:\\deleted.txt");
+        let event = FileChangeEvent::Deleted(path.clone());
+
+        if let FileChangeEvent::Deleted(p) = event {
+            assert_eq!(p, path);
+        } else {
+            panic!("Expected Deleted event");
+        }
+    }
+
+    #[test]
+    fn test_file_change_event_renamed() {
+        let from = PathBuf::from("C:\\old_name.txt");
+        let to = PathBuf::from("C:\\new_name.txt");
+        let event = FileChangeEvent::Renamed {
+            from: from.clone(),
+            to: to.clone(),
+        };
+
+        if let FileChangeEvent::Renamed { from: f, to: t } = event {
+            assert_eq!(f, from);
+            assert_eq!(t, to);
+        } else {
+            panic!("Expected Renamed event");
+        }
+    }
+
+    #[test]
+    fn test_file_change_event_display_created() {
+        let event = FileChangeEvent::Created(PathBuf::from("C:\\test.txt"));
+        let display = event.to_string();
+        assert!(display.contains("Created"));
+        assert!(display.contains("test.txt"));
+    }
+
+    #[test]
+    fn test_file_change_event_display_modified() {
+        let event = FileChangeEvent::Modified(PathBuf::from("C:\\test.txt"));
+        let display = event.to_string();
+        assert!(display.contains("Modified"));
+        assert!(display.contains("test.txt"));
+    }
+
+    #[test]
+    fn test_file_change_event_display_deleted() {
+        let event = FileChangeEvent::Deleted(PathBuf::from("C:\\test.txt"));
+        let display = event.to_string();
+        assert!(display.contains("Deleted"));
+        assert!(display.contains("test.txt"));
+    }
+
+    #[test]
+    fn test_file_change_event_display_renamed() {
+        let event = FileChangeEvent::Renamed {
+            from: PathBuf::from("C:\\old.txt"),
+            to: PathBuf::from("C:\\new.txt"),
+        };
+        let display = event.to_string();
+        assert!(display.contains("Renamed"));
+        assert!(display.contains("old.txt"));
+        assert!(display.contains("new.txt"));
+        assert!(display.contains("->"));
+    }
+
+    #[test]
+    fn test_file_change_event_clone() {
+        let original = FileChangeEvent::Created(PathBuf::from("C:\\test.txt"));
+        let cloned = original.clone();
+
+        if let (FileChangeEvent::Created(p1), FileChangeEvent::Created(p2)) = (&original, &cloned) {
+            assert_eq!(p1, p2);
+        } else {
+            panic!("Clone failed");
+        }
+    }
+
+    #[test]
+    fn test_file_change_event_debug() {
+        let event = FileChangeEvent::Created(PathBuf::from("C:\\test.txt"));
+        let debug_str = format!("{:?}", event);
+        assert!(debug_str.contains("Created"));
+    }
+
+    #[test]
+    fn test_file_entry_clone() {
+        let original = FileEntry::new(1, "test.txt".to_string(), "C:\\test.txt".to_string(), false);
+        let cloned = original.clone();
+
+        assert_eq!(original.name, cloned.name);
+        assert_eq!(original.full_path, cloned.full_path);
+        assert_eq!(original.volume_id, cloned.volume_id);
+    }
+
+    #[test]
+    fn test_file_entry_debug() {
+        let entry = FileEntry::new(1, "test.txt".to_string(), "C:\\test.txt".to_string(), false);
+        let debug_str = format!("{:?}", entry);
+        assert!(debug_str.contains("test.txt"));
+        assert!(debug_str.contains("FileEntry"));
+    }
+
+    #[test]
+    fn test_indexed_volume_clone() {
+        let original = IndexedVolume::new("SERIAL".to_string(), "C:".to_string(), VolumeType::Ntfs);
+        let cloned = original.clone();
+
+        assert_eq!(original.serial_number, cloned.serial_number);
+        assert_eq!(original.mount_point, cloned.mount_point);
+    }
+
+    #[test]
+    fn test_indexed_volume_debug() {
+        let volume = IndexedVolume::new("SERIAL".to_string(), "C:".to_string(), VolumeType::Ntfs);
+        let debug_str = format!("{:?}", volume);
+        assert!(debug_str.contains("SERIAL"));
+        assert!(debug_str.contains("IndexedVolume"));
+    }
+
+    #[test]
+    fn test_search_result_clone() {
+        let entry = FileEntry::new(1, "test.txt".to_string(), "C:\\test.txt".to_string(), false);
+        let original = SearchResult {
+            entry,
+            score: 100,
+            highlighted_name: Some("test".to_string()),
+        };
+        let cloned = original.clone();
+
+        assert_eq!(original.score, cloned.score);
+        assert_eq!(original.highlighted_name, cloned.highlighted_name);
+    }
+
+    #[test]
+    fn test_index_stats_clone() {
+        let original = IndexStats {
+            total_files: 100,
+            total_directories: 10,
+            total_size: 1000,
+            volume_count: 2,
+            database_size: 500,
+            last_updated: None,
+        };
+        let cloned = original.clone();
+
+        assert_eq!(original.total_files, cloned.total_files);
+        assert_eq!(original.total_size, cloned.total_size);
+    }
+
+    #[test]
+    fn test_file_entry_with_all_fields() {
+        let now = SystemTime::now();
+
+        let file = FileEntry {
+            id: Some(42),
+            volume_id: 1,
+            parent_id: Some(10),
+            name: "complete_file.txt".to_string(),
+            full_path: "C:\\folder\\complete_file.txt".to_string(),
+            is_directory: false,
+            size: 1024,
+            created_time: Some(now),
+            modified_time: Some(now),
+            mft_reference: Some(12345),
+        };
+
+        assert_eq!(file.id, Some(42));
+        assert_eq!(file.parent_id, Some(10));
+        assert_eq!(file.size, 1024);
+        assert_eq!(file.mft_reference, Some(12345));
+        assert!(file.created_time.is_some());
+        assert!(file.modified_time.is_some());
+    }
+
+    #[test]
+    fn test_indexed_volume_with_all_fields() {
+        let now = SystemTime::now();
+
+        let volume = IndexedVolume {
+            id: Some(1),
+            serial_number: "ABC123".to_string(),
+            label: Some("My Volume".to_string()),
+            mount_point: "D:".to_string(),
+            volume_type: VolumeType::Removable,
+            is_online: false,
+            last_scan_time: Some(now),
+            last_usn: Some(999999),
+        };
+
+        assert_eq!(volume.id, Some(1));
+        assert_eq!(volume.label, Some("My Volume".to_string()));
+        assert!(!volume.is_online);
+        assert_eq!(volume.last_usn, Some(999999));
+        assert!(volume.last_scan_time.is_some());
+    }
+
+    #[test]
+    fn test_file_entry_extension_unicode() {
+        let file = FileEntry::new(1, "文档.txt".to_string(), "C:\\文档.txt".to_string(), false);
+        assert_eq!(file.extension(), Some("txt"));
+
+        let file = FileEntry::new(1, "файл.документ".to_string(), "C:\\файл.документ".to_string(), false);
+        assert_eq!(file.extension(), Some("документ"));
     }
 }

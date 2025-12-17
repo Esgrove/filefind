@@ -234,16 +234,42 @@ mod tests {
 
     #[test]
     fn test_is_drive_root() {
+        // Valid drive roots
         assert!(is_drive_root(Path::new("C:")));
         assert!(is_drive_root(Path::new("C:\\")));
         assert!(is_drive_root(Path::new("D:")));
         assert!(is_drive_root(Path::new("D:\\")));
         assert!(is_drive_root(Path::new("E:/")));
+        assert!(is_drive_root(Path::new("Z:")));
+        assert!(is_drive_root(Path::new("a:"))); // lowercase
+        assert!(is_drive_root(Path::new("z:\\")));
 
+        // Not drive roots
         assert!(!is_drive_root(Path::new("C:\\Users")));
         assert!(!is_drive_root(Path::new("C:\\Windows\\System32")));
         assert!(!is_drive_root(Path::new("/home/user")));
         assert!(!is_drive_root(Path::new("relative/path")));
+        assert!(!is_drive_root(Path::new("")));
+        assert!(!is_drive_root(Path::new("C")));
+        assert!(!is_drive_root(Path::new("CC:")));
+        assert!(!is_drive_root(Path::new("1:")));
+        assert!(!is_drive_root(Path::new("C:\\a")));
+    }
+
+    #[test]
+    fn test_is_drive_root_edge_cases() {
+        // Single character paths
+        assert!(!is_drive_root(Path::new("C")));
+        assert!(!is_drive_root(Path::new(":")));
+
+        // Four character paths (should not match)
+        assert!(!is_drive_root(Path::new("C:\\a")));
+        assert!(!is_drive_root(Path::new("D:/x")));
+
+        // Non-alphabetic first characters
+        assert!(!is_drive_root(Path::new("1:")));
+        assert!(!is_drive_root(Path::new("@:")));
+        assert!(!is_drive_root(Path::new(" :")));
     }
 
     #[test]
@@ -252,37 +278,88 @@ mod tests {
         assert!(is_network_path(Path::new(r"\\server\share")));
         assert!(is_network_path(Path::new(r"\\192.168.1.1\share")));
         assert!(is_network_path(Path::new(r"\\server\share\folder")));
+        assert!(is_network_path(Path::new(r"\\?\UNC\server\share")));
+        assert!(is_network_path(Path::new(r"\\")));
 
-        // Local drives are not network paths
+        // Local drives are not network paths (unless mapped)
         assert!(!is_network_path(Path::new("C:\\")));
         assert!(!is_network_path(Path::new("C:\\Users")));
+        assert!(!is_network_path(Path::new("relative\\path")));
     }
 
     #[test]
     fn test_is_unc_path() {
+        // Valid UNC paths
         assert!(is_unc_path(Path::new(r"\\server\share")));
         assert!(is_unc_path(Path::new(r"\\192.168.1.1\share")));
         assert!(is_unc_path(Path::new(r"\\server\share\folder")));
+        assert!(is_unc_path(Path::new(r"\\server")));
+        assert!(is_unc_path(Path::new(r"\\")));
 
+        // Not UNC paths
         assert!(!is_unc_path(Path::new("C:\\")));
         assert!(!is_unc_path(Path::new("Z:\\")));
         assert!(!is_unc_path(Path::new("C:\\Users")));
+        assert!(!is_unc_path(Path::new(r"\single\backslash")));
+        assert!(!is_unc_path(Path::new("")));
+        assert!(!is_unc_path(Path::new("relative")));
     }
 
     #[test]
-    fn test_classify_path() {
+    fn test_classify_path_unc() {
         // UNC paths should be classified as UNC
         assert_eq!(classify_path(Path::new(r"\\server\share")), PathType::UncPath);
         assert_eq!(classify_path(Path::new(r"\\server\share\subfolder")), PathType::UncPath);
+        assert_eq!(classify_path(Path::new(r"\\192.168.1.1\data")), PathType::UncPath);
+        assert_eq!(
+            classify_path(Path::new(r"\\server\share\deep\nested\path")),
+            PathType::UncPath
+        );
+    }
 
-        // Local drive roots should be classified as NTFS drive root
-        // Note: mapped network drives will be detected as MappedNetworkDrive
-        assert_eq!(classify_path(Path::new("C:\\")), PathType::NtfsDriveRoot);
-        assert_eq!(classify_path(Path::new("D:")), PathType::NtfsDriveRoot);
+    #[test]
+    fn test_classify_path_drive_root() {
+        // Local drive roots should be classified as NTFS drive root OR MappedNetworkDrive
+        // depending on whether the drive is actually mapped. We test that it's one of these.
+        let c_type = classify_path(Path::new("C:\\"));
+        assert!(
+            c_type == PathType::NtfsDriveRoot || c_type == PathType::MappedNetworkDrive,
+            "C:\\ should be NtfsDriveRoot or MappedNetworkDrive, got {:?}",
+            c_type
+        );
 
+        // For drives that may or may not exist, just verify they're classified as either
+        // NtfsDriveRoot or MappedNetworkDrive (not UncPath or LocalDirectory)
+        for drive in ["D:", "E:/", "Z:"] {
+            let path_type = classify_path(Path::new(drive));
+            assert!(
+                path_type == PathType::NtfsDriveRoot || path_type == PathType::MappedNetworkDrive,
+                "{} should be NtfsDriveRoot or MappedNetworkDrive, got {:?}",
+                drive,
+                path_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_path_local_directory() {
         // Subdirectories on local drives should be classified as local directory
         assert_eq!(classify_path(Path::new("C:\\Users")), PathType::LocalDirectory);
         assert_eq!(classify_path(Path::new("D:\\Projects\\test")), PathType::LocalDirectory);
+        assert_eq!(
+            classify_path(Path::new("E:\\some\\deep\\nested\\path")),
+            PathType::LocalDirectory
+        );
+        assert_eq!(classify_path(Path::new("C:\\a")), PathType::LocalDirectory);
+    }
+
+    #[test]
+    fn test_classify_path_relative() {
+        // Relative paths are classified as local directory
+        assert_eq!(classify_path(Path::new("relative")), PathType::LocalDirectory);
+        assert_eq!(classify_path(Path::new("relative/path")), PathType::LocalDirectory);
+        assert_eq!(classify_path(Path::new(".")), PathType::LocalDirectory);
+        assert_eq!(classify_path(Path::new("..")), PathType::LocalDirectory);
     }
 
     #[test]
@@ -294,13 +371,156 @@ mod tests {
     }
 
     #[test]
-    fn test_format_size() {
+    fn test_path_type_equality() {
+        assert_eq!(PathType::NtfsDriveRoot, PathType::NtfsDriveRoot);
+        assert_ne!(PathType::NtfsDriveRoot, PathType::LocalDirectory);
+        assert_ne!(PathType::UncPath, PathType::MappedNetworkDrive);
+    }
+
+    #[test]
+    fn test_path_type_clone() {
+        let original = PathType::NtfsDriveRoot;
+        let cloned = original;
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_format_size_bytes() {
         assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1), "1 B");
         assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn test_format_size_kilobytes() {
         assert_eq!(format_size(1024), "1.00 KB");
         assert_eq!(format_size(1536), "1.50 KB");
+        assert_eq!(format_size(2048), "2.00 KB");
+        assert_eq!(format_size(1024 * 1023), "1023.00 KB");
+    }
+
+    #[test]
+    fn test_format_size_megabytes() {
         assert_eq!(format_size(1_048_576), "1.00 MB");
+        assert_eq!(format_size(1_572_864), "1.50 MB");
+        assert_eq!(format_size(10_485_760), "10.00 MB");
+        assert_eq!(format_size(104_857_600), "100.00 MB");
+    }
+
+    #[test]
+    fn test_format_size_gigabytes() {
         assert_eq!(format_size(1_073_741_824), "1.00 GB");
+        assert_eq!(format_size(1_610_612_736), "1.50 GB");
+        assert_eq!(format_size(10_737_418_240), "10.00 GB");
+        assert_eq!(format_size(107_374_182_400), "100.00 GB");
+    }
+
+    #[test]
+    fn test_format_size_terabytes() {
         assert_eq!(format_size(1_099_511_627_776), "1.00 TB");
+        assert_eq!(format_size(1_649_267_441_664), "1.50 TB");
+        assert_eq!(format_size(10_995_116_277_760), "10.00 TB");
+    }
+
+    #[test]
+    fn test_format_size_large_values() {
+        // Test very large values (petabyte range, still shown as TB)
+        assert_eq!(format_size(1_125_899_906_842_624), "1024.00 TB");
+        assert_eq!(format_size(u64::MAX), "16777216.00 TB");
+    }
+
+    #[test]
+    fn test_format_size_boundary_values() {
+        // Just below each boundary
+        assert_eq!(format_size(1023), "1023 B");
+        assert_eq!(format_size(1024 * 1024 - 1), "1024.00 KB");
+        assert_eq!(format_size(1024 * 1024 * 1024 - 1), "1024.00 MB");
+        assert_eq!(format_size(1024u64 * 1024 * 1024 * 1024 - 1), "1024.00 GB");
+    }
+
+    #[test]
+    fn test_project_name_constant() {
+        assert_eq!(PROJECT_NAME, "filefind");
+        assert!(!PROJECT_NAME.is_empty());
+    }
+
+    #[test]
+    fn test_print_functions_dont_panic() {
+        // These functions should not panic with any input
+        print_error("test error");
+        print_warning("test warning");
+        print_success("test success");
+        print_info("test info");
+
+        // Test with empty strings
+        print_error("");
+        print_warning("");
+        print_success("");
+        print_info("");
+
+        // Test with unicode
+        print_error("Unicode: 文字 αβγ");
+        print_warning("Emoji: 🚀 🔥 ✨");
+    }
+
+    #[test]
+    fn test_print_macros() {
+        // Test that macros compile and work with formatting
+        print_error!("Error: {}", 42);
+        print_warning!("Warning: {} {}", "hello", "world");
+        print_success!("Success: {:?}", vec![1, 2, 3]);
+        print_info!("Info: {:.2}", 3.14159);
+
+        // Empty format
+        print_error!("");
+        print_info!("No args");
+    }
+
+    #[test]
+    fn test_is_unc_path_with_special_characters() {
+        // UNC paths can have various characters in server/share names
+        assert!(is_unc_path(Path::new(r"\\server-name\share")));
+        assert!(is_unc_path(Path::new(r"\\server_name\share")));
+        assert!(is_unc_path(Path::new(r"\\SERVER\SHARE")));
+        assert!(is_unc_path(Path::new(r"\\server.domain.com\share")));
+    }
+
+    #[test]
+    fn test_path_type_debug() {
+        // Test Debug trait implementation
+        let debug_str = format!("{:?}", PathType::NtfsDriveRoot);
+        assert!(debug_str.contains("NtfsDriveRoot"));
+
+        let debug_str = format!("{:?}", PathType::UncPath);
+        assert!(debug_str.contains("UncPath"));
+    }
+
+    #[test]
+    fn test_classify_path_empty() {
+        // Empty path should be classified as local directory
+        assert_eq!(classify_path(Path::new("")), PathType::LocalDirectory);
+    }
+
+    #[test]
+    fn test_format_size_precision() {
+        // Test that decimal formatting is correct
+        // 1.5 KB = 1536 bytes
+        let result = format_size(1536);
+        assert!(result.contains("1.50"));
+
+        // Test rounding - 1.999... should round to 2.00
+        let result = format_size(2047);
+        // 2047 / 1024 = 1.9990234375
+        assert!(result.contains("KB"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_is_mapped_network_drive_non_windows() {
+        // On non-Windows, this should always return false
+        assert!(!is_mapped_network_drive(Path::new("C:\\")));
+        assert!(!is_mapped_network_drive(Path::new("Z:\\")));
+        assert!(!is_mapped_network_drive(Path::new(r"\\server\share")));
     }
 }

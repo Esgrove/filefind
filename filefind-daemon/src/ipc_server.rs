@@ -501,6 +501,23 @@ mod tests {
     }
 
     #[test]
+    fn test_atomic_daemon_state_all_states() {
+        let state = AtomicDaemonState::new(DaemonStateInfo::Stopped);
+
+        // Test all state transitions
+        for daemon_state in [
+            DaemonStateInfo::Stopped,
+            DaemonStateInfo::Starting,
+            DaemonStateInfo::Running,
+            DaemonStateInfo::Scanning,
+            DaemonStateInfo::Stopping,
+        ] {
+            state.store(daemon_state);
+            assert_eq!(state.load(), daemon_state);
+        }
+    }
+
+    #[test]
     fn test_daemon_state_info_conversion() {
         let states = [
             DaemonStateInfo::Stopped,
@@ -518,6 +535,32 @@ mod tests {
     }
 
     #[test]
+    fn test_state_to_u8_values() {
+        assert_eq!(state_to_u8(DaemonStateInfo::Stopped), 0);
+        assert_eq!(state_to_u8(DaemonStateInfo::Starting), 1);
+        assert_eq!(state_to_u8(DaemonStateInfo::Running), 2);
+        assert_eq!(state_to_u8(DaemonStateInfo::Scanning), 3);
+        assert_eq!(state_to_u8(DaemonStateInfo::Stopping), 4);
+    }
+
+    #[test]
+    fn test_u8_to_state_values() {
+        assert_eq!(u8_to_state(0), DaemonStateInfo::Stopped);
+        assert_eq!(u8_to_state(1), DaemonStateInfo::Starting);
+        assert_eq!(u8_to_state(2), DaemonStateInfo::Running);
+        assert_eq!(u8_to_state(3), DaemonStateInfo::Scanning);
+        assert_eq!(u8_to_state(4), DaemonStateInfo::Stopping);
+    }
+
+    #[test]
+    fn test_u8_to_state_invalid_values() {
+        // Invalid values should default to Stopped
+        assert_eq!(u8_to_state(5), DaemonStateInfo::Stopped);
+        assert_eq!(u8_to_state(100), DaemonStateInfo::Stopped);
+        assert_eq!(u8_to_state(255), DaemonStateInfo::Stopped);
+    }
+
+    #[test]
     fn test_ipc_server_state_default() {
         let state = IpcServerState::default();
         assert_eq!(state.state.load(), DaemonStateInfo::Stopped);
@@ -525,6 +568,19 @@ mod tests {
         assert_eq!(state.indexed_files.load(Ordering::Relaxed), 0);
         assert_eq!(state.indexed_directories.load(Ordering::Relaxed), 0);
         assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_ipc_server_state_new() {
+        let state = IpcServerState::new();
+
+        assert_eq!(state.state.load(), DaemonStateInfo::Stopped);
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+        assert_eq!(state.indexed_files.load(Ordering::Relaxed), 0);
+        assert_eq!(state.indexed_directories.load(Ordering::Relaxed), 0);
+        assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 0);
+        // start_time should be initialized to now (roughly)
+        assert!(state.start_time.elapsed().as_secs() < 1);
     }
 
     #[test]
@@ -541,5 +597,179 @@ mod tests {
         assert_eq!(status.indexed_directories, 100);
         assert_eq!(status.monitored_volumes, 2);
         assert!(!status.is_paused);
+    }
+
+    #[test]
+    fn test_ipc_server_state_get_status_paused() {
+        let state = IpcServerState::new();
+        state.state.store(DaemonStateInfo::Running);
+        state.is_paused.store(true, Ordering::Relaxed);
+
+        let status = state.get_status();
+        assert!(status.is_paused);
+    }
+
+    #[test]
+    fn test_ipc_server_state_get_status_uptime() {
+        let state = IpcServerState::new();
+
+        // Wait a tiny bit to ensure uptime is > 0
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let status = state.get_status();
+        // Uptime should be at least 0 (could be 0 if very fast)
+        assert!(status.uptime_seconds < 10); // Should definitely be less than 10 seconds
+    }
+
+    #[test]
+    fn test_ipc_server_state_large_values() {
+        let state = IpcServerState::new();
+
+        state.indexed_files.store(u64::MAX, Ordering::Relaxed);
+        state.indexed_directories.store(u64::MAX, Ordering::Relaxed);
+        state.monitored_volumes.store(u64::MAX, Ordering::Relaxed);
+
+        let status = state.get_status();
+        assert_eq!(status.indexed_files, u64::MAX);
+        assert_eq!(status.indexed_directories, u64::MAX);
+        // monitored_volumes is cast to u32
+        assert_eq!(status.monitored_volumes, u32::MAX);
+    }
+
+    #[test]
+    fn test_ipc_server_state_concurrent_updates() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let state = Arc::new(IpcServerState::new());
+
+        let handles: Vec<_> = (0..4)
+            .map(|index| {
+                let state_clone = Arc::clone(&state);
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        state_clone.indexed_files.fetch_add(1, Ordering::Relaxed);
+                        state_clone.indexed_directories.fetch_add(1, Ordering::Relaxed);
+
+                        // Toggle state
+                        if index % 2 == 0 {
+                            state_clone.state.store(DaemonStateInfo::Running);
+                        } else {
+                            state_clone.state.store(DaemonStateInfo::Scanning);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        // Each of 4 threads added 100, so total should be 400
+        assert_eq!(state.indexed_files.load(Ordering::Relaxed), 400);
+        assert_eq!(state.indexed_directories.load(Ordering::Relaxed), 400);
+    }
+
+    #[test]
+    fn test_ipc_to_daemon_variants() {
+        // Just verify the enum variants exist and can be matched
+        let commands = [
+            IpcToDaemon::Stop,
+            IpcToDaemon::Rescan,
+            IpcToDaemon::Pause,
+            IpcToDaemon::Resume,
+        ];
+
+        for command in commands {
+            match command {
+                IpcToDaemon::Stop => {}
+                IpcToDaemon::Rescan => {}
+                IpcToDaemon::Pause => {}
+                IpcToDaemon::Resume => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_ipc_server_state_update_is_paused() {
+        let state = IpcServerState::new();
+
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+
+        state.is_paused.store(true, Ordering::Relaxed);
+        assert!(state.is_paused.load(Ordering::Relaxed));
+
+        let status = state.get_status();
+        assert!(status.is_paused);
+
+        state.is_paused.store(false, Ordering::Relaxed);
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_ipc_server_state_state_transitions() {
+        let state = IpcServerState::new();
+
+        // Simulate typical lifecycle
+        assert_eq!(state.state.load(), DaemonStateInfo::Stopped);
+
+        state.state.store(DaemonStateInfo::Starting);
+        assert_eq!(state.state.load(), DaemonStateInfo::Starting);
+
+        state.state.store(DaemonStateInfo::Scanning);
+        assert_eq!(state.state.load(), DaemonStateInfo::Scanning);
+
+        state.state.store(DaemonStateInfo::Running);
+        assert_eq!(state.state.load(), DaemonStateInfo::Running);
+
+        state.state.store(DaemonStateInfo::Stopping);
+        assert_eq!(state.state.load(), DaemonStateInfo::Stopping);
+
+        state.state.store(DaemonStateInfo::Stopped);
+        assert_eq!(state.state.load(), DaemonStateInfo::Stopped);
+    }
+
+    #[test]
+    fn test_atomic_daemon_state_default_is_stopped() {
+        let state = AtomicDaemonState::new(DaemonStateInfo::Stopped);
+        assert_eq!(state.load(), DaemonStateInfo::Stopped);
+    }
+
+    #[test]
+    fn test_ipc_server_state_monitored_volumes_increment() {
+        let state = IpcServerState::new();
+
+        state.monitored_volumes.store(0, Ordering::Relaxed);
+        assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 0);
+
+        state.monitored_volumes.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 1);
+
+        state.monitored_volumes.fetch_add(5, Ordering::Relaxed);
+        assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 6);
+    }
+
+    #[test]
+    fn test_daemon_state_info_debug() {
+        let state = DaemonStateInfo::Running;
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("Running"));
+    }
+
+    #[test]
+    fn test_ipc_to_daemon_debug() {
+        let command = IpcToDaemon::Stop;
+        let debug_str = format!("{:?}", command);
+        assert!(debug_str.contains("Stop"));
+    }
+
+    #[test]
+    fn test_ipc_server_state_zero_uptime_immediately() {
+        let state = IpcServerState::new();
+        let status = state.get_status();
+
+        // Uptime should be 0 or very close to 0 immediately after creation
+        assert!(status.uptime_seconds < 2);
     }
 }

@@ -473,4 +473,353 @@ mod tests {
             bytes.len()
         );
     }
+
+    #[test]
+    fn test_read_write_message_roundtrip() {
+        use std::io::Cursor;
+
+        let original_data = b"test message data";
+        let serialized = {
+            let len = original_data.len() as u16;
+            let mut buffer = Vec::with_capacity(2 + original_data.len());
+            buffer.extend_from_slice(&len.to_le_bytes());
+            buffer.extend_from_slice(original_data);
+            buffer
+        };
+
+        // Write and read back
+        let mut cursor = Cursor::new(Vec::new());
+        write_message(&mut cursor, &serialized).expect("write");
+
+        cursor.set_position(0);
+        // Skip the length prefix we added to serialized, read the actual message
+        let mut read_cursor = Cursor::new(cursor.into_inner());
+        let read_data = read_message(&mut read_cursor).expect("read");
+
+        assert_eq!(read_data, original_data);
+    }
+
+    #[test]
+    fn test_read_message_too_large() {
+        use std::io::Cursor;
+
+        // Create a message claiming to be larger than MAX_MESSAGE_SIZE
+        let large_len: u16 = 2000; // Greater than MAX_MESSAGE_SIZE (1024)
+        let mut data = Vec::new();
+        data.extend_from_slice(&large_len.to_le_bytes());
+        data.extend(vec![0u8; 100]); // Some dummy data
+
+        let mut cursor = Cursor::new(data);
+        let result = read_message(&mut cursor);
+
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("too large"));
+    }
+
+    #[test]
+    fn test_daemon_command_all_variants_serialize() {
+        let commands = [
+            DaemonCommand::Stop,
+            DaemonCommand::GetStatus,
+            DaemonCommand::Rescan,
+            DaemonCommand::Pause,
+            DaemonCommand::Resume,
+            DaemonCommand::Ping,
+        ];
+
+        for command in commands {
+            let bytes = serialize_command(&command);
+            assert!(bytes.is_ok(), "Failed to serialize {:?}", command);
+
+            let bytes = bytes.unwrap();
+            assert!(bytes.len() >= 3, "Serialized data too small for {:?}", command);
+
+            // Skip length prefix and deserialize
+            let deserialized = deserialize_command(&bytes[2..]);
+            assert!(deserialized.is_ok(), "Failed to deserialize {:?}", command);
+            assert_eq!(deserialized.unwrap(), command);
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_all_variants_serialize() {
+        let responses = [
+            DaemonResponse::Ok,
+            DaemonResponse::Pong,
+            DaemonResponse::Error("test error message".to_string()),
+            DaemonResponse::Error(String::new()),
+            DaemonResponse::Status(DaemonStatus::default()),
+            DaemonResponse::Status(DaemonStatus {
+                state: DaemonStateInfo::Running,
+                indexed_files: 1_000_000,
+                indexed_directories: 100_000,
+                monitored_volumes: 5,
+                uptime_seconds: 86400,
+                is_paused: true,
+            }),
+        ];
+
+        for response in responses {
+            let bytes = serialize_response(&response);
+            assert!(bytes.is_ok(), "Failed to serialize {:?}", response);
+
+            let bytes = bytes.unwrap();
+            let deserialized = deserialize_response(&bytes[2..]);
+            assert!(deserialized.is_ok(), "Failed to deserialize {:?}", response);
+            assert_eq!(deserialized.unwrap(), response);
+        }
+    }
+
+    #[test]
+    fn test_daemon_status_with_values() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Scanning,
+            indexed_files: 123456,
+            indexed_directories: 7890,
+            monitored_volumes: 3,
+            uptime_seconds: 3600,
+            is_paused: false,
+        };
+
+        assert_eq!(status.state, DaemonStateInfo::Scanning);
+        assert_eq!(status.indexed_files, 123456);
+        assert_eq!(status.indexed_directories, 7890);
+        assert_eq!(status.monitored_volumes, 3);
+        assert_eq!(status.uptime_seconds, 3600);
+        assert!(!status.is_paused);
+    }
+
+    #[test]
+    fn test_daemon_state_info_all_variants_display() {
+        let states = [
+            (DaemonStateInfo::Stopped, "stopped"),
+            (DaemonStateInfo::Starting, "starting"),
+            (DaemonStateInfo::Running, "running"),
+            (DaemonStateInfo::Scanning, "scanning"),
+            (DaemonStateInfo::Stopping, "stopping"),
+        ];
+
+        for (state, expected) in states {
+            assert_eq!(state.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_daemon_state_info_equality() {
+        assert_eq!(DaemonStateInfo::Running, DaemonStateInfo::Running);
+        assert_ne!(DaemonStateInfo::Running, DaemonStateInfo::Stopped);
+        assert_ne!(DaemonStateInfo::Scanning, DaemonStateInfo::Starting);
+    }
+
+    #[test]
+    fn test_daemon_state_info_clone_copy() {
+        let original = DaemonStateInfo::Scanning;
+        let copied = original;
+        assert_eq!(original, copied);
+    }
+
+    #[test]
+    fn test_daemon_response_error_with_long_message() {
+        let long_message = "a".repeat(500);
+        let response = DaemonResponse::Error(long_message.clone());
+
+        let bytes = serialize_response(&response).expect("serialize");
+        let deserialized = deserialize_response(&bytes[2..]).expect("deserialize");
+
+        if let DaemonResponse::Error(msg) = deserialized {
+            assert_eq!(msg, long_message);
+        } else {
+            panic!("Expected Error response");
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_error_with_unicode() {
+        let unicode_message = "Error: 文件未找到 αβγ 🚫";
+        let response = DaemonResponse::Error(unicode_message.to_string());
+
+        let bytes = serialize_response(&response).expect("serialize");
+        let deserialized = deserialize_response(&bytes[2..]).expect("deserialize");
+
+        if let DaemonResponse::Error(msg) = deserialized {
+            assert_eq!(msg, unicode_message);
+        } else {
+            panic!("Expected Error response");
+        }
+    }
+
+    #[test]
+    fn test_daemon_status_large_values() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Running,
+            indexed_files: u64::MAX,
+            indexed_directories: u64::MAX,
+            monitored_volumes: u32::MAX,
+            uptime_seconds: u64::MAX,
+            is_paused: false,
+        };
+
+        let response = DaemonResponse::Status(status.clone());
+        let bytes = serialize_response(&response).expect("serialize");
+        let deserialized = deserialize_response(&bytes[2..]).expect("deserialize");
+
+        if let DaemonResponse::Status(s) = deserialized {
+            assert_eq!(s.indexed_files, u64::MAX);
+            assert_eq!(s.indexed_directories, u64::MAX);
+            assert_eq!(s.monitored_volumes, u32::MAX);
+        } else {
+            panic!("Expected Status response");
+        }
+    }
+
+    #[test]
+    fn test_ipc_client_default() {
+        let client = IpcClient::default();
+        assert_eq!(client.timeout, IPC_TIMEOUT);
+    }
+
+    #[test]
+    fn test_deserialize_invalid_command() {
+        let invalid_bytes = [0xFF, 0xFF, 0xFF];
+        let result = deserialize_command(&invalid_bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_invalid_response() {
+        let invalid_bytes = [0xFF, 0xFF, 0xFF];
+        let result = deserialize_response(&invalid_bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_empty_bytes() {
+        let empty: [u8; 0] = [];
+        let result = deserialize_command(&empty);
+        assert!(result.is_err());
+
+        let result = deserialize_response(&empty);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serialize_command_length_prefix() {
+        let command = DaemonCommand::Ping;
+        let bytes = serialize_command(&command).expect("serialize");
+
+        // Extract length prefix
+        let len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+
+        // Length should match remaining bytes
+        assert_eq!(len, bytes.len() - 2);
+    }
+
+    #[test]
+    fn test_serialize_response_length_prefix() {
+        let response = DaemonResponse::Ok;
+        let bytes = serialize_response(&response).expect("serialize");
+
+        // Extract length prefix
+        let len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+
+        // Length should match remaining bytes
+        assert_eq!(len, bytes.len() - 2);
+    }
+
+    #[test]
+    fn test_daemon_status_clone() {
+        let original = DaemonStatus {
+            state: DaemonStateInfo::Running,
+            indexed_files: 100,
+            indexed_directories: 10,
+            monitored_volumes: 2,
+            uptime_seconds: 3600,
+            is_paused: true,
+        };
+
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_daemon_command_debug() {
+        let command = DaemonCommand::Ping;
+        let debug_str = format!("{:?}", command);
+        assert!(debug_str.contains("Ping"));
+    }
+
+    #[test]
+    fn test_daemon_response_debug() {
+        let response = DaemonResponse::Ok;
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("Ok"));
+    }
+
+    #[test]
+    fn test_daemon_status_debug() {
+        let status = DaemonStatus::default();
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("DaemonStatus"));
+        assert!(debug_str.contains("state"));
+    }
+
+    #[test]
+    fn test_daemon_state_info_debug() {
+        let state = DaemonStateInfo::Scanning;
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("Scanning"));
+    }
+
+    #[test]
+    fn test_ipc_client_is_daemon_running_when_not_running() {
+        // When daemon is not running, this should return false
+        let client = IpcClient::new();
+        // This test just verifies the method exists and doesn't panic
+        let _result = client.is_daemon_running();
+    }
+
+    #[test]
+    fn test_read_message_exact_max_size() {
+        use std::io::Cursor;
+
+        // Create a message exactly at MAX_MESSAGE_SIZE
+        let len: u16 = 1024; // MAX_MESSAGE_SIZE
+        let mut data = Vec::new();
+        data.extend_from_slice(&len.to_le_bytes());
+        data.extend(vec![0u8; 1024]);
+
+        let mut cursor = Cursor::new(data);
+        let result = read_message(&mut cursor);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1024);
+    }
+
+    #[test]
+    fn test_read_message_just_over_max_size() {
+        use std::io::Cursor;
+
+        // Create a message just over MAX_MESSAGE_SIZE
+        let len: u16 = 1025; // MAX_MESSAGE_SIZE + 1
+        let mut data = Vec::new();
+        data.extend_from_slice(&len.to_le_bytes());
+        data.extend(vec![0u8; 1025]);
+
+        let mut cursor = Cursor::new(data);
+        let result = read_message(&mut cursor);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_message_empty() {
+        use std::io::Cursor;
+
+        let mut cursor = Cursor::new(Vec::new());
+        let result = write_message(&mut cursor, &[]);
+
+        assert!(result.is_ok());
+        assert!(cursor.into_inner().is_empty());
+    }
 }

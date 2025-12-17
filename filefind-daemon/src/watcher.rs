@@ -73,7 +73,7 @@ impl FileWatcher {
     }
 
     /// Create a new file watcher for a single path.
-    #[expect(dead_code, reason = "public API for single-path watching")]
+    #[cfg(test)]
     #[must_use]
     pub fn for_path(path: PathBuf) -> Self {
         Self {
@@ -84,7 +84,7 @@ impl FileWatcher {
     }
 
     /// Add a path to watch.
-    #[expect(dead_code, reason = "public API for adding watch paths")]
+    #[cfg(test)]
     pub fn add_path(&mut self, path: PathBuf) {
         if !self.watched_paths.contains(&path) {
             self.watched_paths.push(path);
@@ -92,7 +92,7 @@ impl FileWatcher {
     }
 
     /// Add an exclusion pattern.
-    #[expect(dead_code, reason = "public API for adding exclusion patterns")]
+    #[cfg(test)]
     pub fn add_exclude_pattern(&mut self, pattern: String) {
         if !self.exclude_patterns.contains(&pattern) {
             self.exclude_patterns.push(pattern);
@@ -434,6 +434,7 @@ impl ScanEntry {
 mod tests {
     use super::*;
     use std::fs;
+    use std::time::SystemTime;
     use tempfile::tempdir;
 
     #[test]
@@ -455,6 +456,96 @@ mod tests {
     }
 
     #[test]
+    fn test_should_exclude_suffix_pattern() {
+        // Pattern "*pattern" matches paths ending with "pattern"
+        let watcher = FileWatcher {
+            watched_paths: vec![],
+            exclude_patterns: vec!["*.bak".to_string(), "*.tmp".to_string()],
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Should match - ends with .bak
+        assert!(watcher.should_exclude(Path::new("file.bak")));
+        assert!(watcher.should_exclude(Path::new("C:\\folder\\data.bak")));
+        assert!(watcher.should_exclude(Path::new("test.tmp")));
+
+        // Should not match - different extension
+        assert!(!watcher.should_exclude(Path::new("file.txt")));
+        assert!(!watcher.should_exclude(Path::new("file.bak.txt")));
+    }
+
+    #[test]
+    fn test_should_exclude_contains_pattern() {
+        // Pattern "*pattern*" matches paths containing "pattern"
+        let watcher = FileWatcher {
+            watched_paths: vec![],
+            exclude_patterns: vec!["*cache*".to_string(), "*node_modules*".to_string()],
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Should match - contains "cache"
+        assert!(watcher.should_exclude(Path::new("C:\\mycache\\file.txt")));
+        assert!(watcher.should_exclude(Path::new("cache_dir")));
+        assert!(watcher.should_exclude(Path::new("filecache")));
+
+        // Should match - contains "node_modules"
+        assert!(watcher.should_exclude(Path::new("C:\\project\\node_modules\\pkg")));
+
+        // Should not match
+        assert!(!watcher.should_exclude(Path::new("C:\\important\\file.txt")));
+    }
+
+    #[test]
+    fn test_should_exclude_exact_substring_pattern() {
+        // Pattern without wildcards matches if path contains the pattern anywhere
+        let watcher = FileWatcher {
+            watched_paths: vec![],
+            exclude_patterns: vec!["Thumbs.db".to_string(), ".git".to_string()],
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Should match - contains exact substring
+        assert!(watcher.should_exclude(Path::new("Thumbs.db")));
+        assert!(watcher.should_exclude(Path::new("C:\\photos\\Thumbs.db")));
+        assert!(watcher.should_exclude(Path::new("C:\\project\\.git\\config")));
+
+        // Should not match
+        assert!(!watcher.should_exclude(Path::new("thumbs.db"))); // case sensitive
+        assert!(!watcher.should_exclude(Path::new("file.txt")));
+    }
+
+    #[test]
+    fn test_should_exclude_empty_patterns() {
+        let watcher = FileWatcher {
+            watched_paths: vec![],
+            exclude_patterns: vec![],
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+
+        // With no patterns, nothing should be excluded
+        assert!(!watcher.should_exclude(Path::new("any_file.txt")));
+        assert!(!watcher.should_exclude(Path::new("C:\\Windows\\System32")));
+        assert!(!watcher.should_exclude(Path::new(".hidden")));
+    }
+
+    #[test]
+    fn test_should_exclude_multiple_patterns_first_match_wins() {
+        let watcher = FileWatcher {
+            watched_paths: vec![],
+            exclude_patterns: vec!["*.log".to_string(), "*temp*".to_string(), "secret.txt".to_string()],
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Each pattern can independently match
+        assert!(watcher.should_exclude(Path::new("app.log")));
+        assert!(watcher.should_exclude(Path::new("C:\\temp\\file.txt")));
+        assert!(watcher.should_exclude(Path::new("secret.txt")));
+
+        // None match
+        assert!(!watcher.should_exclude(Path::new("important.txt")));
+    }
+
+    #[test]
     fn test_scan_entry_to_file_entry() {
         let entry = ScanEntry {
             path: PathBuf::from("C:\\test\\document.pdf"),
@@ -470,6 +561,79 @@ mod tests {
         assert_eq!(file_entry.volume_id, 1);
         assert!(!file_entry.is_directory);
         assert_eq!(file_entry.size, 1024);
+    }
+
+    #[test]
+    fn test_scan_entry_to_file_entry_with_timestamps() {
+        let now = SystemTime::now();
+        let created = now;
+        let modified = now;
+
+        let entry = ScanEntry {
+            path: PathBuf::from("C:\\folder\\file.txt"),
+            name: "file.txt".to_string(),
+            is_directory: false,
+            size: 500,
+            modified: Some(modified),
+            created: Some(created),
+        };
+
+        let file_entry = entry.to_file_entry(42);
+        assert_eq!(file_entry.volume_id, 42);
+        assert!(file_entry.created_time.is_some());
+        assert!(file_entry.modified_time.is_some());
+        assert_eq!(file_entry.size, 500);
+    }
+
+    #[test]
+    fn test_scan_entry_to_file_entry_directory() {
+        let entry = ScanEntry {
+            path: PathBuf::from("C:\\folder"),
+            name: "folder".to_string(),
+            is_directory: true,
+            size: 0,
+            modified: None,
+            created: None,
+        };
+
+        let file_entry = entry.to_file_entry(1);
+        assert!(file_entry.is_directory);
+        assert_eq!(file_entry.size, 0);
+        assert_eq!(file_entry.full_path, "C:\\folder");
+    }
+
+    #[test]
+    fn test_scan_entry_clone() {
+        let entry = ScanEntry {
+            path: PathBuf::from("C:\\test.txt"),
+            name: "test.txt".to_string(),
+            is_directory: false,
+            size: 100,
+            modified: Some(SystemTime::now()),
+            created: None,
+        };
+
+        let cloned = entry.clone();
+        assert_eq!(entry.name, cloned.name);
+        assert_eq!(entry.path, cloned.path);
+        assert_eq!(entry.size, cloned.size);
+        assert_eq!(entry.is_directory, cloned.is_directory);
+    }
+
+    #[test]
+    fn test_scan_entry_debug() {
+        let entry = ScanEntry {
+            path: PathBuf::from("C:\\debug.txt"),
+            name: "debug.txt".to_string(),
+            is_directory: false,
+            size: 0,
+            modified: None,
+            created: None,
+        };
+
+        let debug_str = format!("{:?}", entry);
+        assert!(debug_str.contains("ScanEntry"));
+        assert!(debug_str.contains("debug.txt"));
     }
 
     #[tokio::test]
@@ -505,6 +669,79 @@ mod tests {
         assert!(subdir.is_directory);
     }
 
+    #[tokio::test]
+    async fn test_scan_directory_empty() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        // Empty directory - but the root itself is included
+        let entries = scan_directory(root, &[]).await.unwrap();
+
+        // Should include the root directory itself
+        assert!(!entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_with_exclusions() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        // Create files
+        fs::write(root.join("keep.txt"), "keep").unwrap();
+        fs::write(root.join("skip.tmp"), "skip").unwrap();
+        fs::write(root.join("another.txt"), "another").unwrap();
+
+        let entries = scan_directory(root, &["*.tmp".to_string()]).await.unwrap();
+
+        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"keep.txt"));
+        assert!(names.contains(&"another.txt"));
+        assert!(!names.contains(&"skip.tmp"));
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_nested_structure() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        // Create nested structure
+        fs::create_dir_all(root.join("a").join("b").join("c")).unwrap();
+        fs::write(root.join("a").join("file_a.txt"), "a").unwrap();
+        fs::write(root.join("a").join("b").join("file_b.txt"), "b").unwrap();
+        fs::write(root.join("a").join("b").join("c").join("file_c.txt"), "c").unwrap();
+
+        let entries = scan_directory(root, &[]).await.unwrap();
+
+        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"b"));
+        assert!(names.contains(&"c"));
+        assert!(names.contains(&"file_a.txt"));
+        assert!(names.contains(&"file_b.txt"));
+        assert!(names.contains(&"file_c.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_file_sizes() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(root.join("small.txt"), "x").unwrap();
+        fs::write(root.join("medium.txt"), "x".repeat(1000)).unwrap();
+        fs::write(root.join("empty.txt"), "").unwrap();
+
+        let entries = scan_directory(root, &[]).await.unwrap();
+
+        let small = entries.iter().find(|e| e.name == "small.txt").unwrap();
+        assert_eq!(small.size, 1);
+
+        let medium = entries.iter().find(|e| e.name == "medium.txt").unwrap();
+        assert_eq!(medium.size, 1000);
+
+        let empty = entries.iter().find(|e| e.name == "empty.txt").unwrap();
+        assert_eq!(empty.size, 0);
+    }
+
     #[test]
     fn test_watcher_config_default() {
         let config = WatcherConfig::default();
@@ -512,5 +749,155 @@ mod tests {
         assert!(config.exclude_patterns.is_empty());
         assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
         assert!(config.recursive);
+    }
+
+    #[test]
+    fn test_watcher_config_custom() {
+        let config = WatcherConfig {
+            paths: vec![PathBuf::from("C:\\Test")],
+            exclude_patterns: vec!["*.tmp".to_string()],
+            debounce_ms: 500,
+            recursive: false,
+        };
+
+        assert_eq!(config.paths.len(), 1);
+        assert_eq!(config.exclude_patterns.len(), 1);
+        assert_eq!(config.debounce_ms, 500);
+        assert!(!config.recursive);
+    }
+
+    #[test]
+    fn test_file_watcher_new() {
+        let config = WatcherConfig {
+            paths: vec![PathBuf::from("C:\\Test1"), PathBuf::from("D:\\Test2")],
+            exclude_patterns: vec!["*.bak".to_string()],
+            debounce_ms: 200,
+            recursive: true,
+        };
+
+        let watcher = FileWatcher::new(config);
+
+        assert_eq!(watcher.watched_paths.len(), 2);
+        assert_eq!(watcher.exclude_patterns.len(), 1);
+        assert!(!watcher.shutdown.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_file_watcher_for_path() {
+        let path = PathBuf::from("C:\\SinglePath");
+        let watcher = FileWatcher::for_path(path.clone());
+
+        assert_eq!(watcher.watched_paths.len(), 1);
+        assert_eq!(watcher.watched_paths[0], path);
+        assert!(watcher.exclude_patterns.is_empty());
+    }
+
+    #[test]
+    fn test_file_watcher_add_path() {
+        let mut watcher = FileWatcher::new(WatcherConfig::default());
+
+        watcher.add_path(PathBuf::from("C:\\Path1"));
+        assert_eq!(watcher.watched_paths.len(), 1);
+
+        watcher.add_path(PathBuf::from("D:\\Path2"));
+        assert_eq!(watcher.watched_paths.len(), 2);
+
+        // Adding duplicate path should not increase count
+        watcher.add_path(PathBuf::from("C:\\Path1"));
+        assert_eq!(watcher.watched_paths.len(), 2);
+    }
+
+    #[test]
+    fn test_file_watcher_add_exclude_pattern() {
+        let mut watcher = FileWatcher::new(WatcherConfig::default());
+
+        watcher.add_exclude_pattern("*.tmp".to_string());
+        assert_eq!(watcher.exclude_patterns.len(), 1);
+
+        watcher.add_exclude_pattern("*.bak".to_string());
+        assert_eq!(watcher.exclude_patterns.len(), 2);
+
+        // Adding duplicate pattern should not increase count
+        watcher.add_exclude_pattern("*.tmp".to_string());
+        assert_eq!(watcher.exclude_patterns.len(), 2);
+    }
+
+    #[test]
+    fn test_file_watcher_watched_paths() {
+        let config = WatcherConfig {
+            paths: vec![PathBuf::from("C:\\A"), PathBuf::from("D:\\B")],
+            ..Default::default()
+        };
+
+        let watcher = FileWatcher::new(config);
+        let paths = watcher.watched_paths();
+
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&PathBuf::from("C:\\A")));
+        assert!(paths.contains(&PathBuf::from("D:\\B")));
+    }
+
+    #[test]
+    fn test_file_watcher_stop() {
+        let watcher = FileWatcher::new(WatcherConfig::default());
+
+        assert!(!watcher.shutdown.load(Ordering::Relaxed));
+
+        watcher.stop();
+
+        assert!(watcher.shutdown.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_scan_entry_with_unicode_name() {
+        let entry = ScanEntry {
+            path: PathBuf::from("C:\\文档\\文件.txt"),
+            name: "文件.txt".to_string(),
+            is_directory: false,
+            size: 100,
+            modified: None,
+            created: None,
+        };
+
+        let file_entry = entry.to_file_entry(1);
+        assert_eq!(file_entry.name, "文件.txt");
+        assert!(file_entry.full_path.contains("文档"));
+    }
+
+    #[test]
+    fn test_scan_entry_with_long_path() {
+        let long_name = "a".repeat(200);
+        let long_path = format!("C:\\{}", long_name);
+
+        let entry = ScanEntry {
+            path: PathBuf::from(&long_path),
+            name: long_name.clone(),
+            is_directory: false,
+            size: 0,
+            modified: None,
+            created: None,
+        };
+
+        let file_entry = entry.to_file_entry(1);
+        assert_eq!(file_entry.name.len(), 200);
+        assert_eq!(file_entry.full_path, long_path);
+    }
+
+    #[test]
+    fn test_should_exclude_is_case_sensitive() {
+        let watcher = FileWatcher {
+            watched_paths: vec![],
+            exclude_patterns: vec!["*.TMP".to_string(), "README.md".to_string()],
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Exact case matches
+        assert!(watcher.should_exclude(Path::new("file.TMP")));
+        assert!(watcher.should_exclude(Path::new("README.md")));
+
+        // Different case does not match
+        assert!(!watcher.should_exclude(Path::new("file.tmp")));
+        assert!(!watcher.should_exclude(Path::new("readme.md")));
+        assert!(!watcher.should_exclude(Path::new("README.MD")));
     }
 }

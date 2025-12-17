@@ -440,6 +440,8 @@ pub fn format_number(number: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_format_number() {
@@ -450,5 +452,240 @@ mod tests {
         assert_eq!(format_number(123456), "123,456");
         assert_eq!(format_number(1234567), "1,234,567");
         assert_eq!(format_number(1234567890), "1,234,567,890");
+    }
+
+    #[test]
+    fn test_format_number_edge_cases() {
+        // Single digit
+        assert_eq!(format_number(1), "1");
+        assert_eq!(format_number(9), "9");
+
+        // Two digits
+        assert_eq!(format_number(10), "10");
+        assert_eq!(format_number(99), "99");
+
+        // Three digits (no comma)
+        assert_eq!(format_number(100), "100");
+        assert_eq!(format_number(999), "999");
+
+        // Exactly 1000
+        assert_eq!(format_number(1000), "1,000");
+
+        // Large numbers
+        assert_eq!(format_number(1_000_000), "1,000,000");
+        assert_eq!(format_number(1_000_000_000), "1,000,000,000");
+        assert_eq!(format_number(1_000_000_000_000), "1,000,000,000,000");
+    }
+
+    #[test]
+    fn test_format_number_max_u64() {
+        // Test with maximum u64 value
+        let result = format_number(u64::MAX);
+        // u64::MAX = 18446744073709551615
+        assert_eq!(result, "18,446,744,073,709,551,615");
+    }
+
+    #[test]
+    fn test_format_number_powers_of_ten() {
+        assert_eq!(format_number(10), "10");
+        assert_eq!(format_number(100), "100");
+        assert_eq!(format_number(1_000), "1,000");
+        assert_eq!(format_number(10_000), "10,000");
+        assert_eq!(format_number(100_000), "100,000");
+        assert_eq!(format_number(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn test_format_number_preserves_all_digits() {
+        // Verify no digits are lost
+        let number = 123_456_789u64;
+        let formatted = format_number(number);
+
+        // Remove commas and parse back
+        let stripped: String = formatted.chars().filter(|c| *c != ',').collect();
+        let parsed: u64 = stripped.parse().expect("Should parse back to number");
+
+        assert_eq!(parsed, number);
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        // Create test files
+        fs::create_dir_all(root.join("subdir")).expect("create subdir");
+        fs::write(root.join("file1.txt"), "content1").expect("write file1");
+        fs::write(root.join("file2.txt"), "content2").expect("write file2");
+        fs::write(root.join("subdir").join("nested.txt"), "nested").expect("write nested");
+
+        // Create in-memory database
+        let mut database = Database::open_in_memory().expect("open db");
+
+        // Scan directory to database
+        let count = scan_directory_to_db(&mut database, root, &[]).await.expect("scan");
+
+        // Should have found files and directories
+        assert!(
+            count >= 4,
+            "Should find at least 4 entries (root, subdir, 3 files), got {count}"
+        );
+
+        // Verify files are in database
+        let results = database.search_by_name("file1", 10).expect("search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "file1.txt");
+
+        let results = database.search_by_name("nested", 10).expect("search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "nested.txt");
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_with_exclusions() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        // Create test files
+        fs::write(root.join("keep.txt"), "keep").expect("write keep");
+        fs::write(root.join("skip.tmp"), "skip").expect("write skip");
+
+        let mut database = Database::open_in_memory().expect("open db");
+
+        // Scan with exclusion pattern
+        let _count = scan_directory_to_db(&mut database, root, &["*.tmp".to_string()])
+            .await
+            .expect("scan");
+
+        // keep.txt should be found
+        let results = database.search_by_name("keep", 10).expect("search");
+        assert_eq!(results.len(), 1);
+
+        // skip.tmp should not be found
+        let results = database.search_by_name("skip", 10).expect("search");
+        assert!(results.is_empty(), "Excluded file should not be in database");
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_empty_directory() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        let mut database = Database::open_in_memory().expect("open db");
+
+        // Scan empty directory
+        let count = scan_directory_to_db(&mut database, root, &[]).await.expect("scan");
+
+        // Should have at least the root directory itself
+        assert!(count >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_creates_volume() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        fs::write(root.join("test.txt"), "test").expect("write file");
+
+        let mut database = Database::open_in_memory().expect("open db");
+
+        scan_directory_to_db(&mut database, root, &[]).await.expect("scan");
+
+        // Verify a volume was created
+        let volumes = database.get_all_volumes().expect("get volumes");
+        assert_eq!(volumes.len(), 1);
+
+        // Volume serial should contain "path:"
+        assert!(
+            volumes[0].serial_number.starts_with("path:"),
+            "Volume serial should start with 'path:', got: {}",
+            volumes[0].serial_number
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_file_sizes() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        // Create files with known sizes
+        fs::write(root.join("small.txt"), "x").expect("write small");
+        fs::write(root.join("medium.txt"), "x".repeat(1000)).expect("write medium");
+
+        let mut database = Database::open_in_memory().expect("open db");
+
+        scan_directory_to_db(&mut database, root, &[]).await.expect("scan");
+
+        // Check file sizes
+        let results = database.search_by_exact_name("small.txt", 10).expect("search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].size, 1);
+
+        let results = database.search_by_exact_name("medium.txt", 10).expect("search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].size, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_directories_have_zero_size() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        fs::create_dir_all(root.join("mydir")).expect("create dir");
+        fs::write(root.join("mydir").join("file.txt"), "content").expect("write file");
+
+        let mut database = Database::open_in_memory().expect("open db");
+
+        scan_directory_to_db(&mut database, root, &[]).await.expect("scan");
+
+        // Find the directory
+        let results = database.search_by_exact_name("mydir", 10).expect("search");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_directory);
+        assert_eq!(results[0].size, 0, "Directory should have size 0");
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_nested_structure() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        // Create deeply nested structure
+        fs::create_dir_all(root.join("a").join("b").join("c").join("d")).expect("create dirs");
+        fs::write(root.join("a").join("b").join("c").join("d").join("deep.txt"), "deep").expect("write deep file");
+
+        let mut database = Database::open_in_memory().expect("open db");
+
+        scan_directory_to_db(&mut database, root, &[]).await.expect("scan");
+
+        // Verify deep file is found
+        let results = database.search_by_exact_name("deep.txt", 10).expect("search");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].full_path.contains("d"));
+    }
+
+    #[test]
+    fn test_format_number_consistent_comma_placement() {
+        // Verify commas are placed correctly every 3 digits from right
+        let test_cases = [
+            (1234u64, vec![1]),       // comma after 1st digit
+            (12345u64, vec![2]),      // comma after 2nd digit
+            (123456u64, vec![3]),     // comma after 3rd digit
+            (1234567u64, vec![1, 5]), // commas after 1st and 5th digits
+        ];
+
+        for (number, expected_comma_positions) in test_cases {
+            let formatted = format_number(number);
+            let comma_positions: Vec<usize> = formatted
+                .char_indices()
+                .filter(|(_, c)| *c == ',')
+                .map(|(i, _)| i)
+                .collect();
+
+            assert_eq!(
+                comma_positions, expected_comma_positions,
+                "Wrong comma positions for {number}: got {comma_positions:?}, expected {expected_comma_positions:?}"
+            );
+        }
     }
 }

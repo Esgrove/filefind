@@ -422,6 +422,7 @@ dependencies = [
  "postcard",
  "rusqlite",
  "serde",
+ "tempfile",
  "toml 0.9.9+spec-1.0.0",
  "tracing",
  "windows-sys 0.61.2",
