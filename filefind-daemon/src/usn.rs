@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use filefind_common::types::FileChangeEvent;
+use filefind::types::FileChangeEvent;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 

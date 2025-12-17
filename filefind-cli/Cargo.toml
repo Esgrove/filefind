@@ -13,7 +13,7 @@ name = "filefind"
 path = "src/main.rs"
 
 [dependencies]
-filefind-common = { workspace = true }
+filefind = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }

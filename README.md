@@ -19,7 +19,7 @@ Indexes millions of files in seconds and keeps the database updated in real-time
 
 This project is organized as a Cargo workspace with multiple crates:
 
-- **filefind-common**: Shared library with database schema, configuration, and utilities
+- **filefind**: Shared library with database schema, configuration, and utilities
 - **filefind-daemon**: Background service that indexes and monitors file systems
 - **filefind-cli**: Command-line interface for searching the file index
 
@@ -68,11 +68,17 @@ filefind "*.mp4"
 # Regex search
 filefind -r "IMG_\d{4}\.jpg"
 
-# Search in specific drive
-filefind -d D: "project"
+# Search in specific drives
+filefind -d C -d D "project"
 
-# Show full paths
+# Show only files
 filefind -f "config.toml"
+
+# Show only directories
+filefind -D "projects"
+
+# Detailed output with file sizes
+filefind -o detailed "*.mp4"
 ```
 
 ## Configuration
@@ -96,7 +102,7 @@ exclude = [
 scan_interval = 3600
 
 [cli]
-# Default output format: "simple", "detailed", "json"
+# Default output format: "simple" or "detailed"
 format = "simple"
 
 # Maximum number of results to show

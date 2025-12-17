@@ -14,9 +14,7 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use colored::Colorize;
-use filefind_common::{
-    Config, Database, PathType, classify_path, print_error, print_info, print_success, print_warning,
-};
+use filefind::{Config, Database, PathType, classify_path, print_error, print_info, print_success, print_warning};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -562,10 +560,10 @@ fn scan_ntfs_volume_filtered(
 /// Scan a directory and insert entries into the database.
 async fn scan_directory_to_db(database: &mut Database, path: &Path, exclude_patterns: &[String]) -> Result<usize> {
     // Create a dummy volume entry for non-NTFS paths
-    let volume_info = filefind_common::types::IndexedVolume::new(
+    let volume_info = filefind::types::IndexedVolume::new(
         format!("path:{}", path.display()),
         path.to_string_lossy().into_owned(),
-        filefind_common::types::VolumeType::Local,
+        filefind::types::VolumeType::Local,
     );
     let volume_id = database.upsert_volume(&volume_info)?;
 
@@ -628,13 +626,13 @@ fn show_stats(config: &Config) -> Result<()> {
     println!("  Files:        {}", format_number(stats.total_files));
     println!("  Directories:  {}", format_number(stats.total_directories));
     println!("  Volumes:      {}", stats.volume_count);
-    println!("  Total size:   {}", filefind_common::format_size(stats.total_size));
+    println!("  Total size:   {}", filefind::format_size(stats.total_size));
     println!();
     println!("  Database:     {}", database_path.display());
 
     // Show database file size
     if let Ok(metadata) = std::fs::metadata(&database_path) {
-        println!("  DB file size: {}", filefind_common::format_size(metadata.len()));
+        println!("  DB file size: {}", filefind::format_size(metadata.len()));
     }
 
     Ok(())

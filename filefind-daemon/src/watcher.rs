@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use filefind_common::types::FileChangeEvent;
+use filefind::types::FileChangeEvent;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -411,8 +411,8 @@ pub struct ScanEntry {
 impl ScanEntry {
     /// Convert to a `FileEntry` for database storage.
     #[must_use]
-    pub fn to_file_entry(&self, volume_id: i64) -> filefind_common::types::FileEntry {
-        filefind_common::types::FileEntry {
+    pub fn to_file_entry(&self, volume_id: i64) -> filefind::types::FileEntry {
+        filefind::types::FileEntry {
             id: None,
             volume_id,
             parent_id: None,

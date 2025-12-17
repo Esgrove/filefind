@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["filefind-cli", "filefind-common", "filefind-daemon"]
+members = ["filefind", "filefind-cli", "filefind-daemon"]
 
 [workspace.package]
 version = "0.1.0"
@@ -39,8 +39,8 @@ features = [
 ]
 
 # Internal crates
-[workspace.dependencies.filefind-common]
-path = "filefind-common"
+[workspace.dependencies.filefind]
+path = "filefind"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

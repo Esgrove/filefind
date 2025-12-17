@@ -9,9 +9,9 @@ use clap::{CommandFactory, Parser, ValueEnum};
 use clap_complete::Shell;
 use colored::Colorize;
 
-use filefind_common::config::{OutputFormat, UserConfig};
-use filefind_common::database::Database;
-use filefind_common::format_size;
+use filefind::config::{OutputFormat, UserConfig};
+use filefind::database::Database;
+use filefind::format_size;
 
 /// Fast file search using the filefind index
 #[allow(clippy::struct_excessive_bools)]
@@ -213,8 +213,8 @@ struct DisplayOptions {
 
 /// Display results in simple format.
 fn display_simple(
-    directories: &[&filefind_common::types::FileEntry],
-    files: &[&filefind_common::types::FileEntry],
+    directories: &[&filefind::types::FileEntry],
+    files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
 ) {
     if options.files_only {
@@ -240,12 +240,12 @@ fn display_simple(
 
 /// Display results grouped by directory.
 fn display_grouped(
-    directories: &[&filefind_common::types::FileEntry],
-    files: &[&filefind_common::types::FileEntry],
+    directories: &[&filefind::types::FileEntry],
+    files: &[&filefind::types::FileEntry],
     files_per_dir: usize,
 ) {
     // Group files by their parent directory
-    let mut files_by_dir: HashMap<String, Vec<&filefind_common::types::FileEntry>> = HashMap::new();
+    let mut files_by_dir: HashMap<String, Vec<&filefind::types::FileEntry>> = HashMap::new();
     for file in files {
         let parent = PathBuf::from(&file.full_path)
             .parent()
@@ -289,7 +289,7 @@ fn display_grouped(
 }
 
 /// Count files that are directly inside a directory.
-fn count_files_in_directory(files: &[&filefind_common::types::FileEntry], dir_path: &str) -> usize {
+fn count_files_in_directory(files: &[&filefind::types::FileEntry], dir_path: &str) -> usize {
     files
         .iter()
         .filter(|f| {
@@ -302,8 +302,8 @@ fn count_files_in_directory(files: &[&filefind_common::types::FileEntry], dir_pa
 
 /// Display results in detailed format.
 fn display_detailed(
-    directories: &[&filefind_common::types::FileEntry],
-    files: &[&filefind_common::types::FileEntry],
+    directories: &[&filefind::types::FileEntry],
+    files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
 ) {
     if options.files_only {

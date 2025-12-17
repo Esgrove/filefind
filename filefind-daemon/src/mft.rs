@@ -14,8 +14,8 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use filefind_common::is_network_path;
-use filefind_common::types::{FileEntry, IndexedVolume, VolumeType};
+use filefind::is_network_path;
+use filefind::types::{FileEntry, IndexedVolume, VolumeType};
 use tracing::{debug, info};
 
 #[cfg(windows)]

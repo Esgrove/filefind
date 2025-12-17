@@ -8,7 +8,7 @@ and the USN Journal for efficient incremental change detection.
 
 The project is organized as a Cargo workspace with multiple crates:
 
-- `filefind-common` - Shared library (config, database, types)
+- `filefind` - Shared library (config, database, types)
 - `filefind-daemon` - Background service that monitors file changes
 - `filefind-cli` - Command-line search tool
 
@@ -53,12 +53,12 @@ cargo run -p filefind-daemon -- scan C:\Users
 cargo fmt
 
 # Run tests for a specific crate
-cargo test -p filefind-common
+cargo test -p filefind
 ```
 
 ## Project Structure
 
-- `filefind-common/` - Shared library code
+- `filefind/` - Shared library code
     - `src/lib.rs` - Library root, re-exports
     - `src/config.rs` - User configuration file handling
     - `src/database.rs` - SQLite database operations

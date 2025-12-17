@@ -1,5 +1,5 @@
 [package]
-name = "filefind-common"
+name = "filefind"
 description = "Shared library for filefind - configuration, database, and common types"
 authors.workspace = true
 edition.workspace = true
