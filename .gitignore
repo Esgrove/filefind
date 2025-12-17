@@ -1,0 +1,23 @@
+/target
+
+# IDE
+/.idea
+/.vscode
+*.swp
+*.swo
+
+# Build artifacts
+*.exe
+*.pdb
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Log files
+*.log
+
+# Extra files
+/*.txt
+/*.csv

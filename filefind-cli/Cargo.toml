@@ -1,0 +1,27 @@
+[package]
+name = "filefind-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for filefind file search"
+
+[[bin]]
+name = "filefind"
+path = "src/main.rs"
+
+[dependencies]
+filefind-common = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+colored = { workspace = true }
+dirs = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

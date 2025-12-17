@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = ["filefind-cli", "filefind-common", "filefind-daemon"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Esgrove <esgrove@outlook.com>"]
+license = "MIT"
+repository = "https://github.com/Esgrove/filefind"
+rust-version = "1.91"
+
+[workspace.dependencies]
+# Shared across crates
+anyhow = "1.0"
+chrono = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+colored = "3.0"
+dirs = "6.0"
+dunce = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# File watching
+notify = "8.0"
+
+# Windows-specific
+[workspace.dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Ioctl",
+    "Win32_System_IO",
+]
+
+# Internal crates
+[workspace.dependencies.filefind-common]
+path = "filefind-common"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+enum_glob_use = "deny"
+unwrap_used = "deny"
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+lto = true
+codegen-units = 1
