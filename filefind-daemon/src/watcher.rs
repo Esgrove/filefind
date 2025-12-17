@@ -489,9 +489,9 @@ mod tests {
 
         // Check that we found the expected files
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert!(names.contains(&"file1.txt"), "Should find file1.txt, got: {:?}", names);
-        assert!(names.contains(&"file2.txt"), "Should find file2.txt, got: {:?}", names);
-        assert!(names.contains(&"subdir"), "Should find subdir, got: {:?}", names);
+        assert!(names.contains(&"file1.txt"), "Should find file1.txt, got: {names:?}");
+        assert!(names.contains(&"file2.txt"), "Should find file2.txt, got: {names:?}");
+        assert!(names.contains(&"subdir"), "Should find subdir, got: {names:?}");
 
         // Verify file entry properties
         let file1 = entries.iter().find(|e| e.name == "file1.txt").unwrap();

@@ -56,12 +56,7 @@ pub fn classify_path(path: &Path) -> PathType {
     if is_unc_path(path) {
         PathType::UncPath
     } else if is_mapped_network_drive(path) {
-        if is_drive_root(path) {
-            PathType::MappedNetworkDrive
-        } else {
-            // Subdirectory on mapped network drive - still try MFT with filtering
-            PathType::MappedNetworkDrive
-        }
+        PathType::MappedNetworkDrive
     } else if is_drive_root(path) {
         PathType::NtfsDriveRoot
     } else {
@@ -299,8 +294,8 @@ mod tests {
         assert_eq!(format_size(512), "512 B");
         assert_eq!(format_size(1024), "1.00 KB");
         assert_eq!(format_size(1536), "1.50 KB");
-        assert_eq!(format_size(1048576), "1.00 MB");
-        assert_eq!(format_size(1073741824), "1.00 GB");
-        assert_eq!(format_size(1099511627776), "1.00 TB");
+        assert_eq!(format_size(1_048_576), "1.00 MB");
+        assert_eq!(format_size(1_073_741_824), "1.00 GB");
+        assert_eq!(format_size(1_099_511_627_776), "1.00 TB");
     }
 }
