@@ -8,9 +8,10 @@ and the USN Journal for efficient incremental change detection.
 
 The project is organized as a Cargo workspace with multiple crates:
 
-- `filefind` - Shared library (config, database, types)
+- `filefind` - Shared library (config, database, types, IPC)
 - `filefind-daemon` - Background service that monitors file changes
 - `filefind-cli` - Command-line search tool
+- `filefind-tray` - System tray application for daemon control
 
 ## Build and Test Commands
 
@@ -44,14 +45,21 @@ cargo test -p filefind
     - `src/lib.rs` - Library root, re-exports
     - `src/config.rs` - User configuration file handling
     - `src/database.rs` - SQLite database operations
+    - `src/ipc.rs` - Inter-process communication for daemon control
     - `src/types.rs` - Common types and structures
 - `filefind-daemon/` - Background file monitoring service
     - `src/main.rs` - Daemon entry point
+    - `src/daemon.rs` - Core daemon logic and lifecycle
     - `src/mft.rs` - NTFS MFT reading
+    - `src/scanner.rs` - File scanning logic
     - `src/usn.rs` - USN Journal monitoring
     - `src/watcher.rs` - File system watcher for non-NTFS drives
 - `filefind-cli/` - Command-line search interface
     - `src/main.rs` - CLI entry point
+- `filefind-tray/` - System tray application
+    - `src/main.rs` - Tray app entry point
+    - `src/app.rs` - Main application logic and event loop
+    - `src/icons.rs` - Tray icon generation
 
 ## Code Organization
 
@@ -113,3 +121,17 @@ Remember to update the example config file when adding new config options.
 - SQLite for persistent storage
 - Indexed by filename for fast searches
 - Tracks volume serial numbers to handle drive reconnection
+
+### IPC (Inter-Process Communication)
+
+- Named pipes on Windows for daemon communication
+- Unix domain sockets on other platforms
+- JSON-serialized commands and responses
+- Supports: start, stop, status, rescan, pause, resume
+
+### System Tray Application
+
+- Minimal UI for daemon control
+- Shows daemon status via icon color (green=running, gray=stopped, orange=scanning)
+- Menu items: Start, Stop, Rescan, Open CLI, Quit
+- Tooltip shows indexed file/directory counts

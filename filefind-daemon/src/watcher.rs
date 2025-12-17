@@ -34,7 +34,6 @@ pub struct FileWatcher {
 }
 
 /// Configuration for the file watcher.
-#[expect(dead_code, reason = "fields used via Debug trait and future configuration")]
 #[derive(Debug, Clone)]
 pub struct WatcherConfig {
     /// Paths to watch.
@@ -319,7 +318,7 @@ fn scan_directory_sync(root: &Path, exclude_patterns: &[String]) -> Result<Vec<S
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                warn!("Error reading directory entry: {}", error);
+                warn!("Error reading directory entry: {error}");
                 continue;
             }
         };
@@ -328,7 +327,7 @@ fn scan_directory_sync(root: &Path, exclude_patterns: &[String]) -> Result<Vec<S
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
-                warn!("Error reading metadata for {}: {}", path.display(), error);
+                warn!("Error reading metadata for {}: {error}", path.display());
                 continue;
             }
         };

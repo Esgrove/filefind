@@ -2,10 +2,12 @@
 
 pub mod config;
 pub mod database;
+pub mod ipc;
 pub mod types;
 
 pub use config::{CONFIG_PATH, UserConfig as Config};
 pub use database::Database;
+pub use ipc::{DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, IpcClient};
 pub use types::{FileChangeEvent, FileEntry, IndexedVolume, VolumeType};
 
 use std::path::Path;
