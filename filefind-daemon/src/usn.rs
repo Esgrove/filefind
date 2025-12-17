@@ -665,7 +665,7 @@ mod tests {
             }
             Err(e) => {
                 // Expected if not running as admin
-                println!("Skipping test (requires admin): {}", e);
+                println!("Skipping test (requires admin): {e}");
             }
         }
     }
@@ -680,7 +680,7 @@ mod tests {
                 assert!(info.next_usn >= info.first_usn);
             }
             Err(e) => {
-                println!("Skipping test (requires admin): {}", e);
+                println!("Skipping test (requires admin): {e}");
             }
         }
     }

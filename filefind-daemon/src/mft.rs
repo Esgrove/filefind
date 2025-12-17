@@ -35,6 +35,12 @@ use windows::core::PCWSTR;
 /// Size of the buffer for reading MFT records.
 const MFT_BUFFER_SIZE: usize = 64 * 1024;
 
+/// Path patterns that should never be indexed.
+const IGNORED_PATH_PATTERNS: &[&str] = &[
+    "$Recycle", // Windows Recycle Bin
+    "#Recycle", // NAS Recycle Bin
+];
+
 /// File attribute flag for directories.
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
@@ -217,6 +223,16 @@ impl MftScanner {
         // Build directory tree and resolve full paths
         let file_entries = self.resolve_paths(mft_entries)?;
         info!("Resolved {} file entries with full paths", file_entries.len());
+
+        // Filter out system directories that should never be indexed
+        let file_entries: Vec<FileEntry> = file_entries
+            .into_iter()
+            .filter(|entry| {
+                !IGNORED_PATH_PATTERNS
+                    .iter()
+                    .any(|pattern| entry.full_path.contains(pattern))
+            })
+            .collect();
 
         // Filter entries if path filters are specified
         if path_filters.is_empty() {
