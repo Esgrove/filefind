@@ -27,72 +27,6 @@ const DEFAULT_USN_POLL_INTERVAL_MS: u64 = 1000;
 /// Default file watcher debounce interval in milliseconds.
 const DEFAULT_WATCHER_DEBOUNCE_MS: u64 = 500;
 
-/// Represents the running state of the daemon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DaemonState {
-    /// Daemon is not running.
-    Stopped,
-    /// Daemon is starting up (scanning, initializing monitors).
-    Starting,
-    /// Daemon is running and monitoring for changes.
-    Running,
-    /// Daemon is shutting down.
-    Stopping,
-}
-
-impl std::fmt::Display for DaemonState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stopped => write!(f, "stopped"),
-            Self::Starting => write!(f, "starting"),
-            Self::Running => write!(f, "running"),
-            Self::Stopping => write!(f, "stopping"),
-        }
-    }
-}
-
-/// Configuration for the daemon.
-#[derive(Debug, Clone)]
-pub struct DaemonOptions {
-    /// Run in foreground instead of daemonizing.
-    #[allow(dead_code)]
-    pub foreground: bool,
-
-    /// Force a full rescan on startup.
-    pub rescan: bool,
-
-    /// USN Journal poll interval in milliseconds.
-    #[allow(dead_code)]
-    pub usn_poll_interval_ms: u64,
-
-    /// File watcher debounce interval in milliseconds.
-    pub watcher_debounce_ms: u64,
-}
-
-impl Default for DaemonOptions {
-    fn default() -> Self {
-        Self {
-            foreground: false,
-            rescan: false,
-            usn_poll_interval_ms: DEFAULT_USN_POLL_INTERVAL_MS,
-            watcher_debounce_ms: DEFAULT_WATCHER_DEBOUNCE_MS,
-        }
-    }
-}
-
-/// Volume monitor that tracks a single volume.
-struct VolumeMonitor {
-    /// Drive letter for this volume.
-    #[allow(dead_code)]
-    drive_letter: char,
-
-    /// USN monitor for NTFS volumes (None for non-NTFS).
-    usn_monitor: Option<UsnMonitor>,
-
-    /// Last processed USN for this volume.
-    last_usn: i64,
-}
-
 /// The main daemon struct that manages file indexing.
 pub struct Daemon {
     /// Current daemon state.
@@ -115,6 +49,50 @@ pub struct Daemon {
 
     /// File watcher for non-NTFS paths.
     file_watcher: Option<FileWatcher>,
+}
+
+/// Configuration for the daemon.
+#[derive(Debug, Clone)]
+pub struct DaemonOptions {
+    /// Run in foreground instead of daemonizing.
+    #[allow(dead_code)]
+    pub foreground: bool,
+
+    /// Force a full rescan on startup.
+    pub rescan: bool,
+
+    /// USN Journal poll interval in milliseconds.
+    #[allow(dead_code)]
+    pub usn_poll_interval_ms: u64,
+
+    /// File watcher debounce interval in milliseconds.
+    pub watcher_debounce_ms: u64,
+}
+
+/// Volume monitor that tracks a single volume.
+struct VolumeMonitor {
+    /// Drive letter for this volume.
+    #[allow(dead_code)]
+    drive_letter: char,
+
+    /// USN monitor for NTFS volumes (None for non-NTFS).
+    usn_monitor: Option<UsnMonitor>,
+
+    /// Last processed USN for this volume.
+    last_usn: i64,
+}
+
+/// Represents the running state of the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonState {
+    /// Daemon is not running.
+    Stopped,
+    /// Daemon is starting up (scanning, initializing monitors).
+    Starting,
+    /// Daemon is running and monitoring for changes.
+    Running,
+    /// Daemon is shutting down.
+    Stopping,
 }
 
 impl Daemon {
@@ -381,6 +359,28 @@ impl Daemon {
         // TODO: Process file watcher events
 
         Ok(())
+    }
+}
+
+impl Default for DaemonOptions {
+    fn default() -> Self {
+        Self {
+            foreground: false,
+            rescan: false,
+            usn_poll_interval_ms: DEFAULT_USN_POLL_INTERVAL_MS,
+            watcher_debounce_ms: DEFAULT_WATCHER_DEBOUNCE_MS,
+        }
+    }
+}
+
+impl std::fmt::Display for DaemonState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => write!(f, "stopped"),
+            Self::Starting => write!(f, "starting"),
+            Self::Running => write!(f, "running"),
+            Self::Stopping => write!(f, "stopping"),
+        }
     }
 }
 

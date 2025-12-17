@@ -28,26 +28,8 @@ cargo test
 # Build all crates
 cargo build
 
-# Build release binaries
-cargo build --release
-
 # Build a specific crate
 cargo build -p filefind-cli
-
-# Run the CLI
-cargo run -p filefind-cli -- [args]
-
-# Run the daemon
-cargo run -p filefind-daemon -- [args]
-
-# Detect available NTFS volumes
-cargo run -p filefind-daemon -- detect
-
-# Scan all NTFS drives
-cargo run -p filefind-daemon -- scan
-
-# Scan a specific path
-cargo run -p filefind-daemon -- scan C:\Users
 
 # Format code
 cargo fmt
@@ -73,10 +55,19 @@ cargo test -p filefind
 
 ## Code Organization
 
-- Put all struct definitions before their implementations
-- Functions after implementations
-- In implementations, order public methods before private methods
-- In implementations, put associated functions last
+All Rust source files should be organized in this order:
+
+1. Structs (public before private)
+2. Enums (public before private)
+3. Trait implementations and impl blocks (in the order structs/enums are defined)
+4. Public functions
+5. Private functions
+6. Tests module
+
+Within implementation blocks:
+
+- Public methods before private methods
+- Associated functions (those without `self` parameter) last
 
 ## Code Style and Conventions
 

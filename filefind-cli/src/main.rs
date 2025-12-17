@@ -1,17 +1,22 @@
 //! Command-line interface for filefind file search.
 
+mod config;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
+use anyhow::bail;
 use clap::{CommandFactory, Parser, ValueEnum};
 use clap_complete::Shell;
 use colored::Colorize;
 
-use filefind::config::{OutputFormat, UserConfig};
+use filefind::config::OutputFormat;
 use filefind::database::Database;
-use filefind::format_size;
+use filefind::{format_size, print_error};
+
+use crate::config::{CliConfig, DisplayOptions};
 
 /// Fast file search using the filefind index
 #[allow(clippy::struct_excessive_bools)]
@@ -22,73 +27,60 @@ use filefind::format_size;
     name = env!("CARGO_BIN_NAME"),
     about = "Fast file search using the filefind index"
 )]
-struct Args {
+pub struct Args {
     /// Search pattern (supports glob patterns like *.txt)
-    pattern: Option<String>,
+    pub pattern: Option<String>,
 
     /// Use regex pattern for search
     #[arg(short = 'r', long)]
-    regex: bool,
+    pub regex: bool,
 
     /// Case-sensitive search
     #[arg(short = 'c', long)]
-    case: bool,
+    pub case: bool,
 
     /// Search only in specific drives. Accepts: "C", "C:", or "C:\"
     #[arg(short = 'd', long, name = "DRIVE", action = clap::ArgAction::Append)]
-    drive: Vec<String>,
+    pub drive: Vec<String>,
 
     /// Only show files
     #[arg(short = 'f', long)]
-    files: bool,
+    pub files: bool,
 
     /// Only show directories
     #[arg(short = 'D', long)]
-    dirs: bool,
+    pub dirs: bool,
 
-    /// Maximum number of file results to show (does not affect directories)
-    #[arg(short = 'n', long, name = "COUNT")]
-    limit: Option<usize>,
-
-    /// Maximum files to show per directory in grouped output
-    #[arg(long, name = "COUNT", default_value = "20")]
-    files_per_dir: usize,
+    /// Maximum number of files to show per directory
+    #[arg(short = 'n', long, name = "COUNT", default_value_t = 20)]
+    pub limit: usize,
 
     /// Output format.
     #[arg(short = 'o', long, value_enum)]
-    output: Option<OutputFormatArg>,
+    pub output: Option<OutputFormatArg>,
 
     /// Show index statistics
     #[arg(short = 's', long)]
-    stats: bool,
+    pub stats: bool,
 
     /// List all indexed volumes
     #[arg(short = 'l', long)]
-    list: bool,
+    pub list: bool,
 
     /// Generate shell completion
     #[arg(short = 'C', long, name = "SHELL")]
-    completion: Option<Shell>,
+    pub completion: Option<Shell>,
 
     /// Print verbose output.
     #[arg(short = 'V', long)]
-    verbose: bool,
+    pub verbose: bool,
 }
 
 /// Output format argument for CLI.
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum OutputFormatArg {
+pub enum OutputFormatArg {
     Simple,
     Detailed,
-}
-
-impl From<OutputFormatArg> for OutputFormat {
-    fn from(value: OutputFormatArg) -> Self {
-        match value {
-            OutputFormatArg::Simple => Self::Simple,
-            OutputFormatArg::Detailed => Self::Detailed,
-        }
-    }
 }
 
 fn main() -> Result<()> {
@@ -105,47 +97,37 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let config = UserConfig::load();
+    // Build the final config from user config and CLI args
+    let config = CliConfig::from_args(args);
 
-    // Open the database
-    let database_path = config.database_path();
-    if !database_path.exists() {
-        eprintln!("{}: Database not found at {}", "Error".red(), database_path.display());
-        eprintln!("Run the filefind daemon first to build the index.");
-        std::process::exit(1);
+    run(config)
+}
+
+/// Run the CLI with the given configuration.
+fn run(config: CliConfig) -> Result<()> {
+    if !config.database_path.exists() {
+        print_error!("Database not found at: {}", config.database_path.display());
+        bail!("Run the filefind daemon first to build the index");
     }
 
-    let database = Database::open(&database_path)?;
+    let database = Database::open(&config.database_path)?;
 
-    // Handle special commands
-    if args.stats {
+    if config.show_stats {
         return show_stats(&database);
     }
 
-    if args.list {
+    if config.list_volumes {
         return list_volumes(&database);
     }
 
-    // Require a search pattern for regular search
-    let Some(pattern) = args.pattern else {
-        eprintln!("{}: No search pattern provided", "Error".red());
-        eprintln!("Usage: filefind <pattern>");
-        eprintln!("       filefind --stats");
-        eprintln!("       filefind --list-volumes");
-        std::process::exit(1);
+    let Some(pattern) = config.pattern else {
+        print_error!("No search pattern provided");
+        bail!("Usage: filefind <pattern>\n       filefind --stats\n       filefind --list");
     };
 
-    // Determine output format
-    let output_format = args.output.map_or(config.cli.format, OutputFormat::from);
-
-    // Determine result limit (only applies to files)
-    let file_limit = args.limit.unwrap_or(config.cli.max_results);
-    let effective_file_limit = if file_limit == 0 { usize::MAX } else { file_limit };
-
-    // Perform the search - fetch more results since limit only applies to files
     let start_time = Instant::now();
 
-    let results = if args.regex {
+    let results = if config.regex {
         // For now, fall back to glob search - regex support can be added later
         database.search_by_name(&pattern, usize::MAX)?
     } else if pattern.contains('*') || pattern.contains('?') {
@@ -157,50 +139,31 @@ fn main() -> Result<()> {
     let search_duration = start_time.elapsed();
 
     // Filter results by drive
-    let results: Vec<_> = results
-        .into_iter()
-        .filter(|entry| {
-            if !args.drive.is_empty() {
-                let entry_drive = entry.full_path.chars().next().map(|c| c.to_ascii_uppercase());
-                let matches_drive = entry_drive.is_some_and(|drive_char| {
-                    args.drive
-                        .iter()
-                        .any(|d| d.chars().next().is_some_and(|c| c.to_ascii_uppercase() == drive_char))
-                });
-                if !matches_drive {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
+    let results: Vec<_> = filter_by_drives(results, &config.drives);
 
     // Separate directories and files
     let (directories, files): (Vec<_>, Vec<_>) = results.iter().partition(|e| e.is_directory);
 
-    // Apply limit only to files
-    let limited_files: Vec<_> = files.into_iter().take(effective_file_limit).collect();
-
     // Display results based on mode
     let display_options = DisplayOptions {
-        dirs_only: args.dirs,
-        files_only: args.files,
-        files_per_dir: args.files_per_dir,
+        directories_only: config.dirs_only,
+        files_only: config.files_only,
+        files_per_dir: config.files_per_dir,
     };
 
-    match output_format {
-        OutputFormat::Simple => display_simple(&directories, &limited_files, &display_options),
-        OutputFormat::Detailed => display_detailed(&directories, &limited_files, &display_options),
+    match config.output_format {
+        OutputFormat::Simple => display_simple(&directories, &files, &display_options),
+        OutputFormat::Detailed => display_detailed(&directories, &files, &display_options),
     }
 
     // Show search stats if verbose
-    if args.verbose {
-        let total_results = directories.len() + limited_files.len();
+    if config.verbose {
+        let total_results = directories.len() + files.len();
         eprintln!(
             "\n{} results ({} directories, {} files) in {:.2}ms",
             total_results,
             directories.len(),
-            limited_files.len(),
+            files.len(),
             search_duration.as_secs_f64() * 1000.0
         );
     }
@@ -208,11 +171,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Display options for formatting output.
-struct DisplayOptions {
-    dirs_only: bool,
-    files_only: bool,
-    files_per_dir: usize,
+/// Filter results to only include entries on specified drives.
+fn filter_by_drives(results: Vec<filefind::types::FileEntry>, drives: &[String]) -> Vec<filefind::types::FileEntry> {
+    if drives.is_empty() {
+        return results;
+    }
+
+    results
+        .into_iter()
+        .filter(|entry| {
+            let entry_drive = entry.full_path.chars().next().map(|c| c.to_ascii_uppercase());
+            entry_drive.is_some_and(|drive_char| {
+                drives
+                    .iter()
+                    .any(|d| d.chars().next().is_some_and(|c| c.to_ascii_uppercase() == drive_char))
+            })
+        })
+        .collect()
 }
 
 /// Display results in simple format.
@@ -226,7 +201,7 @@ fn display_simple(
         for file in files {
             println!("{}", file.full_path);
         }
-    } else if options.dirs_only {
+    } else if options.directories_only {
         // Dirs only mode: show full path with file count
         for directory in directories {
             let file_count = count_files_in_directory(files, &directory.full_path);
@@ -315,7 +290,7 @@ fn display_detailed(
             let size_str = format_size(file.size);
             println!("{} {:>10}  {}", "FILE".normal(), size_str, file.full_path.bold());
         }
-    } else if options.dirs_only {
+    } else if options.directories_only {
         for directory in directories {
             let file_count = count_files_in_directory(files, &directory.full_path);
             if file_count > 0 {
