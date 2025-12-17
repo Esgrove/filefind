@@ -33,9 +33,9 @@ struct Args {
     #[arg(short = 'c', long)]
     case: bool,
 
-    /// Search only in a specific drive ("C:" or "D:")
-    #[arg(short = 'd', long, name = "DRIVE")]
-    drive: Option<String>,
+    /// Search only in specific drives. Accepts: "C", "C:", or "C:\"
+    #[arg(short = 'd', long, name = "DRIVE", action = clap::ArgAction::Append)]
+    drive: Vec<String>,
 
     /// Only show files
     #[arg(short = 'f', long)]
@@ -55,7 +55,7 @@ struct Args {
 
     /// Show full paths instead of just filenames
     #[arg(short = 'p', long)]
-    full_path: bool,
+    path: bool,
 
     /// Show index statistics
     #[arg(short = 's', long)]
@@ -157,6 +157,19 @@ fn main() -> Result<()> {
     let results: Vec<_> = results
         .into_iter()
         .filter(|entry| {
+            // Filter by drive
+            if !args.drive.is_empty() {
+                let entry_drive = entry.full_path.chars().next().map(|c| c.to_ascii_uppercase());
+                let matches_drive = entry_drive.is_some_and(|drive_char| {
+                    args.drive
+                        .iter()
+                        .any(|d| d.chars().next().is_some_and(|c| c.to_ascii_uppercase() == drive_char))
+                });
+                if !matches_drive {
+                    return false;
+                }
+            }
+            // Filter by type
             if args.files && entry.is_directory {
                 return false;
             }
@@ -169,7 +182,7 @@ fn main() -> Result<()> {
 
     // Display results
     match output_format {
-        OutputFormat::Simple => display_simple(&results, args.full_path),
+        OutputFormat::Simple => display_simple(&results, args.path),
         OutputFormat::Detailed => display_detailed(&results),
         OutputFormat::Json => display_json(&results),
     }
