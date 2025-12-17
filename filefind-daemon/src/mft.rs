@@ -7,11 +7,14 @@
 //! # Requirements
 //! - Administrator privileges are required to read the MFT directly.
 //! - Only works on NTFS-formatted volumes.
+//! - Does NOT work on network drives, even if they report as NTFS.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
+use filefind_common::is_network_path;
 use filefind_common::types::{FileEntry, IndexedVolume, VolumeType};
 use tracing::{debug, info};
 
@@ -169,7 +172,36 @@ impl MftScanner {
     /// Returns an error if the MFT cannot be read.
     #[cfg(windows)]
     pub fn scan(&self) -> Result<Vec<FileEntry>> {
+        self.scan_filtered(&[])
+    }
+
+    /// Scan the MFT (non-Windows stub).
+    #[cfg(not(windows))]
+    pub fn scan(&self) -> Result<Vec<FileEntry>> {
+        bail!("MFT scanning is only supported on Windows");
+    }
+
+    /// Scan the MFT and return file entries filtered by path prefixes.
+    ///
+    /// If `path_filters` is empty, returns all entries.
+    /// Otherwise, only returns entries whose full path starts with one of the filter paths.
+    ///
+    /// This allows using fast MFT scanning even when only indexing specific directories.
+    ///
+    /// # Arguments
+    /// * `path_filters` - List of path prefixes to filter by (e.g., `["C:\\Users", "C:\\Projects"]`)
+    ///
+    /// # Errors
+    /// Returns an error if the MFT cannot be read.
+    #[cfg(windows)]
+    pub fn scan_filtered(&self, path_filters: &[String]) -> Result<Vec<FileEntry>> {
         info!("Starting MFT scan for {}:\\", self.drive_letter);
+
+        if path_filters.is_empty() {
+            info!("No path filters, returning all entries");
+        } else {
+            info!("Filtering to {} path(s): {:?}", path_filters.len(), path_filters);
+        }
 
         // Get NTFS volume data
         let volume_data = self.get_ntfs_volume_data()?;
@@ -186,12 +218,28 @@ impl MftScanner {
         let file_entries = self.resolve_paths(mft_entries)?;
         info!("Resolved {} file entries with full paths", file_entries.len());
 
-        Ok(file_entries)
+        // Filter entries if path filters are specified
+        if path_filters.is_empty() {
+            Ok(file_entries)
+        } else {
+            let filtered: Vec<FileEntry> = file_entries
+                .into_iter()
+                .filter(|entry| {
+                    let path_lower = entry.full_path.to_lowercase();
+                    path_filters
+                        .iter()
+                        .any(|filter| path_lower.starts_with(&filter.to_lowercase()))
+                })
+                .collect();
+
+            info!("Filtered to {} entries matching path filters", filtered.len());
+            Ok(filtered)
+        }
     }
 
-    /// Scan the MFT (non-Windows stub).
+    /// Scan the MFT with path filters (non-Windows stub).
     #[cfg(not(windows))]
-    pub fn scan(&self) -> Result<Vec<FileEntry>> {
+    pub fn scan_filtered(&self, _path_filters: &[String]) -> Result<Vec<FileEntry>> {
         bail!("MFT scanning is only supported on Windows");
     }
 
@@ -528,16 +576,24 @@ impl Drop for MftScanner {
     }
 }
 
-/// Detect all available NTFS volumes on the system.
+/// Detect all available local NTFS volumes on the system.
+///
+/// This excludes network drives, even if they report as NTFS.
+/// Network drives don't support MFT scanning since MFT is a local NTFS structure.
 #[cfg(windows)]
 pub fn detect_ntfs_volumes() -> Result<Vec<char>> {
     let mut volumes = Vec::new();
 
     for letter in 'A'..='Z' {
-        let root_path: Vec<u16> = format!("{letter}:\\")
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let drive_path = format!("{letter}:\\");
+
+        // Skip network drives - they can't use MFT scanning even if they report as NTFS
+        if is_network_path(Path::new(&drive_path)) {
+            debug!("Skipping network drive {letter}:");
+            continue;
+        }
+
+        let root_path: Vec<u16> = drive_path.encode_utf16().chain(std::iter::once(0)).collect();
 
         let mut fs_name_buffer = [0u16; 256];
 
@@ -559,6 +615,7 @@ pub fn detect_ntfs_volumes() -> Result<Vec<char>> {
                 .to_uppercase();
 
             if fs_name == "NTFS" {
+                info!("Detected local NTFS volume: {letter}:\\");
                 volumes.push(letter);
             }
         }

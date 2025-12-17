@@ -11,7 +11,6 @@ repository = "https://github.com/Esgrove/filefind"
 rust-version = "1.91"
 
 [workspace.dependencies]
-# Shared across crates
 anyhow = "1.0"
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
@@ -19,6 +18,8 @@ clap_complete = "4.5"
 colored = "3.0"
 dirs = "6.0"
 dunce = "1.0"
+notify = "8.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["full"] }
@@ -26,15 +27,9 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Database
-rusqlite = { version = "0.32", features = ["bundled"] }
-
-# File watching
-notify = "8.0"
-
 # Windows-specific
 [workspace.dependencies.windows]
-version = "0.61"
+version = "0.61.2"
 features = [
     "Win32_Foundation",
     "Win32_Security",

@@ -1,12 +1,26 @@
 # Example configuration for filefind
-# Copy file to ~/.config/filefind.toml
+# Copy this file to ~/.config/filefind.toml
 
 [daemon]
-# Drives to index (empty array = all available NTFS drives)
-# drives = ["C:", "D:", "E:"]
-
-# Network paths to index
-# network_paths = ["Z:"]
+# Paths to index (drives, directories, or network locations).
+#
+# Can include:
+# - Drive letters (e.g., "C:", "D:") - indexes entire drive using fast NTFS MFT scanning
+# - Specific directories (e.g., "C:\\Users", "D:\\Projects") - uses MFT scanning but
+#   only stores entries under the specified paths (fast AND selective)
+# - Mapped network drives (e.g., "Z:") - MFT scanning is attempted first; if not
+#   available (most NAS devices), falls back to directory walking automatically
+# - UNC paths (e.g., "\\\\server\\share") - uses directory walking (no drive letter)
+#
+# If empty or not specified, all available local NTFS drives will be auto-detected.
+# Network drives are NOT auto-detected - add them explicitly if needed.
+#
+# Examples:
+# paths = ["C:", "D:"]                                    # Index entire local drives
+# paths = ["C:\\Users\\Me\\Documents", "D:\\Projects"]   # Index specific directories
+# paths = ["C:", "Z:"]                                   # Local drive + mapped NAS
+# paths = ["C:", "\\\\nas\\media"]                       # Local drive + UNC path
+# paths = []
 
 # Directories to exclude from indexing
 exclude = [

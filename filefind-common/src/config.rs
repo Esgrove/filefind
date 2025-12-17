@@ -39,13 +39,17 @@ pub struct UserConfig {
 /// Configuration for the daemon process.
 #[derive(Debug, Deserialize)]
 pub struct DaemonConfig {
-    /// Drives to index (empty = all available NTFS drives).
+    /// Paths to index.
+    ///
+    /// Can include:
+    /// - Drive letters (e.g., "C:", "D:") - will use fast MFT scanning for NTFS
+    /// - Specific directories (e.g., "C:\\Users", "D:\\Projects")
+    /// - Network paths (e.g., "\\\\server\\share", "Z:")
+    ///
+    /// If empty, all available NTFS drives will be auto-detected and indexed.
+    /// Network paths are automatically detected and handled appropriately.
     #[serde(default)]
-    pub drives: Vec<String>,
-
-    /// Network paths to index.
-    #[serde(default)]
-    pub network_paths: Vec<String>,
+    pub paths: Vec<String>,
 
     /// Directories to exclude from indexing.
     #[serde(default)]
@@ -105,8 +109,7 @@ pub enum OutputFormat {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            drives: Vec::new(),
-            network_paths: Vec::new(),
+            paths: Vec::new(),
             exclude: vec![
                 "C:\\Windows".to_string(),
                 "C:\\$Recycle.Bin".to_string(),
@@ -227,7 +230,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = UserConfig::default();
-        assert!(config.daemon.drives.is_empty());
+        assert!(config.daemon.paths.is_empty());
         assert_eq!(config.daemon.scan_interval, 3600);
         assert_eq!(config.cli.max_results, 100);
         assert!(config.cli.color);
@@ -236,7 +239,7 @@ mod tests {
     #[test]
     fn test_load_nonexistent_config() {
         let config = UserConfig::load_from_path(Some(std::path::Path::new("/nonexistent/path.toml")));
-        assert!(config.daemon.drives.is_empty());
+        assert!(config.daemon.paths.is_empty());
     }
 
     #[test]

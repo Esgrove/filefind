@@ -6,6 +6,7 @@ mod mft;
 mod usn;
 mod watcher;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -13,7 +14,9 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use colored::Colorize;
-use filefind_common::{Config, Database, print_error, print_info, print_success, print_warning};
+use filefind_common::{
+    Config, Database, PathType, classify_path, print_error, print_info, print_success, print_warning,
+};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -192,89 +195,209 @@ async fn run_scan(path: Option<PathBuf>, force: bool, config: &Config) -> Result
     print_info!("Database: {}", database_path.display());
 
     if let Some(ref scan_path) = path {
-        // Scan a specific path
-        print_info!("Scanning: {}", scan_path.display());
+        // Scan a specific path provided via command line
+        scan_single_path(&mut database, scan_path, force, config).await?;
+    } else {
+        // Scan all configured paths or auto-detect NTFS volumes
+        scan_configured_paths(&mut database, force, config).await?;
+    }
 
-        if !scan_path.exists() {
-            print_error!("Path does not exist: {}", scan_path.display());
-            return Ok(());
-        }
+    Ok(())
+}
 
-        let start_time = Instant::now();
+/// Scan a single path, automatically detecting the appropriate scanning strategy.
+async fn scan_single_path(database: &mut Database, scan_path: &Path, force: bool, config: &Config) -> Result<()> {
+    print_info!("Scanning: {}", scan_path.display());
 
-        // Check if this is an NTFS volume root (e.g., "C:\")
-        let is_ntfs_root = is_ntfs_drive_root(scan_path);
+    if !scan_path.exists() {
+        print_error!("Path does not exist: {}", scan_path.display());
+        return Ok(());
+    }
 
-        if is_ntfs_root {
-            // Use MFT scanner for NTFS root
-            let drive_letter = scan_path.to_string_lossy().chars().next().unwrap_or('C');
+    let start_time = Instant::now();
+    let path_type = classify_path(scan_path);
 
-            print_info!("Detected NTFS volume, using MFT scanner...");
+    print_info!("Detected path type: {}", path_type);
 
-            match scan_ntfs_volume(&mut database, drive_letter, force) {
-                Ok(count) => {
-                    let elapsed = start_time.elapsed();
-                    print_success!(
-                        "Indexed {} entries from {}:\\ in {:.2}s",
-                        format_number(count as u64),
-                        drive_letter,
-                        elapsed.as_secs_f64()
-                    );
-                }
+    let count = match path_type {
+        PathType::NtfsDriveRoot => {
+            // Use MFT scanner for NTFS root drives (no filtering needed)
+            let drive_letter = scan_path
+                .to_string_lossy()
+                .chars()
+                .next()
+                .expect("Drive path should have at least one character");
+
+            print_info!("Using fast MFT scanner...");
+
+            match scan_ntfs_volume(database, drive_letter, force) {
+                Ok(count) => count,
                 Err(error) => {
                     print_error!("MFT scan failed: {}", error);
                     print_info!("Falling back to directory scan...");
-
-                    // Fall back to directory scan
-                    let count = scan_directory_to_db(&mut database, scan_path, &config.daemon.exclude).await?;
-                    let elapsed = start_time.elapsed();
-                    print_success!(
-                        "Indexed {} entries in {:.2}s",
-                        format_number(count as u64),
-                        elapsed.as_secs_f64()
-                    );
+                    scan_directory_to_db(database, scan_path, &config.daemon.exclude).await?
                 }
             }
-        } else {
-            // Use directory scanner for non-NTFS or subdirectories
-            let count = scan_directory_to_db(&mut database, scan_path, &config.daemon.exclude).await?;
-            let elapsed = start_time.elapsed();
-            print_success!(
-                "Indexed {} entries in {:.2}s",
-                format_number(count as u64),
-                elapsed.as_secs_f64()
-            );
         }
-    } else {
-        // Scan all configured drives or detect automatically
-        let drives_to_scan = if config.daemon.drives.is_empty() {
-            // Auto-detect NTFS volumes
-            print_info!("Auto-detecting NTFS volumes...");
-            detect_ntfs_volumes()?
-        } else {
-            // Use configured drives
-            config.daemon.drives.iter().filter_map(|d| d.chars().next()).collect()
-        };
+        PathType::LocalDirectory => {
+            // Use MFT scanner with path filter for local directories
+            let drive_letter = scan_path
+                .to_string_lossy()
+                .chars()
+                .next()
+                .expect("Path should have at least one character");
 
-        if drives_to_scan.is_empty() {
-            print_warning!("No drives to scan. Specify a path or configure drives in the config file.");
+            let path_filter = scan_path.to_string_lossy().to_string();
+            print_info!("Using fast MFT scanner with path filter...");
+
+            match scan_ntfs_volume_filtered(database, drive_letter, &[path_filter], force) {
+                Ok(count) => count,
+                Err(error) => {
+                    print_error!("MFT scan failed: {}", error);
+                    print_info!("Falling back to directory scan...");
+                    scan_directory_to_db(database, scan_path, &config.daemon.exclude).await?
+                }
+            }
+        }
+        PathType::MappedNetworkDrive => {
+            // Try MFT scanner for mapped network drives - some NAS devices support it
+            let drive_letter = scan_path
+                .to_string_lossy()
+                .chars()
+                .next()
+                .expect("Drive path should have at least one character");
+
+            print_info!("Attempting MFT scanner for mapped network drive...");
+
+            match scan_ntfs_volume(database, drive_letter, force) {
+                Ok(count) => count,
+                Err(error) => {
+                    print_info!("MFT scan not available: {}", error);
+                    print_info!("Using directory scanner...");
+                    scan_directory_to_db(database, scan_path, &config.daemon.exclude).await?
+                }
+            }
+        }
+        PathType::UncPath => {
+            // Use directory scanner for UNC paths (no drive letter for MFT)
+            print_info!("Using directory scanner for UNC path...");
+            scan_directory_to_db(database, scan_path, &config.daemon.exclude).await?
+        }
+    };
+
+    let elapsed = start_time.elapsed();
+    print_success!(
+        "Indexed {} entries in {:.2}s",
+        format_number(count as u64),
+        elapsed.as_secs_f64()
+    );
+
+    Ok(())
+}
+
+/// Scan all configured paths, or auto-detect NTFS volumes if none are configured.
+async fn scan_configured_paths(database: &mut Database, force: bool, config: &Config) -> Result<()> {
+    let total_start = Instant::now();
+    let mut total_entries = 0usize;
+
+    if config.daemon.paths.is_empty() {
+        // Auto-detect NTFS volumes when no paths are configured
+        print_info!("No paths configured, auto-detecting NTFS volumes...");
+        let ntfs_drives = detect_ntfs_volumes()?;
+
+        if ntfs_drives.is_empty() {
+            print_warning!("No NTFS volumes detected. Configure paths in the config file.");
             return Ok(());
         }
 
-        print_info!("Scanning drives: {:?}", drives_to_scan);
+        print_info!("Found NTFS volumes: {:?}", ntfs_drives);
 
-        let total_start = Instant::now();
-        let mut total_entries = 0usize;
+        for drive_letter in ntfs_drives {
+            let count = scan_ntfs_drive(database, drive_letter, force);
+            total_entries += count;
+        }
+    } else {
+        // Group paths by type and drive letter for efficient scanning
+        let mut ntfs_drive_roots: Vec<char> = Vec::new();
+        let mut local_paths_by_drive: HashMap<char, Vec<String>> = HashMap::new();
+        let mut mapped_network_drives: Vec<(char, PathBuf)> = Vec::new();
+        let mut unc_paths: Vec<PathBuf> = Vec::new();
 
-        for drive_letter in drives_to_scan {
-            print_info!("Scanning {}:\\...", drive_letter);
-            let drive_start = Instant::now();
+        for path_str in &config.daemon.paths {
+            let scan_path = PathBuf::from(path_str);
 
-            match scan_ntfs_volume(&mut database, drive_letter, force) {
+            if !scan_path.exists() {
+                print_warning!("Skipping non-existent path: {}", scan_path.display());
+                continue;
+            }
+
+            let path_type = classify_path(&scan_path);
+
+            match path_type {
+                PathType::NtfsDriveRoot => {
+                    let drive_letter = scan_path
+                        .to_string_lossy()
+                        .chars()
+                        .next()
+                        .expect("Drive path should have at least one character");
+                    ntfs_drive_roots.push(drive_letter);
+                }
+                PathType::LocalDirectory => {
+                    let drive_letter = scan_path
+                        .to_string_lossy()
+                        .chars()
+                        .next()
+                        .expect("Path should have at least one character");
+                    local_paths_by_drive
+                        .entry(drive_letter)
+                        .or_default()
+                        .push(path_str.clone());
+                }
+                PathType::MappedNetworkDrive => {
+                    let drive_letter = scan_path
+                        .to_string_lossy()
+                        .chars()
+                        .next()
+                        .expect("Drive path should have at least one character");
+                    mapped_network_drives.push((drive_letter, scan_path));
+                }
+                PathType::UncPath => {
+                    unc_paths.push(scan_path);
+                }
+            }
+        }
+
+        print_info!("Scanning {} configured path(s)...", config.daemon.paths.len());
+
+        // Scan full NTFS drives (no filtering)
+        for drive_letter in ntfs_drive_roots {
+            // Remove this drive from local_paths_by_drive since we're scanning the whole drive
+            local_paths_by_drive.remove(&drive_letter);
+
+            print_info!("Scanning {}:\\ (full drive)...", drive_letter);
+            let count = scan_ntfs_drive(database, drive_letter, force);
+            total_entries += count;
+        }
+
+        // Scan local directories grouped by drive using filtered MFT scanning
+        for (drive_letter, paths) in &local_paths_by_drive {
+            let path_start = Instant::now();
+
+            print_info!(
+                "Scanning {} path(s) on {}:\\ using MFT with filtering...",
+                paths.len(),
+                drive_letter
+            );
+
+            for path in paths {
+                print_info!("  - {}", path);
+            }
+
+            match scan_ntfs_volume_filtered(database, *drive_letter, paths, force) {
                 Ok(count) => {
-                    let elapsed = drive_start.elapsed();
+                    let elapsed = path_start.elapsed();
                     print_success!(
-                        "  {}:\\ - {} entries in {:.2}s",
+                        "  {}:\\ (filtered) - {} entries in {:.2}s",
                         drive_letter,
                         format_number(count as u64),
                         elapsed.as_secs_f64()
@@ -282,53 +405,147 @@ async fn run_scan(path: Option<PathBuf>, force: bool, config: &Config) -> Result
                     total_entries += count;
                 }
                 Err(error) => {
-                    print_error!("  {}:\\ - Failed: {}", drive_letter, error);
+                    print_error!("  MFT scan failed for {}:\\: {}", drive_letter, error);
+                    print_info!("  Falling back to directory scan...");
+
+                    // Fall back to scanning each path individually
+                    for path_str in paths {
+                        let scan_path = PathBuf::from(path_str);
+                        match scan_directory_to_db(database, &scan_path, &config.daemon.exclude).await {
+                            Ok(count) => {
+                                print_success!("    {} - {} entries", path_str, format_number(count as u64));
+                                total_entries += count;
+                            }
+                            Err(error) => {
+                                print_error!("    {} - Failed: {}", path_str, error);
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        let total_elapsed = total_start.elapsed();
-        println!();
-        print_success!(
-            "Total: {} entries indexed in {:.2}s",
-            format_number(total_entries as u64),
-            total_elapsed.as_secs_f64()
-        );
-    }
+        // Scan mapped network drives - try MFT first, fall back to directory walking
+        for (drive_letter, scan_path) in &mapped_network_drives {
+            let path_start = Instant::now();
 
-    Ok(())
-}
+            print_info!("Scanning {} (mapped network drive)...", scan_path.display());
+            print_info!("  Attempting MFT scanner...");
 
-/// Check if a path is an NTFS drive root (e.g., "C:\").
-fn is_ntfs_drive_root(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
+            match scan_ntfs_volume(database, *drive_letter, force) {
+                Ok(count) => {
+                    let elapsed = path_start.elapsed();
+                    print_success!(
+                        "  {} - {} entries in {:.2}s (MFT)",
+                        scan_path.display(),
+                        format_number(count as u64),
+                        elapsed.as_secs_f64()
+                    );
+                    total_entries += count;
+                }
+                Err(error) => {
+                    print_info!("  MFT not available: {}", error);
+                    print_info!("  Falling back to directory scanner...");
 
-    // Check if it's a drive root like "C:\" or "C:"
-    if path_str.len() <= 3 {
-        let chars: Vec<char> = path_str.chars().collect();
-        if !chars.is_empty() && chars[0].is_ascii_alphabetic() {
-            if chars.len() == 2 && chars[1] == ':' {
-                return true;
+                    match scan_directory_to_db(database, scan_path, &config.daemon.exclude).await {
+                        Ok(count) => {
+                            let elapsed = path_start.elapsed();
+                            print_success!(
+                                "  {} - {} entries in {:.2}s",
+                                scan_path.display(),
+                                format_number(count as u64),
+                                elapsed.as_secs_f64()
+                            );
+                            total_entries += count;
+                        }
+                        Err(error) => {
+                            print_error!("  {} - Failed: {}", scan_path.display(), error);
+                        }
+                    }
+                }
             }
-            if chars.len() == 3 && chars[1] == ':' && (chars[2] == '\\' || chars[2] == '/') {
-                return true;
+        }
+
+        // Scan UNC paths using directory walking (no drive letter for MFT)
+        for scan_path in &unc_paths {
+            let path_start = Instant::now();
+
+            print_info!("Scanning {} (UNC path)...", scan_path.display());
+
+            match scan_directory_to_db(database, scan_path, &config.daemon.exclude).await {
+                Ok(count) => {
+                    let elapsed = path_start.elapsed();
+                    print_success!(
+                        "  {} - {} entries in {:.2}s",
+                        scan_path.display(),
+                        format_number(count as u64),
+                        elapsed.as_secs_f64()
+                    );
+                    total_entries += count;
+                }
+                Err(error) => {
+                    print_error!("  {} - Failed: {}", scan_path.display(), error);
+                }
             }
         }
     }
 
-    false
+    let total_elapsed = total_start.elapsed();
+    println!();
+    print_success!(
+        "Total: {} entries indexed in {:.2}s",
+        format_number(total_entries as u64),
+        total_elapsed.as_secs_f64()
+    );
+
+    Ok(())
+}
+
+/// Scan an NTFS drive using MFT scanner, logging results.
+fn scan_ntfs_drive(database: &mut Database, drive_letter: char, force: bool) -> usize {
+    let drive_start = Instant::now();
+
+    match scan_ntfs_volume(database, drive_letter, force) {
+        Ok(count) => {
+            let elapsed = drive_start.elapsed();
+            print_success!(
+                "  {}:\\ - {} entries in {:.2}s",
+                drive_letter,
+                format_number(count as u64),
+                elapsed.as_secs_f64()
+            );
+            count
+        }
+        Err(error) => {
+            print_error!("  {}:\\ - Failed: {}", drive_letter, error);
+            0
+        }
+    }
 }
 
 /// Scan an NTFS volume using the MFT scanner.
-fn scan_ntfs_volume(database: &mut Database, drive_letter: char, _force: bool) -> Result<usize> {
+fn scan_ntfs_volume(database: &mut Database, drive_letter: char, force: bool) -> Result<usize> {
+    scan_ntfs_volume_filtered(database, drive_letter, &[], force)
+}
+
+/// Scan an NTFS volume using the MFT scanner with path filtering.
+///
+/// If `path_filters` is empty, indexes the entire drive.
+/// Otherwise, only indexes files under the specified paths.
+fn scan_ntfs_volume_filtered(
+    database: &mut Database,
+    drive_letter: char,
+    path_filters: &[String],
+    _force: bool,
+) -> Result<usize> {
     let scanner = MftScanner::new(drive_letter)?;
 
     // Get volume info
     let volume_info = scanner.get_volume_info()?;
     let volume_id = database.upsert_volume(&volume_info)?;
 
-    // Scan the MFT
-    let mut entries = scanner.scan()?;
+    // Scan the MFT with optional path filtering
+    let mut entries = scanner.scan_filtered(path_filters)?;
 
     // Update volume_id for all entries
     for entry in &mut entries {
