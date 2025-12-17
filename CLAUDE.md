@@ -50,6 +50,7 @@ cargo test -p filefind
 - `filefind-daemon/` - Background file monitoring service
     - `src/main.rs` - Daemon entry point
     - `src/daemon.rs` - Core daemon logic and lifecycle
+    - `src/ipc_server.rs` - IPC server for handling client commands
     - `src/mft.rs` - NTFS MFT reading
     - `src/scanner.rs` - File scanning logic
     - `src/usn.rs` - USN Journal monitoring
@@ -127,7 +128,15 @@ Remember to update the example config file when adding new config options.
 - Named pipes on Windows for daemon communication
 - Unix domain sockets on other platforms
 - JSON-serialized commands and responses
-- Supports: start, stop, status, rescan, pause, resume
+- Supports: stop, status, rescan, pause, resume, ping
+
+The IPC system has two parts:
+
+- **Client** (`filefind/src/ipc.rs`): Used by CLI and tray app to send commands
+- **Server** (`filefind-daemon/src/ipc_server.rs`): Runs in daemon, handles incoming commands
+
+The server runs in a dedicated thread and communicates with the main daemon loop via tokio channels.
+Shared state (`IpcServerState`) uses atomic types to safely share status information between threads.
 
 ### System Tray Application
 

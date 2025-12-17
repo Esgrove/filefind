@@ -7,7 +7,10 @@ pub mod types;
 
 pub use config::{CONFIG_PATH, UserConfig as Config};
 pub use database::Database;
-pub use ipc::{DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, IpcClient};
+pub use ipc::{
+    DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, IpcClient, deserialize_command, deserialize_response,
+    get_ipc_path, read_message, serialize_command, serialize_response, write_message,
+};
 pub use types::{FileChangeEvent, FileEntry, IndexedVolume, VolumeType};
 
 use std::path::Path;

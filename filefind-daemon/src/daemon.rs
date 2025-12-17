@@ -13,10 +13,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use filefind::{Config, Database, FileChangeEvent, FileEntry, print_error, print_info, print_success, print_warning};
+use filefind::{
+    Config, DaemonStateInfo, Database, FileChangeEvent, FileEntry, IpcClient, print_error, print_info, print_success,
+    print_warning,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use crate::ipc_server::{IpcServerState, IpcToDaemon, spawn_ipc_server};
 use crate::mft::detect_ntfs_volumes;
 use crate::scanner::{format_number, run_scan};
 use crate::usn::UsnMonitor;
@@ -56,6 +60,15 @@ pub struct Daemon {
 
     /// Cache of MFT file reference to full path (for path resolution).
     path_cache: HashMap<u64, String>,
+
+    /// Shared state for IPC server.
+    ipc_state: Arc<IpcServerState>,
+
+    /// Receiver for IPC commands.
+    ipc_receiver: Option<mpsc::Receiver<IpcToDaemon>>,
+
+    /// Whether indexing is currently paused.
+    is_paused: bool,
 }
 
 /// Configuration for the daemon.
@@ -116,6 +129,9 @@ impl Daemon {
             file_watcher: None,
             watcher_receiver: None,
             path_cache: HashMap::new(),
+            ipc_state: Arc::new(IpcServerState::new()),
+            ipc_receiver: None,
+            is_paused: false,
         }
     }
 
@@ -150,9 +166,14 @@ impl Daemon {
         }
 
         self.state = DaemonState::Starting;
+        self.ipc_state.state.store(DaemonStateInfo::Starting);
         self.shutdown.store(false, Ordering::Relaxed);
 
         print_info!("Starting filefind daemon...");
+
+        // Start IPC server
+        let ipc_receiver = spawn_ipc_server(Arc::clone(&self.ipc_state), Arc::clone(&self.shutdown));
+        self.ipc_receiver = Some(ipc_receiver);
 
         // Initialize database
         let database_path = self.config.database_path();
@@ -165,10 +186,21 @@ impl Daemon {
 
         self.database = Some(database);
 
+        // Update IPC state with database stats
+        if let Some(ref database) = self.database {
+            self.ipc_state.update_from_database(database);
+        }
+
         // Perform initial scan if requested or if database is empty
         if self.options.rescan || self.should_perform_initial_scan()? {
+            self.ipc_state.state.store(DaemonStateInfo::Scanning);
             print_info!("Performing initial scan...");
             run_scan(None, self.options.rescan, &self.config).await?;
+
+            // Update stats after scan
+            if let Some(ref database) = self.database {
+                self.ipc_state.update_from_database(database);
+            }
         }
 
         // Build path cache for USN path resolution
@@ -177,7 +209,13 @@ impl Daemon {
         // Start monitoring
         self.start_monitors().await?;
 
+        // Update monitored volumes count
+        self.ipc_state
+            .monitored_volumes
+            .store(self.volume_monitors.len() as u64, Ordering::Relaxed);
+
         self.state = DaemonState::Running;
+        self.ipc_state.state.store(DaemonStateInfo::Running);
         print_success!("Daemon started successfully");
 
         Ok(())
@@ -192,6 +230,7 @@ impl Daemon {
         }
 
         self.state = DaemonState::Stopping;
+        self.ipc_state.state.store(DaemonStateInfo::Stopping);
         self.shutdown.store(true, Ordering::Relaxed);
 
         print_info!("Stopping daemon...");
@@ -212,10 +251,14 @@ impl Daemon {
         }
         self.file_watcher = None;
 
+        // Close IPC receiver
+        self.ipc_receiver = None;
+
         // Close database
         self.database = None;
 
         self.state = DaemonState::Stopped;
+        self.ipc_state.state.store(DaemonStateInfo::Stopped);
         print_success!("Daemon stopped");
 
         Ok(())
@@ -233,14 +276,60 @@ impl Daemon {
 
         // Main loop - wait for shutdown signal
         while !self.shutdown.load(Ordering::Relaxed) {
-            // Process any pending changes
-            self.process_changes().await?;
+            // Process IPC commands
+            self.process_ipc_commands().await?;
+
+            // Process any pending file changes (unless paused)
+            if !self.is_paused {
+                self.process_changes().await?;
+            }
 
             // Small sleep to prevent busy-waiting
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         self.stop().await?;
+
+        Ok(())
+    }
+
+    /// Process incoming IPC commands.
+    async fn process_ipc_commands(&mut self) -> Result<()> {
+        let Some(ref mut receiver) = self.ipc_receiver else {
+            return Ok(());
+        };
+
+        // Process all available commands without blocking
+        while let Ok(command) = receiver.try_recv() {
+            match command {
+                IpcToDaemon::Stop => {
+                    info!("Received stop command via IPC");
+                    self.shutdown.store(true, Ordering::Relaxed);
+                }
+                IpcToDaemon::Rescan => {
+                    info!("Received rescan command via IPC");
+                    self.ipc_state.state.store(DaemonStateInfo::Scanning);
+                    if let Err(error) = run_scan(None, true, &self.config).await {
+                        error!("Rescan failed: {}", error);
+                    }
+                    // Update stats after rescan
+                    if let Some(ref database) = self.database {
+                        self.ipc_state.update_from_database(database);
+                    }
+                    self.ipc_state.state.store(DaemonStateInfo::Running);
+                }
+                IpcToDaemon::Pause => {
+                    info!("Received pause command via IPC");
+                    self.is_paused = true;
+                    self.ipc_state.is_paused.store(true, Ordering::Relaxed);
+                }
+                IpcToDaemon::Resume => {
+                    info!("Received resume command via IPC");
+                    self.is_paused = false;
+                    self.ipc_state.is_paused.store(false, Ordering::Relaxed);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -655,13 +744,28 @@ pub fn start_daemon(foreground: bool, rescan: bool, config: &Config) -> Result<(
 pub fn stop_daemon() -> Result<()> {
     print_info!("Stopping daemon...");
 
-    // TODO: Implement proper daemon stop logic
-    // - Find running daemon process (via PID file or named pipe)
-    // - Send stop signal
-    // - Wait for graceful shutdown
+    let client = IpcClient::new();
 
-    print_warning!("Daemon stop not yet implemented");
-    print_info!("If running in foreground, press Ctrl+C to stop.");
+    if !client.is_daemon_running() {
+        print_warning!("Daemon is not running");
+        return Ok(());
+    }
+
+    match client.stop_daemon() {
+        Ok(()) => {
+            print_success!("Stop command sent to daemon");
+            // Wait a moment and check if it stopped
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if client.is_daemon_running() {
+                print_warning!("Daemon is still running - it may take a moment to shut down");
+            } else {
+                print_success!("Daemon stopped");
+            }
+        }
+        Err(error) => {
+            print_error!("Failed to stop daemon: {}", error);
+        }
+    }
 
     Ok(())
 }
@@ -671,36 +775,56 @@ pub fn show_status(config: &Config) -> Result<()> {
     println!("{}", "Filefind Daemon Status".bold());
     println!();
 
-    // TODO: Implement proper status check
-    // - Check if daemon process is running (via PID file or named pipe)
-    // - Show uptime, memory usage
-    // - Show indexing progress if active
+    let client = IpcClient::new();
 
-    let database_path = config.database_path();
+    // Try to get status from running daemon
+    if let Ok(status) = client.get_status() {
+        let state_str = match status.state {
+            DaemonStateInfo::Running => "running".green(),
+            DaemonStateInfo::Scanning => "scanning".yellow(),
+            DaemonStateInfo::Starting => "starting".yellow(),
+            DaemonStateInfo::Stopping => "stopping".yellow(),
+            DaemonStateInfo::Stopped => "stopped".red(),
+        };
 
-    if database_path.exists() {
-        let database = Database::open(&database_path)?;
-        let stats = database.get_stats()?;
-
-        println!("  State:        {}", "unknown".yellow());
-        println!("  Files:        {}", format_number(stats.total_files));
-        println!("  Directories:  {}", format_number(stats.total_directories));
-        println!("  Volumes:      {}", stats.volume_count);
-        println!();
-        println!("  Database:     {}", database_path.display());
-
-        if let Ok(metadata) = std::fs::metadata(&database_path) {
-            println!("  DB size:      {}", filefind::format_size(metadata.len()));
+        println!("  State:        {state_str}");
+        println!("  Files:        {}", format_number(status.indexed_files));
+        println!("  Directories:  {}", format_number(status.indexed_directories));
+        println!("  Volumes:      {}", status.monitored_volumes);
+        println!("  Uptime:       {}s", status.uptime_seconds);
+        if status.is_paused {
+            println!("  Paused:       {}", "yes".yellow());
         }
     } else {
-        println!("  State:        {}", "not initialized".yellow());
-        println!();
-        println!("  Database not found at: {}", database_path.display());
-        println!("  Run 'filefindd scan' to create the index.");
+        // Daemon not running - show database info if available
+        println!("  State:        {}", "not running".red());
+
+        let database_path = config.database_path();
+        if database_path.exists() {
+            let database = Database::open(&database_path)?;
+            let stats = database.get_stats()?;
+
+            println!();
+            println!("  {} (from database)", "Index Statistics".bold());
+            println!("  Files:        {}", format_number(stats.total_files));
+            println!("  Directories:  {}", format_number(stats.total_directories));
+            println!("  Volumes:      {}", stats.volume_count);
+        } else {
+            println!();
+            println!("  Database not found at: {}", database_path.display());
+            println!("  Run 'filefindd scan' to create the index.");
+        }
     }
 
     println!();
-    print_warning!("Status check not fully implemented - cannot detect running daemon.");
+
+    let database_path = config.database_path();
+    if database_path.exists() {
+        println!("  Database:     {}", database_path.display());
+        if let Ok(metadata) = std::fs::metadata(&database_path) {
+            println!("  DB size:      {}", filefind::format_size(metadata.len()));
+        }
+    }
 
     Ok(())
 }

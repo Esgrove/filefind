@@ -3,8 +3,10 @@
 //! This module provides a simple IPC mechanism using named pipes (Windows)
 //! or Unix domain sockets (other platforms) for communication between
 //! the daemon and client applications (CLI, tray app).
+//!
+//! Uses postcard binary serialization for efficient, compact messages.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -17,8 +19,11 @@ pub const IPC_TIMEOUT: Duration = Duration::from_secs(5);
 /// Name of the named pipe (Windows) or socket file (Unix).
 pub const IPC_PIPE_NAME: &str = "filefind-daemon";
 
+/// Maximum message size in bytes.
+const MAX_MESSAGE_SIZE: usize = 1024;
+
 /// Commands that can be sent to the daemon.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DaemonCommand {
     /// Request daemon to stop.
     Stop,
@@ -120,6 +125,88 @@ pub fn get_ipc_path() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("/tmp"));
         runtime_dir.join(format!("{IPC_PIPE_NAME}.sock"))
     }
+}
+
+/// Serialize a command to bytes for transmission.
+///
+/// Format: [length: u16 LE][postcard data...]
+///
+/// # Errors
+///
+/// Returns an error if serialization fails.
+pub fn serialize_command(command: &DaemonCommand) -> Result<Vec<u8>> {
+    let data = postcard::to_stdvec(command).context("Failed to serialize command")?;
+    let len = u16::try_from(data.len()).context("Command too large")?;
+    let mut buffer = Vec::with_capacity(2 + data.len());
+    buffer.extend_from_slice(&len.to_le_bytes());
+    buffer.extend_from_slice(&data);
+    Ok(buffer)
+}
+
+/// Deserialize a command from bytes.
+///
+/// # Errors
+///
+/// Returns an error if deserialization fails.
+pub fn deserialize_command(bytes: &[u8]) -> Result<DaemonCommand> {
+    postcard::from_bytes(bytes).context("Failed to deserialize command")
+}
+
+/// Serialize a response to bytes for transmission.
+///
+/// Format: [length: u16 LE][postcard data...]
+///
+/// # Errors
+///
+/// Returns an error if serialization fails.
+pub fn serialize_response(response: &DaemonResponse) -> Result<Vec<u8>> {
+    let data = postcard::to_stdvec(response).context("Failed to serialize response")?;
+    let len = u16::try_from(data.len()).context("Response too large")?;
+    let mut buffer = Vec::with_capacity(2 + data.len());
+    buffer.extend_from_slice(&len.to_le_bytes());
+    buffer.extend_from_slice(&data);
+    Ok(buffer)
+}
+
+/// Deserialize a response from bytes.
+///
+/// # Errors
+///
+/// Returns an error if deserialization fails.
+pub fn deserialize_response(bytes: &[u8]) -> Result<DaemonResponse> {
+    postcard::from_bytes(bytes).context("Failed to deserialize response")
+}
+
+/// Write a length-prefixed message to a writer.
+///
+/// # Errors
+///
+/// Returns an error if writing fails.
+pub fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
+    writer.write_all(data)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Read a length-prefixed message from a reader.
+///
+/// # Errors
+///
+/// Returns an error if reading fails or message is too large.
+pub fn read_message<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
+    // Read length prefix
+    let mut len_bytes = [0u8; 2];
+    reader.read_exact(&mut len_bytes)?;
+    let len = u16::from_le_bytes(len_bytes) as usize;
+
+    if len > MAX_MESSAGE_SIZE {
+        anyhow::bail!("Message too large: {len} bytes");
+    }
+
+    // Read message data
+    let mut buffer = vec![0u8; len];
+    reader.read_exact(&mut buffer)?;
+    Ok(buffer)
 }
 
 /// IPC client for communicating with the daemon.
@@ -231,7 +318,7 @@ impl IpcClient {
     }
 
     #[cfg(windows)]
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    #[allow(clippy::unused_self)]
     fn send_command_windows(&self, command: DaemonCommand) -> Result<DaemonResponse> {
         use std::fs::OpenOptions;
         use std::os::windows::fs::OpenOptionsExt;
@@ -249,17 +336,12 @@ impl IpcClient {
             .context("Failed to connect to daemon - is it running?")?;
 
         // Serialize and send command
-        let command_json = serde_json::to_string(&command)?;
-        writeln!(file, "{command_json}")?;
-        file.flush()?;
+        let command_bytes = serialize_command(&command)?;
+        write_message(&mut file, &command_bytes)?;
 
         // Read response
-        let mut reader = BufReader::new(&file);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line)?;
-
-        let response: DaemonResponse = serde_json::from_str(response_line.trim())?;
-        Ok(response)
+        let response_bytes = read_message(&mut file)?;
+        deserialize_response(&response_bytes)
     }
 
     #[cfg(not(windows))]
@@ -269,24 +351,18 @@ impl IpcClient {
         let socket_path = get_ipc_path();
 
         // Connect to Unix domain socket
-        let stream = UnixStream::connect(&socket_path).context("Failed to connect to daemon - is it running?")?;
+        let mut stream = UnixStream::connect(&socket_path).context("Failed to connect to daemon - is it running?")?;
 
         stream.set_read_timeout(Some(self.timeout))?;
         stream.set_write_timeout(Some(self.timeout))?;
 
         // Serialize and send command
-        let command_json = serde_json::to_string(&command)?;
-        let mut stream_write = &stream;
-        writeln!(stream_write, "{command_json}")?;
-        stream_write.flush()?;
+        let command_bytes = serialize_command(&command)?;
+        write_message(&mut stream, &command_bytes)?;
 
         // Read response
-        let mut reader = BufReader::new(&stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line)?;
-
-        let response: DaemonResponse = serde_json::from_str(response_line.trim())?;
-        Ok(response)
+        let response_bytes = read_message(&mut stream)?;
+        deserialize_response(&response_bytes)
     }
 }
 
@@ -294,42 +370,6 @@ impl Default for IpcClient {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Serialize a command to JSON for transmission.
-///
-/// # Errors
-///
-/// Returns an error if serialization fails.
-pub fn serialize_command(command: &DaemonCommand) -> Result<String> {
-    serde_json::to_string(command).context("Failed to serialize command")
-}
-
-/// Deserialize a command from JSON.
-///
-/// # Errors
-///
-/// Returns an error if the JSON is invalid or cannot be parsed.
-pub fn deserialize_command(json: &str) -> Result<DaemonCommand> {
-    serde_json::from_str(json).context("Failed to deserialize command")
-}
-
-/// Serialize a response to JSON for transmission.
-///
-/// # Errors
-///
-/// Returns an error if serialization fails.
-pub fn serialize_response(response: &DaemonResponse) -> Result<String> {
-    serde_json::to_string(response).context("Failed to serialize response")
-}
-
-/// Deserialize a response from JSON.
-///
-/// # Errors
-///
-/// Returns an error if the JSON is invalid or cannot be parsed.
-pub fn deserialize_response(json: &str) -> Result<DaemonResponse> {
-    serde_json::from_str(json).context("Failed to deserialize response")
 }
 
 #[cfg(test)]
@@ -348,8 +388,9 @@ mod tests {
         ];
 
         for command in commands {
-            let json = serialize_command(&command).expect("serialize");
-            let parsed = deserialize_command(&json).expect("deserialize");
+            let bytes = serialize_command(&command).expect("serialize");
+            // Skip the 2-byte length prefix
+            let parsed = deserialize_command(&bytes[2..]).expect("deserialize");
             assert_eq!(command, parsed);
         }
     }
@@ -364,8 +405,9 @@ mod tests {
         ];
 
         for response in responses {
-            let json = serialize_response(&response).expect("serialize");
-            let parsed = deserialize_response(&json).expect("deserialize");
+            let bytes = serialize_response(&response).expect("serialize");
+            // Skip the 2-byte length prefix
+            let parsed = deserialize_response(&bytes[2..]).expect("deserialize");
             assert_eq!(response, parsed);
         }
     }
@@ -407,5 +449,28 @@ mod tests {
         let custom_timeout = Duration::from_secs(10);
         let client_custom = IpcClient::with_timeout(custom_timeout);
         assert_eq!(client_custom.timeout, custom_timeout);
+    }
+
+    #[test]
+    fn test_message_size_compact() {
+        // Verify that postcard produces compact output
+        let command = DaemonCommand::Ping;
+        let bytes = serialize_command(&command).expect("serialize");
+        // Length prefix (2) + minimal enum representation (1)
+        assert!(
+            bytes.len() <= 4,
+            "Command should be very compact: {} bytes",
+            bytes.len()
+        );
+
+        let status = DaemonStatus::default();
+        let response = DaemonResponse::Status(status);
+        let bytes = serialize_response(&response).expect("serialize");
+        // Should be much smaller than JSON
+        assert!(
+            bytes.len() < 50,
+            "Status response should be compact: {} bytes",
+            bytes.len()
+        );
     }
 }

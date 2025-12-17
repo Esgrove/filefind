@@ -3,6 +3,7 @@
 //! This daemon monitors file systems and keeps the file index up to date.
 
 mod daemon;
+mod ipc_server;
 mod mft;
 mod scanner;
 mod usn;
