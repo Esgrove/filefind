@@ -19,9 +19,6 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 colored = { workspace = true }
-dirs = { workspace = true }
-rusqlite = { workspace = true }
-tokio = { workspace = true }
 
 [lints]
 workspace = true

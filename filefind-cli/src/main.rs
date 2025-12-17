@@ -12,7 +12,7 @@ use filefind_common::config::{OutputFormat, UserConfig};
 use filefind_common::database::Database;
 use filefind_common::format_size;
 
-/// Fast file search using the filefind index.
+/// Fast file search using the filefind index
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Parser)]
 #[command(
@@ -22,55 +22,55 @@ use filefind_common::format_size;
     about = "Fast file search using the filefind index"
 )]
 struct Args {
-    /// Search pattern (supports glob patterns like *.txt).
+    /// Search pattern (supports glob patterns like *.txt)
     pattern: Option<String>,
 
-    /// Use regex pattern instead of glob.
-    #[arg(short, long)]
+    /// Use regex pattern for search
+    #[arg(short = 'r', long)]
     regex: bool,
 
-    /// Case-sensitive search.
+    /// Case-sensitive search
     #[arg(short = 'c', long)]
-    case_sensitive: bool,
+    case: bool,
 
-    /// Search only in specific drive (e.g., "C:" or "D:").
-    #[arg(short, long, name = "DRIVE")]
+    /// Search only in a specific drive ("C:" or "D:")
+    #[arg(short = 'd', long, name = "DRIVE")]
     drive: Option<String>,
 
-    /// Show only files (exclude directories).
+    /// Only show files
     #[arg(short = 'f', long)]
-    files_only: bool,
+    files: bool,
 
-    /// Show only directories (exclude files).
+    /// Only show directories
     #[arg(short = 'D', long)]
-    directories_only: bool,
+    dirs: bool,
 
-    /// Maximum number of results to show.
+    /// Maximum number of results to show
     #[arg(short = 'n', long, name = "COUNT")]
     limit: Option<usize>,
 
     /// Output format.
-    #[arg(short, long, value_enum)]
+    #[arg(short = 'o', long, value_enum)]
     output: Option<OutputFormatArg>,
 
-    /// Show full paths instead of just filenames.
+    /// Show full paths instead of just filenames
     #[arg(short = 'p', long)]
     full_path: bool,
 
-    /// Show index statistics.
-    #[arg(short, long)]
+    /// Show index statistics
+    #[arg(short = 's', long)]
     stats: bool,
 
-    /// List all indexed volumes.
+    /// List all indexed volumes
     #[arg(short = 'l', long)]
-    list_volumes: bool,
+    list: bool,
 
-    /// Generate shell completion.
-    #[arg(long, name = "SHELL")]
+    /// Generate shell completion
+    #[arg(short = 'C', long, name = "SHELL")]
     completion: Option<Shell>,
 
     /// Print verbose output.
-    #[arg(short, long)]
+    #[arg(short = 'V', long)]
     verbose: bool,
 }
 
@@ -119,7 +119,7 @@ fn main() -> Result<()> {
         return show_stats(&database);
     }
 
-    if args.list_volumes {
+    if args.list {
         return list_volumes(&database);
     }
 
@@ -157,10 +157,10 @@ fn main() -> Result<()> {
     let results: Vec<_> = results
         .into_iter()
         .filter(|entry| {
-            if args.files_only && entry.is_directory {
+            if args.files && entry.is_directory {
                 return false;
             }
-            if args.directories_only && !entry.is_directory {
+            if args.dirs && !entry.is_directory {
                 return false;
             }
             true
