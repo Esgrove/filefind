@@ -43,7 +43,7 @@ features = [
 path = "filefind"
 
 [workspace.lints.rust]
-unsafe_code = "warn"
+unsafe_code = "allow"
 
 [workspace.lints.clippy]
 enum_glob_use = "deny"

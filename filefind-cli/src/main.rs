@@ -19,7 +19,7 @@ use filefind::format_size;
 #[command(
     author,
     version,
-    name = "filefind",
+    name = env!("CARGO_BIN_NAME"),
     about = "Fast file search using the filefind index"
 )]
 struct Args {
@@ -96,11 +96,15 @@ fn main() -> Result<()> {
 
     // Handle shell completion generation
     if let Some(shell) = args.completion {
-        generate_completion(shell);
+        clap_complete::generate(
+            shell,
+            &mut Args::command(),
+            env!("CARGO_BIN_NAME"),
+            &mut std::io::stdout(),
+        );
         return Ok(());
     }
 
-    // Load configuration
     let config = UserConfig::load();
 
     // Open the database
@@ -383,11 +387,4 @@ fn list_volumes(database: &Database) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Generate shell completion script.
-fn generate_completion(shell: Shell) {
-    let mut command = Args::command();
-    let name = command.get_name().to_string();
-    clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
 }

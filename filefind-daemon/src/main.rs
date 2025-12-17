@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 /// Background file indexing daemon for filefind.
 #[derive(Parser)]
-#[command(author, version, name = "filefindd", about = "Background file indexing daemon")]
+#[command(author, version, name = env!("CARGO_BIN_NAME"), about = "Background file indexing daemon")]
 struct Args {
     /// Subcommand to execute.
     #[command(subcommand)]
@@ -83,12 +83,15 @@ fn main() -> Result<()> {
 
     // Handle shell completion generation.
     if let Some(shell) = args.completion {
-        let mut command = Args::command();
-        clap_complete::generate(shell, &mut command, "filefindd", &mut std::io::stdout());
+        clap_complete::generate(
+            shell,
+            &mut Args::command(),
+            env!("CARGO_BIN_NAME"),
+            &mut std::io::stdout(),
+        );
         return Ok(());
     }
 
-    // Initialize logging.
     let filter = if args.verbose {
         EnvFilter::new("debug")
     } else {
@@ -97,9 +100,8 @@ fn main() -> Result<()> {
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    // Load configuration.
     let config = Config::load();
-    tracing::info!("Loaded configuration");
+    tracing::debug!("Loaded configuration");
 
     // Execute the requested command.
     match args.command {
