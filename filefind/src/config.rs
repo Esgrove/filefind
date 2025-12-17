@@ -28,7 +28,7 @@ pub static DATABASE_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
 });
 
 /// Root configuration structure that wraps all sections.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub struct UserConfig {
     #[serde(default)]
     pub daemon: DaemonConfig,
@@ -37,7 +37,7 @@ pub struct UserConfig {
 }
 
 /// Configuration for the daemon process.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DaemonConfig {
     /// Paths to index.
     ///
@@ -73,7 +73,7 @@ pub struct DaemonConfig {
 }
 
 /// Configuration for the CLI tool.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CliConfig {
     /// Default output format.
     #[serde(default = "default_format")]

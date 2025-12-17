@@ -459,6 +459,31 @@ impl Database {
         Ok(())
     }
 
+    /// Get the last USN value for a volume by drive letter.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn get_volume_last_usn(&self, drive_letter: char) -> Result<Option<i64>> {
+        let mount_point = format!("{}:", drive_letter.to_ascii_uppercase());
+
+        let mut statement = self.connection.prepare(
+            r"
+            SELECT last_usn
+            FROM volumes
+            WHERE mount_point = ?1 OR mount_point = ?2
+            ",
+        )?;
+
+        let mount_point_with_slash = format!("{mount_point}\\");
+
+        let usn = statement
+            .query_row(params![mount_point, mount_point_with_slash], |row| row.get(0))
+            .optional()
+            .context("Failed to query volume USN")?;
+
+        Ok(usn.flatten())
+    }
+
     /// Mark a volume as online or offline.
     ///
     /// # Errors
