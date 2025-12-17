@@ -459,6 +459,29 @@ impl Database {
         Ok(())
     }
 
+    /// Update the last USN value for a volume by drive letter.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn update_volume_usn_by_drive(&self, drive_letter: char, usn: i64) -> Result<()> {
+        let mount_point = format!("{}:", drive_letter.to_ascii_uppercase());
+        let mount_point_with_slash = format!("{mount_point}\\");
+
+        self.connection
+            .execute(
+                "UPDATE volumes SET last_usn = ?1, last_scan_time = ?2 WHERE mount_point = ?3 OR mount_point = ?4",
+                params![
+                    usn,
+                    system_time_to_unix(SystemTime::now()),
+                    mount_point,
+                    mount_point_with_slash
+                ],
+            )
+            .context("Failed to update volume USN")?;
+
+        Ok(())
+    }
+
     /// Get the last USN value for a volume by drive letter.
     ///
     /// # Errors

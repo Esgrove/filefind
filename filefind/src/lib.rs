@@ -6,7 +6,7 @@ pub mod types;
 
 pub use config::{CONFIG_PATH, UserConfig as Config};
 pub use database::Database;
-pub use types::{FileEntry, IndexedVolume, VolumeType};
+pub use types::{FileChangeEvent, FileEntry, IndexedVolume, VolumeType};
 
 use std::path::Path;
 

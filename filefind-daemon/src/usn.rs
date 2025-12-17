@@ -61,6 +61,7 @@ use windows::core::PCWSTR;
 const USN_BUFFER_SIZE: usize = 64 * 1024;
 
 /// Reason flags for file changes.
+#[expect(dead_code, reason = "constants for USN reason flag parsing")]
 #[cfg(windows)]
 mod reason_flags {
     pub const USN_REASON_DATA_OVERWRITE: u32 = 0x0000_0001;
@@ -114,6 +115,7 @@ pub struct UsnMonitor {
 }
 
 /// Information about a USN Journal change.
+#[expect(dead_code, reason = "fields used via Debug trait and future expansion")]
 #[derive(Debug, Clone)]
 pub struct UsnChange {
     /// The USN of this change.
@@ -160,7 +162,7 @@ impl UsnMonitor {
         let volume_handle = unsafe {
             CreateFileW(
                 PCWSTR(volume_path.as_ptr()),
-                0x80000000, // GENERIC_READ
+                0x8000_0000, // GENERIC_READ
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 OPEN_EXISTING,
@@ -442,6 +444,7 @@ impl UsnMonitor {
     }
 
     /// Convert a USN change to a file change event.
+    #[expect(dead_code, reason = "public API for event conversion")]
     #[cfg(windows)]
     pub fn change_to_event(&self, change: &UsnChange, full_path: &str) -> Option<FileChangeEvent> {
         use reason_flags::{
@@ -473,6 +476,7 @@ impl UsnMonitor {
     }
 
     /// Convert a USN change to a file change event (non-Windows stub).
+    #[expect(dead_code, reason = "public API for event conversion")]
     #[cfg(not(windows))]
     pub fn change_to_event(&self, _change: &UsnChange, _full_path: &str) -> Option<FileChangeEvent> {
         None
@@ -481,6 +485,7 @@ impl UsnMonitor {
     /// Start monitoring the USN Journal in the background.
     ///
     /// Returns a channel receiver for change events.
+    #[expect(dead_code, reason = "public API for background monitoring")]
     pub fn start_monitoring(mut self, poll_interval: Duration) -> (mpsc::Receiver<Vec<UsnChange>>, Arc<AtomicBool>) {
         let (sender, receiver) = mpsc::channel(100);
         let shutdown = self.shutdown.clone();
@@ -514,6 +519,7 @@ impl UsnMonitor {
     }
 
     /// Get the current last USN value.
+    #[expect(dead_code, reason = "public API for USN tracking")]
     #[must_use]
     pub const fn get_last_usn(&self) -> i64 {
         self.last_usn
@@ -541,6 +547,7 @@ impl Drop for UsnMonitor {
 }
 
 /// Information about a USN Journal.
+#[expect(dead_code, reason = "fields used via Debug trait and journal monitoring")]
 #[derive(Debug, Clone)]
 pub struct UsnJournalInfo {
     /// Unique identifier for this journal instance.
@@ -588,6 +595,7 @@ impl UsnChange {
     }
 
     /// Check if this change represents a rename (old name).
+    #[expect(dead_code, reason = "public API for rename detection")]
     #[cfg(windows)]
     #[must_use]
     pub const fn is_rename_old(&self) -> bool {
@@ -606,6 +614,7 @@ impl UsnChange {
     }
 
     /// Check if this is a close event (final event for a change).
+    #[expect(dead_code, reason = "public API for close detection")]
     #[cfg(windows)]
     #[must_use]
     pub const fn is_close(&self) -> bool {
@@ -631,6 +640,7 @@ impl UsnChange {
         false
     }
 
+    #[expect(dead_code, reason = "public API for rename detection")]
     #[cfg(not(windows))]
     #[must_use]
     pub fn is_rename_old(&self) -> bool {
@@ -643,6 +653,7 @@ impl UsnChange {
         false
     }
 
+    #[expect(dead_code, reason = "public API for close detection")]
     #[cfg(not(windows))]
     #[must_use]
     pub fn is_close(&self) -> bool {

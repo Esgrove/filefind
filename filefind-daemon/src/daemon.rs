@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use filefind::{Config, Database, print_error, print_info, print_success, print_warning};
-use tracing::{error, info, warn};
+use filefind::{Config, Database, FileChangeEvent, FileEntry, print_error, print_info, print_success, print_warning};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
 
 use crate::mft::detect_ntfs_volumes;
 use crate::scanner::{format_number, run_scan};
@@ -49,6 +50,12 @@ pub struct Daemon {
 
     /// File watcher for non-NTFS paths.
     file_watcher: Option<FileWatcher>,
+
+    /// Receiver for file watcher events.
+    watcher_receiver: Option<mpsc::Receiver<FileChangeEvent>>,
+
+    /// Cache of MFT file reference to full path (for path resolution).
+    path_cache: HashMap<u64, String>,
 }
 
 /// Configuration for the daemon.
@@ -107,6 +114,8 @@ impl Daemon {
             shutdown: Arc::new(AtomicBool::new(false)),
             volume_monitors: HashMap::new(),
             file_watcher: None,
+            watcher_receiver: None,
+            path_cache: HashMap::new(),
         }
     }
 
@@ -161,6 +170,9 @@ impl Daemon {
             print_info!("Performing initial scan...");
             run_scan(None, self.options.rescan, &self.config).await?;
         }
+
+        // Build path cache for USN path resolution
+        self.build_path_cache()?;
 
         // Start monitoring
         self.start_monitors().await?;
@@ -295,7 +307,6 @@ impl Daemon {
     }
 
     /// Start file watcher for non-NTFS paths.
-    #[allow(clippy::unnecessary_wraps)]
     fn start_file_watcher(&mut self, paths: Vec<PathBuf>) -> Result<()> {
         let config = WatcherConfig {
             paths,
@@ -304,10 +315,15 @@ impl Daemon {
             recursive: true,
         };
 
-        let watcher = FileWatcher::new(config);
-        info!("Started file watcher for {} paths", watcher.watched_paths().len());
+        let watcher = FileWatcher::new(config.clone());
+        let path_count = watcher.watched_paths().len();
 
-        self.file_watcher = Some(watcher);
+        // Start the watcher and get the event receiver
+        let (receiver, _shutdown) = watcher.start(config.recursive)?;
+
+        info!("Started file watcher for {} paths", path_count);
+
+        self.watcher_receiver = Some(receiver);
 
         Ok(())
     }
@@ -336,16 +352,18 @@ impl Daemon {
     }
 
     /// Process any pending file changes.
-    #[allow(clippy::unused_async)]
     async fn process_changes(&mut self) -> Result<()> {
-        // Process USN Journal changes
+        // Collect raw USN changes first to avoid borrow issues
+        let mut raw_changes: Vec<(char, Vec<crate::usn::UsnChange>, i64)> = Vec::new();
+
         for monitor in self.volume_monitors.values_mut() {
             if let Some(ref mut usn) = monitor.usn_monitor {
                 match usn.read_changes() {
                     Ok((changes, new_usn)) => {
                         if !changes.is_empty() {
-                            info!("Processing {} USN changes", changes.len());
-                            // TODO: Process changes and update database
+                            debug!("Processing {} USN changes", changes.len());
+                            let drive_letter = usn.get_drive_letter();
+                            raw_changes.push((drive_letter, changes, new_usn));
                             monitor.last_usn = new_usn;
                         }
                     }
@@ -356,7 +374,198 @@ impl Daemon {
             }
         }
 
-        // TODO: Process file watcher events
+        // Now process the collected changes (no longer borrowing volume_monitors)
+        let mut usn_events: Vec<FileChangeEvent> = Vec::new();
+        let mut usn_updates: Vec<(char, i64)> = Vec::new();
+
+        for (drive_letter, changes, new_usn) in raw_changes {
+            for change in &changes {
+                // Try to resolve the path from parent reference and name
+                let full_path = self.resolve_usn_path_inner(drive_letter, change.parent_reference, &change.name);
+
+                if let Some(path) = full_path {
+                    // Convert to event
+                    if let Some(event) = Self::usn_change_to_event(change, &path) {
+                        usn_events.push(event);
+                    }
+                }
+            }
+            usn_updates.push((drive_letter, new_usn));
+        }
+
+        // Process collected USN events
+        for event in usn_events {
+            self.handle_change_event(event);
+        }
+
+        // Update USN values in database
+        if let Some(ref db) = self.database {
+            for (drive_letter, new_usn) in usn_updates {
+                let _ = db.update_volume_usn_by_drive(drive_letter, new_usn);
+            }
+        }
+
+        // Collect file watcher events
+        let mut watcher_events: Vec<FileChangeEvent> = Vec::new();
+        if let Some(ref mut receiver) = self.watcher_receiver {
+            while let Ok(event) = receiver.try_recv() {
+                watcher_events.push(event);
+            }
+        }
+
+        // Process collected watcher events
+        for event in watcher_events {
+            self.handle_change_event(event);
+        }
+
+        Ok(())
+    }
+
+    /// Convert a USN change to a file change event.
+    fn usn_change_to_event(change: &crate::usn::UsnChange, full_path: &str) -> Option<FileChangeEvent> {
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(full_path);
+
+        if change.is_create() {
+            Some(FileChangeEvent::Created(path))
+        } else if change.is_delete() {
+            Some(FileChangeEvent::Deleted(path))
+        } else if change.is_rename_new() {
+            Some(FileChangeEvent::Created(path))
+        } else if change.is_modify() {
+            Some(FileChangeEvent::Modified(path))
+        } else {
+            None
+        }
+    }
+
+    /// Resolve a full path from USN change data (inner version that borrows `path_cache`).
+    fn resolve_usn_path_inner(&self, drive_letter: char, parent_reference: u64, name: &str) -> Option<String> {
+        // Try to get parent path from cache
+        if let Some(parent_path) = self.path_cache.get(&parent_reference) {
+            return Some(format!("{parent_path}\\{name}"));
+        }
+
+        // If parent is root (reference 5), construct path directly
+        if parent_reference == 5 {
+            return Some(format!("{drive_letter}:\\{name}"));
+        }
+
+        // Could not resolve path - would need MFT lookup
+        debug!(
+            "Could not resolve path for file '{}' with parent ref {}",
+            name, parent_reference
+        );
+        None
+    }
+
+    /// Handle a file change event by updating the database.
+    fn handle_change_event(&self, event: FileChangeEvent) {
+        let Some(ref db) = self.database else {
+            return;
+        };
+
+        match event {
+            FileChangeEvent::Created(path) => {
+                debug!("File created: {}", path.display());
+
+                // Get file metadata and insert into database
+                if let Ok(metadata) = std::fs::metadata(&path) {
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default();
+
+                    let entry = FileEntry {
+                        id: None,
+                        volume_id: 0, // Will be resolved by database
+                        parent_id: None,
+                        name,
+                        full_path: path.to_string_lossy().to_string(),
+                        is_directory: metadata.is_dir(),
+                        size: if metadata.is_file() { metadata.len() } else { 0 },
+                        created_time: metadata.created().ok(),
+                        modified_time: metadata.modified().ok(),
+                        mft_reference: None,
+                    };
+
+                    if let Err(error) = db.insert_file(&entry) {
+                        debug!("Failed to insert file {}: {}", path.display(), error);
+                    }
+                }
+            }
+            FileChangeEvent::Modified(path) => {
+                debug!("File modified: {}", path.display());
+                // For modifications, we could update metadata but for now we just log it
+                // The file still exists in the index which is the main purpose
+            }
+            FileChangeEvent::Deleted(path) => {
+                debug!("File deleted: {}", path.display());
+
+                let path_str = path.to_string_lossy();
+                if let Err(error) = db.delete_file_by_path(&path_str) {
+                    debug!("Failed to delete file {}: {}", path.display(), error);
+                }
+            }
+            FileChangeEvent::Renamed { from, to } => {
+                debug!("File renamed: {} -> {}", from.display(), to.display());
+
+                // Delete old entry
+                let from_str = from.to_string_lossy();
+                let _ = db.delete_file_by_path(&from_str);
+
+                // Insert new entry
+                if let Ok(metadata) = std::fs::metadata(&to) {
+                    let name = to
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default();
+
+                    let entry = FileEntry {
+                        id: None,
+                        volume_id: 0,
+                        parent_id: None,
+                        name,
+                        full_path: to.to_string_lossy().to_string(),
+                        is_directory: metadata.is_dir(),
+                        size: if metadata.is_file() { metadata.len() } else { 0 },
+                        created_time: metadata.created().ok(),
+                        modified_time: metadata.modified().ok(),
+                        mft_reference: None,
+                    };
+
+                    if let Err(error) = db.insert_file(&entry) {
+                        debug!("Failed to insert renamed file {}: {}", to.display(), error);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build the path cache from the database for faster path resolution.
+    fn build_path_cache(&mut self) -> Result<()> {
+        let Some(ref db) = self.database else {
+            return Ok(());
+        };
+
+        // Query all directories with MFT references
+        let connection = db.connection();
+        let mut stmt = connection.prepare(
+            "SELECT mft_reference, full_path FROM files WHERE is_directory = 1 AND mft_reference IS NOT NULL",
+        )?;
+
+        let entries = stmt.query_map([], |row| {
+            let mft_ref: i64 = row.get(0)?;
+            let path: String = row.get(1)?;
+            Ok((mft_ref as u64, path))
+        })?;
+
+        for entry in entries.flatten() {
+            self.path_cache.insert(entry.0, entry.1);
+        }
+
+        info!("Built path cache with {} directory entries", self.path_cache.len());
 
         Ok(())
     }
@@ -497,7 +706,7 @@ pub fn show_status(config: &Config) -> Result<()> {
 }
 
 /// Detect available drives and show their types.
-pub fn detect_drives() -> Result<()> {
+pub fn detect_drives() {
     println!("{}", "Detected Drives".bold());
     println!();
 
@@ -520,8 +729,6 @@ pub fn detect_drives() -> Result<()> {
     println!();
     print_info!("Run 'filefindd scan' to index all detected NTFS volumes.");
     print_info!("Run 'filefindd scan <path>' to scan a specific directory.");
-
-    Ok(())
 }
 
 /// Show index statistics.

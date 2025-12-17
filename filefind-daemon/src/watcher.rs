@@ -34,6 +34,7 @@ pub struct FileWatcher {
 }
 
 /// Configuration for the file watcher.
+#[expect(dead_code, reason = "fields used via Debug trait and future configuration")]
 #[derive(Debug, Clone)]
 pub struct WatcherConfig {
     /// Paths to watch.
@@ -72,6 +73,7 @@ impl FileWatcher {
     }
 
     /// Create a new file watcher for a single path.
+    #[expect(dead_code, reason = "public API for single-path watching")]
     #[must_use]
     pub fn for_path(path: PathBuf) -> Self {
         Self {
@@ -82,6 +84,7 @@ impl FileWatcher {
     }
 
     /// Add a path to watch.
+    #[expect(dead_code, reason = "public API for adding watch paths")]
     pub fn add_path(&mut self, path: PathBuf) {
         if !self.watched_paths.contains(&path) {
             self.watched_paths.push(path);
@@ -89,6 +92,7 @@ impl FileWatcher {
     }
 
     /// Add an exclusion pattern.
+    #[expect(dead_code, reason = "public API for adding exclusion patterns")]
     pub fn add_exclude_pattern(&mut self, pattern: String) {
         if !self.exclude_patterns.contains(&pattern) {
             self.exclude_patterns.push(pattern);
@@ -130,6 +134,7 @@ impl FileWatcher {
     }
 
     /// Convert a notify event to our `FileChangeEvent` type.
+    #[expect(dead_code, reason = "public API for event conversion")]
     fn convert_event(&self, event: Event) -> Vec<FileChangeEvent> {
         let mut changes = Vec::new();
 
@@ -142,9 +147,7 @@ impl FileWatcher {
                 EventKind::Create(_) => Some(FileChangeEvent::Created(path)),
                 EventKind::Modify(_) => Some(FileChangeEvent::Modified(path)),
                 EventKind::Remove(_) => Some(FileChangeEvent::Deleted(path)),
-                EventKind::Access(_) => None, // Ignore access events
-                EventKind::Other => None,
-                EventKind::Any => None,
+                EventKind::Access(_) | EventKind::Other | EventKind::Any => None,
             };
 
             if let Some(change) = change {
@@ -267,7 +270,6 @@ impl FileWatcher {
                     }
                     Err(_) => {
                         // Timeout, continue loop
-                        continue;
                     }
                 }
             }

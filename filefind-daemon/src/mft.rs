@@ -45,6 +45,7 @@ const IGNORED_PATH_PATTERNS: &[&str] = &[
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
 /// File attribute flag for hidden files.
+#[expect(dead_code, reason = "will be used for hidden file filtering")]
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
 
 /// MFT scanner for indexing NTFS volumes.
@@ -62,6 +63,7 @@ pub struct MftScanner {
 }
 
 /// Raw MFT entry data before path resolution.
+#[expect(dead_code, reason = "fields used via Debug trait and future expansion")]
 #[derive(Debug, Clone)]
 struct MftEntry {
     /// File reference number (unique ID within the volume).
@@ -109,7 +111,7 @@ impl MftScanner {
         let volume_handle = unsafe {
             CreateFileW(
                 PCWSTR(volume_path.as_ptr()),
-                0x80000000, // GENERIC_READ
+                0x8000_0000, // GENERIC_READ
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 OPEN_EXISTING,
@@ -176,12 +178,14 @@ impl MftScanner {
     ///
     /// # Errors
     /// Returns an error if the MFT cannot be read.
+    #[expect(dead_code, reason = "public API for full volume scanning")]
     #[cfg(windows)]
     pub fn scan(&self) -> Result<Vec<FileEntry>> {
         self.scan_filtered(&[])
     }
 
     /// Scan the MFT (non-Windows stub).
+    #[expect(dead_code, reason = "public API for full volume scanning")]
     #[cfg(not(windows))]
     pub fn scan(&self) -> Result<Vec<FileEntry>> {
         bail!("MFT scanning is only supported on Windows");

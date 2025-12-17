@@ -10,11 +10,15 @@ mod watcher;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use filefind::Config;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// Background file indexing daemon for filefind.
 #[derive(Parser)]
@@ -92,13 +96,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let filter = if args.verbose {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::new("info")
-    };
+    // Determine if we're running in foreground mode
+    let foreground = matches!(args.command, Some(Command::Start { foreground: true, .. }) | None)
+        || !matches!(args.command, Some(Command::Start { .. }));
 
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Initialize logging based on mode
+    init_logging(args.verbose, foreground)?;
 
     let config = Config::load();
     tracing::debug!("Loaded configuration");
@@ -114,10 +117,59 @@ fn main() -> Result<()> {
         }
         Some(Command::Stats) => daemon::show_stats(&config),
         Some(Command::Volumes { detailed }) => daemon::list_volumes(detailed, &config),
-        Some(Command::Detect) => daemon::detect_drives(),
+        Some(Command::Detect) => {
+            daemon::detect_drives();
+            Ok(())
+        }
         None => {
             // Default: show status.
             daemon::show_status(&config)
         }
     }
+}
+
+/// Initialize logging based on verbosity and foreground mode.
+///
+/// In foreground mode, logs go to stdout.
+/// In background mode, logs go to a file in ~/logs/filefind/.
+fn init_logging(verbose: bool, foreground: bool) -> Result<()> {
+    let filter = if verbose {
+        EnvFilter::new("debug")
+    } else {
+        EnvFilter::new("info")
+    };
+
+    if foreground {
+        // Foreground mode: log to stdout
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    } else {
+        // Background mode: log to file
+        let log_dir = get_log_directory()?;
+        std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
+
+        // Create a rolling file appender (daily rotation)
+        let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "filefindd.log");
+
+        // Also log errors to stderr
+        let stderr = std::io::stderr.with_max_level(tracing::Level::WARN);
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(file_appender.and(stderr))
+                    .with_ansi(false),
+            )
+            .init();
+
+        tracing::info!("Logging to {}", log_dir.display());
+    }
+
+    Ok(())
+}
+
+/// Get the log directory path: ~/logs/filefind/
+fn get_log_directory() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    Ok(home.join("logs").join(filefind::PROJECT_NAME))
 }
