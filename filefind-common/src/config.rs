@@ -103,7 +103,6 @@ pub enum OutputFormat {
     #[default]
     Simple,
     Detailed,
-    Json,
 }
 
 impl Default for DaemonConfig {
@@ -185,7 +184,6 @@ impl std::fmt::Display for OutputFormat {
         match self {
             Self::Simple => write!(f, "simple"),
             Self::Detailed => write!(f, "detailed"),
-            Self::Json => write!(f, "json"),
         }
     }
 }
@@ -197,7 +195,6 @@ impl std::str::FromStr for OutputFormat {
         match s.to_lowercase().as_str() {
             "simple" => Ok(Self::Simple),
             "detailed" => Ok(Self::Detailed),
-            "json" => Ok(Self::Json),
             _ => Err(format!("Unknown output format: {s}")),
         }
     }
@@ -246,14 +243,12 @@ mod tests {
     fn test_output_format_display() {
         assert_eq!(OutputFormat::Simple.to_string(), "simple");
         assert_eq!(OutputFormat::Detailed.to_string(), "detailed");
-        assert_eq!(OutputFormat::Json.to_string(), "json");
     }
 
     #[test]
     fn test_output_format_from_str() {
         assert_eq!("simple".parse::<OutputFormat>().unwrap(), OutputFormat::Simple);
         assert_eq!("DETAILED".parse::<OutputFormat>().unwrap(), OutputFormat::Detailed);
-        assert_eq!("Json".parse::<OutputFormat>().unwrap(), OutputFormat::Json);
         assert!("invalid".parse::<OutputFormat>().is_err());
     }
 }

@@ -1,5 +1,6 @@
 //! Command-line interface for filefind file search.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -45,17 +46,17 @@ struct Args {
     #[arg(short = 'D', long)]
     dirs: bool,
 
-    /// Maximum number of results to show
+    /// Maximum number of file results to show (does not affect directories)
     #[arg(short = 'n', long, name = "COUNT")]
     limit: Option<usize>,
+
+    /// Maximum files to show per directory in grouped output
+    #[arg(long, name = "COUNT", default_value = "20")]
+    files_per_dir: usize,
 
     /// Output format.
     #[arg(short = 'o', long, value_enum)]
     output: Option<OutputFormatArg>,
-
-    /// Show full paths instead of just filenames
-    #[arg(short = 'p', long)]
-    path: bool,
 
     /// Show index statistics
     #[arg(short = 's', long)]
@@ -79,7 +80,6 @@ struct Args {
 enum OutputFormatArg {
     Simple,
     Detailed,
-    Json,
 }
 
 impl From<OutputFormatArg> for OutputFormat {
@@ -87,7 +87,6 @@ impl From<OutputFormatArg> for OutputFormat {
         match value {
             OutputFormatArg::Simple => Self::Simple,
             OutputFormatArg::Detailed => Self::Detailed,
-            OutputFormatArg::Json => Self::Json,
         }
     }
 }
@@ -135,29 +134,28 @@ fn main() -> Result<()> {
     // Determine output format
     let output_format = args.output.map_or(config.cli.format, OutputFormat::from);
 
-    // Determine result limit
-    let limit = args.limit.unwrap_or(config.cli.max_results);
-    let effective_limit = if limit == 0 { usize::MAX } else { limit };
+    // Determine result limit (only applies to files)
+    let file_limit = args.limit.unwrap_or(config.cli.max_results);
+    let effective_file_limit = if file_limit == 0 { usize::MAX } else { file_limit };
 
-    // Perform the search
+    // Perform the search - fetch more results since limit only applies to files
     let start_time = Instant::now();
 
     let results = if args.regex {
         // For now, fall back to glob search - regex support can be added later
-        database.search_by_name(&pattern, effective_limit)?
+        database.search_by_name(&pattern, usize::MAX)?
     } else if pattern.contains('*') || pattern.contains('?') {
-        database.search_by_glob(&pattern, effective_limit)?
+        database.search_by_glob(&pattern, usize::MAX)?
     } else {
-        database.search_by_name(&pattern, effective_limit)?
+        database.search_by_name(&pattern, usize::MAX)?
     };
 
     let search_duration = start_time.elapsed();
 
-    // Filter results
+    // Filter results by drive
     let results: Vec<_> = results
         .into_iter()
         .filter(|entry| {
-            // Filter by drive
             if !args.drive.is_empty() {
                 let entry_drive = entry.full_path.chars().next().map(|c| c.to_ascii_uppercase());
                 let matches_drive = entry_drive.is_some_and(|drive_char| {
@@ -169,29 +167,36 @@ fn main() -> Result<()> {
                     return false;
                 }
             }
-            // Filter by type
-            if args.files && entry.is_directory {
-                return false;
-            }
-            if args.dirs && !entry.is_directory {
-                return false;
-            }
             true
         })
         .collect();
 
-    // Display results
+    // Separate directories and files
+    let (directories, files): (Vec<_>, Vec<_>) = results.iter().partition(|e| e.is_directory);
+
+    // Apply limit only to files
+    let limited_files: Vec<_> = files.into_iter().take(effective_file_limit).collect();
+
+    // Display results based on mode
+    let display_options = DisplayOptions {
+        dirs_only: args.dirs,
+        files_only: args.files,
+        files_per_dir: args.files_per_dir,
+    };
+
     match output_format {
-        OutputFormat::Simple => display_simple(&results, args.path),
-        OutputFormat::Detailed => display_detailed(&results),
-        OutputFormat::Json => display_json(&results),
+        OutputFormat::Simple => display_simple(&directories, &limited_files, &display_options),
+        OutputFormat::Detailed => display_detailed(&directories, &limited_files, &display_options),
     }
 
     // Show search stats if verbose
     if args.verbose {
+        let total_results = directories.len() + limited_files.len();
         eprintln!(
-            "\n{} results in {:.2}ms",
-            results.len(),
+            "\n{} results ({} directories, {} files) in {:.2}ms",
+            total_results,
+            directories.len(),
+            limited_files.len(),
             search_duration.as_secs_f64() * 1000.0
         );
     }
@@ -199,77 +204,138 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Display options for formatting output.
+struct DisplayOptions {
+    dirs_only: bool,
+    files_only: bool,
+    files_per_dir: usize,
+}
+
 /// Display results in simple format.
-fn display_simple(results: &[filefind_common::types::FileEntry], full_path: bool) {
-    for entry in results {
-        if full_path {
-            println!("{}", entry.full_path);
-        } else {
-            // Show the filename with the parent directory for context
-            let path = PathBuf::from(&entry.full_path);
-            if let Some(parent) = path.parent() {
-                if let Some(parent_name) = parent.file_name() {
-                    println!(
-                        "{}{}{}",
-                        parent_name.to_string_lossy(),
-                        std::path::MAIN_SEPARATOR,
-                        entry.name
-                    );
-                } else {
-                    println!("{}", entry.name);
-                }
+fn display_simple(
+    directories: &[&filefind_common::types::FileEntry],
+    files: &[&filefind_common::types::FileEntry],
+    options: &DisplayOptions,
+) {
+    if options.files_only {
+        // Files only mode: show full paths
+        for file in files {
+            println!("{}", file.full_path);
+        }
+    } else if options.dirs_only {
+        // Dirs only mode: show full path with file count
+        for directory in directories {
+            let file_count = count_files_in_directory(files, &directory.full_path);
+            if file_count > 0 {
+                println!("{} ({} files)", directory.full_path, file_count);
             } else {
-                println!("{}", entry.name);
+                println!("{}", directory.full_path);
+            }
+        }
+    } else {
+        // Normal mode: group files under directories
+        display_grouped(directories, files, options.files_per_dir);
+    }
+}
+
+/// Display results grouped by directory.
+fn display_grouped(
+    directories: &[&filefind_common::types::FileEntry],
+    files: &[&filefind_common::types::FileEntry],
+    files_per_dir: usize,
+) {
+    // Group files by their parent directory
+    let mut files_by_dir: HashMap<String, Vec<&filefind_common::types::FileEntry>> = HashMap::new();
+    for file in files {
+        let parent = PathBuf::from(&file.full_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        files_by_dir.entry(parent).or_default().push(file);
+    }
+
+    // First, show matched directories with their files
+    for directory in directories {
+        println!("{}", directory.full_path.bold());
+        if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
+            let total_files = dir_files.len();
+            for file in dir_files.iter().take(files_per_dir) {
+                println!("  {}", file.name);
+            }
+            if total_files > files_per_dir {
+                println!("  {} (+{} more files)", "...".dimmed(), total_files - files_per_dir);
+            }
+        }
+    }
+
+    // Then show files in directories that weren't matched
+    let matched_dirs: std::collections::HashSet<_> = directories.iter().map(|d| &d.full_path).collect();
+
+    let mut other_dirs: Vec<_> = files_by_dir.keys().filter(|dir| !matched_dirs.contains(*dir)).collect();
+    other_dirs.sort();
+
+    for dir_path in other_dirs {
+        if let Some(dir_files) = files_by_dir.get(dir_path) {
+            println!("{}", dir_path.bold());
+            let total_files = dir_files.len();
+            for file in dir_files.iter().take(files_per_dir) {
+                println!("  {}", file.name);
+            }
+            if total_files > files_per_dir {
+                println!("  {} (+{} more files)", "...".dimmed(), total_files - files_per_dir);
             }
         }
     }
 }
 
+/// Count files that are directly inside a directory.
+fn count_files_in_directory(files: &[&filefind_common::types::FileEntry], dir_path: &str) -> usize {
+    files
+        .iter()
+        .filter(|f| {
+            PathBuf::from(&f.full_path)
+                .parent()
+                .is_some_and(|p| p.to_string_lossy() == dir_path)
+        })
+        .count()
+}
+
 /// Display results in detailed format.
-fn display_detailed(results: &[filefind_common::types::FileEntry]) {
-    for entry in results {
-        let type_indicator = if entry.is_directory {
-            "DIR ".cyan()
-        } else {
-            "FILE".normal()
-        };
-
-        let size_str = if entry.is_directory {
-            "-".to_string()
-        } else {
-            format_size(entry.size)
-        };
-
-        println!("{} {:>10}  {}", type_indicator, size_str, entry.full_path.bold());
+fn display_detailed(
+    directories: &[&filefind_common::types::FileEntry],
+    files: &[&filefind_common::types::FileEntry],
+    options: &DisplayOptions,
+) {
+    if options.files_only {
+        for file in files {
+            let size_str = format_size(file.size);
+            println!("{} {:>10}  {}", "FILE".normal(), size_str, file.full_path.bold());
+        }
+    } else if options.dirs_only {
+        for directory in directories {
+            let file_count = count_files_in_directory(files, &directory.full_path);
+            if file_count > 0 {
+                println!(
+                    "{} {:>10}  {} ({} files)",
+                    "DIR ".cyan(),
+                    "-",
+                    directory.full_path.bold(),
+                    file_count
+                );
+            } else {
+                println!("{} {:>10}  {}", "DIR ".cyan(), "-", directory.full_path.bold());
+            }
+        }
+    } else {
+        // Show all directories first, then all files
+        for directory in directories {
+            println!("{} {:>10}  {}", "DIR ".cyan(), "-", directory.full_path.bold());
+        }
+        for file in files {
+            let size_str = format_size(file.size);
+            println!("{} {:>10}  {}", "FILE".normal(), size_str, file.full_path.bold());
+        }
     }
-}
-
-/// Display results in JSON format.
-fn display_json(results: &[filefind_common::types::FileEntry]) {
-    // Simple JSON output without pulling in serde_json
-    println!("[");
-    for (index, entry) in results.iter().enumerate() {
-        let comma = if index < results.len() - 1 { "," } else { "" };
-        println!(
-            r#"  {{"name": "{}", "path": "{}", "is_directory": {}, "size": {}}}{}"#,
-            escape_json(&entry.name),
-            escape_json(&entry.full_path),
-            entry.is_directory,
-            entry.size,
-            comma
-        );
-    }
-    println!("]");
-}
-
-/// Escape special characters for JSON string.
-fn escape_json(string: &str) -> String {
-    string
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 /// Show index statistics.
