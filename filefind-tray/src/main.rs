@@ -10,9 +10,21 @@ mod app;
 mod icons;
 
 use anyhow::Result;
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+/// Filefind system tray application
+#[derive(Parser)]
+#[command(
+    author,
+    version,
+    name = env!("CARGO_BIN_NAME"),
+    about = "Filefind system tray application"
+)]
+pub struct Args {}
+
 fn main() -> Result<()> {
+    let _ = Args::parse();
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("filefind_tray=info".parse()?))

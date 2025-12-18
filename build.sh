@@ -43,8 +43,7 @@ cargo build --release --bins
 executables=$(get_rust_executable_names)
 for executable in $executables; do
     print_green "${executable%.exe}"
-    rm -f "$executable"
-    mv ./target/release/"$executable" "$executable"
+    mv -f ./target/release/"$executable" "$executable"
     ./"$executable" --version
     ./"$executable" -h || :
     echo ""
