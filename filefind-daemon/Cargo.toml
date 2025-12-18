@@ -1,6 +1,6 @@
 [package]
 name = "filefind-daemon"
-description = "Background file indexing daemon for filefind"
+description = "Filefind background file indexing daemon"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

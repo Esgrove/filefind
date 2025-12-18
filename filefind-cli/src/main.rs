@@ -13,14 +13,13 @@ use filefind::{generate_shell_completion, print_error};
 
 use crate::config::CliConfig;
 
-/// Fast file search using the filefind index
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Parser)]
 #[command(
     author,
     version,
     name = env!("CARGO_BIN_NAME"),
-    about = "Fast file search using the filefind index"
+    about
 )]
 pub struct FileFindCli {
     /// Subcommand to execute
