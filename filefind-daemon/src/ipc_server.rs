@@ -328,11 +328,11 @@ impl IpcServer {
         let _ = std::fs::remove_file(&socket_path);
 
         // Create the socket directory if needed
-        if let Some(parent) = socket_path.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                error!("Failed to create socket directory: {}", error);
-                return;
-            }
+        if let Some(parent) = socket_path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            error!("Failed to create socket directory: {}", error);
+            return;
         }
 
         let listener = match UnixListener::bind(&socket_path) {

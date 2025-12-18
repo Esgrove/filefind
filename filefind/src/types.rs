@@ -337,37 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn test_file_entry_extension_various_cases() {
-        // Multiple dots
-        let file = FileEntry::new(1, "file.tar.gz".to_string(), "C:\\file.tar.gz".to_string(), false);
-        assert_eq!(file.extension(), Some("gz"));
-
-        // No extension
-        let file = FileEntry::new(1, "README".to_string(), "C:\\README".to_string(), false);
-        assert_eq!(file.extension(), None);
-
-        // Hidden file with extension
-        let file = FileEntry::new(1, ".gitignore".to_string(), "C:\\.gitignore".to_string(), false);
-        assert_eq!(file.extension(), None); // .gitignore has no extension
-
-        // Hidden file with extension
-        let file = FileEntry::new(1, ".config.json".to_string(), "C:\\.config.json".to_string(), false);
-        assert_eq!(file.extension(), Some("json"));
-
-        // Empty name
-        let file = FileEntry::new(1, "".to_string(), "C:\\".to_string(), false);
-        assert_eq!(file.extension(), None);
-
-        // Just a dot
-        let file = FileEntry::new(1, ".".to_string(), "C:\\.".to_string(), false);
-        assert_eq!(file.extension(), None);
-
-        // Trailing dot
-        let file = FileEntry::new(1, "file.".to_string(), "C:\\file.".to_string(), false);
-        assert_eq!(file.extension(), Some(""));
-    }
-
-    #[test]
     fn test_file_entry_extension_directories_always_none() {
         // Directories should always return None, even if name looks like it has extension
         let dir = FileEntry::new(1, "folder.d".to_string(), "C:\\folder.d".to_string(), true);

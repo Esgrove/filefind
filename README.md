@@ -35,12 +35,6 @@ This project is organized as a Cargo workspace with multiple crates:
 ./install.sh
 ```
 
-### Manual build
-
-```shell
-cargo build --release
-```
-
 ## Usage
 
 ### Start the daemon

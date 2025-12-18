@@ -9,14 +9,8 @@
 //! - Only works on NTFS-formatted volumes.
 //! - Does NOT work on network drives, even if they report as NTFS.
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::time::SystemTime;
-
-use anyhow::{Context, Result, bail};
-use filefind::is_network_path;
-use filefind::types::{FileEntry, IndexedVolume, VolumeType};
-use tracing::{debug, info};
+use anyhow::{Result, bail};
+use filefind::types::{FileEntry, IndexedVolume};
 
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -131,7 +125,7 @@ impl MftScanner {
 
     /// Create a new MFT scanner (non-Windows stub).
     #[cfg(not(windows))]
-    pub fn new(drive_letter: char) -> Result<Self> {
+    pub fn new(_drive_letter: char) -> Result<Self> {
         bail!("MFT scanning is only supported on Windows");
     }
 
@@ -170,7 +164,7 @@ impl MftScanner {
 
     /// Check if a volume is NTFS formatted (non-Windows stub).
     #[cfg(not(windows))]
-    fn is_ntfs_volume(_drive_letter: char) -> Result<bool> {
+    const fn is_ntfs_volume(_drive_letter: char) -> Result<bool> {
         Ok(false)
     }
 
@@ -647,7 +641,7 @@ pub fn detect_ntfs_volumes() -> Vec<char> {
 
 /// Detect all available NTFS volumes (non-Windows stub).
 #[cfg(not(windows))]
-pub fn detect_ntfs_volumes() -> Vec<char> {
+pub const fn detect_ntfs_volumes() -> Vec<char> {
     Vec::new()
 }
 

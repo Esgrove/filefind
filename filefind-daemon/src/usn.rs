@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -190,7 +190,7 @@ impl UsnMonitor {
 
     /// Create a new USN Journal monitor (non-Windows stub).
     #[cfg(not(windows))]
-    pub fn new(drive_letter: char, last_usn: i64) -> Result<Self> {
+    pub fn new(_drive_letter: char, _last_usn: i64) -> Result<Self> {
         bail!("USN Journal monitoring is only supported on Windows");
     }
 
@@ -589,39 +589,39 @@ impl UsnChange {
     /// Non-Windows stubs.
     #[cfg(not(windows))]
     #[must_use]
-    pub fn is_create(&self) -> bool {
+    pub const fn is_create(&self) -> bool {
         false
     }
 
     #[cfg(not(windows))]
     #[must_use]
-    pub fn is_delete(&self) -> bool {
+    pub const fn is_delete(&self) -> bool {
         false
     }
 
     #[cfg(not(windows))]
     #[must_use]
-    pub fn is_rename_new(&self) -> bool {
+    pub const fn is_rename_new(&self) -> bool {
         false
     }
 
     #[expect(dead_code, reason = "public API for rename detection")]
     #[cfg(not(windows))]
     #[must_use]
-    pub fn is_rename_old(&self) -> bool {
+    pub const fn is_rename_old(&self) -> bool {
         false
     }
 
     #[cfg(not(windows))]
     #[must_use]
-    pub fn is_modify(&self) -> bool {
+    pub const fn is_modify(&self) -> bool {
         false
     }
 
     #[expect(dead_code, reason = "public API for close detection")]
     #[cfg(not(windows))]
     #[must_use]
-    pub fn is_close(&self) -> bool {
+    pub const fn is_close(&self) -> bool {
         false
     }
 }
