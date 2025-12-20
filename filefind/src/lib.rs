@@ -208,6 +208,19 @@ macro_rules! print_info {
     };
 }
 
+/// Print a message in bold magenta.
+pub fn print_bold_magenta(message: &str) {
+    println!("{}", message.bold().magenta());
+}
+
+/// Print a message in bold magenta with formatting support.
+#[macro_export]
+macro_rules! print_bold_magenta {
+    ($($arg:tt)*) => {
+        $crate::print_bold_magenta(&format!($($arg)*))
+    };
+}
+
 /// Format a file size in bytes to a human-readable string.
 #[must_use]
 pub fn format_size(bytes: u64) -> String {
@@ -267,7 +280,7 @@ mod tests {
         assert!(is_drive_root(Path::new("D:\\")));
         assert!(is_drive_root(Path::new("E:/")));
         assert!(is_drive_root(Path::new("Z:")));
-        assert!(is_drive_root(Path::new("a:"))); // lowercase
+        assert!(is_drive_root(Path::new("a:")));
         assert!(is_drive_root(Path::new("z:\\")));
 
         // Not drive roots

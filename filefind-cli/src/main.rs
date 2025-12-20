@@ -14,7 +14,7 @@ use colored::Colorize;
 
 use filefind::config::OutputFormat;
 use filefind::database::Database;
-use filefind::{format_size, print_error};
+use filefind::{format_size, print_bold_magenta, print_error};
 
 use crate::config::{CliConfig, DisplayOptions};
 
@@ -332,7 +332,7 @@ fn display_grouped(
 
     // First, show matched directories with their files
     for directory in directories {
-        println!("{}", directory.full_path.bold().magenta());
+        print_bold_magenta(&directory.full_path);
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
             let total_files = dir_files.len();
             for file in dir_files.iter().take(files_per_dir) {
@@ -353,7 +353,7 @@ fn display_grouped(
 
     for dir_path in other_dirs {
         if let Some(dir_files) = files_by_dir.get(dir_path) {
-            println!("{}", dir_path.bold().cyan());
+            print_bold_magenta(dir_path);
             let total_files = dir_files.len();
             for file in dir_files.iter().take(files_per_dir) {
                 println!("  {}", highlight_match(&file.name, highlight_patterns));
@@ -385,25 +385,25 @@ fn display_simple(
     options: &DisplayOptions,
     highlight_patterns: &[&str],
 ) {
-    // Sort directories by path
-    let mut sorted_directories: Vec<_> = directories.to_vec();
-    sorted_directories.sort_by(|a, b| a.full_path.cmp(&b.full_path));
-
     if options.files_only {
         for file in files {
             println!("{}", highlight_match(&file.full_path, highlight_patterns));
         }
     } else if options.directories_only {
-        for directory in &sorted_directories {
+        for directory in directories {
             println!("{}", highlight_match(&directory.full_path, highlight_patterns));
         }
     } else {
-        // Show all directories first, then all files
-        for directory in &sorted_directories {
-            println!("{}", highlight_match(&directory.full_path, highlight_patterns));
-        }
-        for file in files {
-            println!("{}", highlight_match(&file.full_path, highlight_patterns));
+        // Combine all entries and sort by path
+        let mut all_entries: Vec<_> = directories.iter().chain(files.iter()).collect();
+        all_entries.sort_by(|a, b| a.full_path.cmp(&b.full_path));
+
+        for entry in all_entries {
+            if entry.is_directory {
+                println!("{}", entry.full_path.cyan());
+            } else {
+                println!("{}", highlight_match(&entry.full_path, highlight_patterns));
+            }
         }
     }
 }
