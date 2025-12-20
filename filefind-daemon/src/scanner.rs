@@ -12,7 +12,8 @@ use std::time::Instant;
 
 use anyhow::Result;
 use filefind::{
-    Config, Database, PathType, classify_path, is_network_path, print_error, print_info, print_success, print_warning,
+    Config, Database, PathType, classify_path, format_number, is_network_path, print_error, print_info, print_success,
+    print_warning,
 };
 
 use crate::mft::{MftScanner, detect_ntfs_volumes};
@@ -517,22 +518,6 @@ pub async fn scan_directory_to_db(database: &mut Database, path: &Path, exclude_
     database.insert_files_batch(&file_entries)?;
 
     Ok(count)
-}
-
-/// Format a large number with thousands separators.
-#[must_use]
-pub fn format_number(number: u64) -> String {
-    let string = number.to_string();
-    let mut result = String::new();
-
-    for (count, character) in string.chars().rev().enumerate() {
-        if count > 0 && count % 3 == 0 {
-            result.insert(0, ',');
-        }
-        result.insert(0, character);
-    }
-
-    result
 }
 
 #[cfg(test)]

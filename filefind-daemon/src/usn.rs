@@ -651,7 +651,7 @@ mod tests {
     fn test_query_journal() {
         match UsnMonitor::new('C', 0) {
             Ok(monitor) => {
-                let info = monitor.query_journal().unwrap();
+                let info = monitor.query_journal().expect("test operation");
                 assert!(info.journal_id > 0);
                 assert!(info.next_usn >= info.first_usn);
             }

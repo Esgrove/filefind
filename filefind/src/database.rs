@@ -762,8 +762,8 @@ mod tests {
 
     #[test]
     fn test_open_in_memory() {
-        let database = Database::open_in_memory().unwrap();
-        let stats = database.get_stats().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_files, 0);
         assert_eq!(stats.volume_count, 0);
     }
@@ -774,8 +774,8 @@ mod tests {
         let db_path = temp_dir.join(format!("test_filefind_{}.db", std::process::id()));
 
         // Open/create database
-        let database = Database::open(&db_path).unwrap();
-        let stats = database.get_stats().unwrap();
+        let database = Database::open(&db_path).expect("test operation");
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_files, 0);
 
         // Clean up
@@ -785,18 +785,18 @@ mod tests {
 
     #[test]
     fn test_insert_and_search_file() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Insert a volume first
         let volume = create_test_volume("TEST123", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert a file
         let file = create_test_file(volume_id, "test_document.pdf", "C:\\Documents\\test_document.pdf", 1024);
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
         // Search for the file
-        let results = database.search_by_name("document", 10).unwrap();
+        let results = database.search_by_name("document", 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "test_document.pdf");
     }
@@ -816,34 +816,34 @@ mod tests {
 
     #[test]
     fn test_search_by_glob() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("TEST456", "D:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert test files
         for name in ["report.txt", "report.pdf", "data.txt", "image.png"] {
             let file = create_test_file(volume_id, name, &format!("D:\\{name}"), 100);
-            database.insert_file(&file).unwrap();
+            database.insert_file(&file).expect("test operation");
         }
 
         // Search with glob pattern
-        let results = database.search_by_glob("*.txt", 10).unwrap();
+        let results = database.search_by_glob("*.txt", 10).expect("test operation");
         assert_eq!(results.len(), 2);
 
-        let results = database.search_by_glob("report.*", 10).unwrap();
+        let results = database.search_by_glob("report.*", 10).expect("test operation");
         assert_eq!(results.len(), 2);
 
-        let results = database.search_by_glob("data.???", 10).unwrap();
+        let results = database.search_by_glob("data.???", 10).expect("test operation");
         assert_eq!(results.len(), 1);
     }
 
     #[test]
     fn test_search_by_regex() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("REGEX_VOL", "R:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert test files
         let files = [
@@ -857,58 +857,60 @@ mod tests {
 
         for name in files {
             let file = create_test_file(volume_id, name, &format!("R:\\{name}"), 100);
-            database.insert_file(&file).unwrap();
+            database.insert_file(&file).expect("test operation");
         }
 
         // Search for IMG_ followed by digits
-        let results = database.search_by_regex(r"IMG_\d+", false, 10).unwrap();
+        let results = database.search_by_regex(r"IMG_\d+", false, 10).expect("test operation");
         assert_eq!(results.len(), 3);
 
         // Search for files ending in .jpg
-        let results = database.search_by_regex(r"\.jpg$", false, 10).unwrap();
+        let results = database.search_by_regex(r"\.jpg$", false, 10).expect("test operation");
         assert_eq!(results.len(), 3);
 
         // Search for files with exactly 4 digits
-        let results = database.search_by_regex(r"\d{4}", false, 10).unwrap();
+        let results = database.search_by_regex(r"\d{4}", false, 10).expect("test operation");
         assert_eq!(results.len(), 4); // IMG_0001, IMG_0002, IMG_1234, report2024
 
         // Search for files starting with photo or IMG
-        let results = database.search_by_regex(r"^(photo|IMG)", false, 10).unwrap();
+        let results = database
+            .search_by_regex(r"^(photo|IMG)", false, 10)
+            .expect("test operation");
         assert_eq!(results.len(), 4);
     }
 
     #[test]
     fn test_search_by_regex_case_sensitivity() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("CASE_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let files = ["README.md", "readme.txt", "ReadMe.doc", "other.txt"];
 
         for name in files {
             let file = create_test_file(volume_id, name, &format!("C:\\{name}"), 100);
-            database.insert_file(&file).unwrap();
+            database.insert_file(&file).expect("test operation");
         }
 
         // Case-insensitive search (default)
-        let results = database.search_by_regex(r"^readme", false, 10).unwrap();
+        let results = database.search_by_regex(r"^readme", false, 10).expect("test operation");
         assert_eq!(results.len(), 3);
 
         // Case-sensitive search
-        let results = database.search_by_regex(r"^readme", true, 10).unwrap();
+        let results = database.search_by_regex(r"^readme", true, 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "readme.txt");
 
         // Case-sensitive search for uppercase
-        let results = database.search_by_regex(r"^README", true, 10).unwrap();
+        let results = database.search_by_regex(r"^README", true, 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "README.md");
     }
 
     #[test]
     fn test_search_by_regex_invalid_pattern() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Invalid regex pattern (unclosed bracket)
         let result = database.search_by_regex(r"[invalid", false, 10);
@@ -921,25 +923,27 @@ mod tests {
 
     #[test]
     fn test_search_by_regex_no_results() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("EMPTY_VOL", "E:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let file = create_test_file(volume_id, "document.txt", "E:\\document.txt", 100);
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
         // Search for pattern that won't match
-        let results = database.search_by_regex(r"^xyz\d+\.pdf$", false, 10).unwrap();
+        let results = database
+            .search_by_regex(r"^xyz\d+\.pdf$", false, 10)
+            .expect("test operation");
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_search_by_regex_special_characters() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("SPECIAL_VOL", "S:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let files = [
             "file.test.txt",
@@ -951,66 +955,68 @@ mod tests {
 
         for name in files {
             let file = create_test_file(volume_id, name, &format!("S:\\{name}"), 100);
-            database.insert_file(&file).unwrap();
+            database.insert_file(&file).expect("test operation");
         }
 
         // Search for literal dot (escaped)
-        let results = database.search_by_regex(r"file\.test", false, 10).unwrap();
+        let results = database
+            .search_by_regex(r"file\.test", false, 10)
+            .expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "file.test.txt");
 
         // Search for parentheses (escaped)
-        let results = database.search_by_regex(r"\(\d\)", false, 10).unwrap();
+        let results = database.search_by_regex(r"\(\d\)", false, 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "file(1).txt");
 
         // Search for brackets (escaped)
-        let results = database.search_by_regex(r"\[\d\]", false, 10).unwrap();
+        let results = database.search_by_regex(r"\[\d\]", false, 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "file[2].txt");
     }
 
     #[test]
     fn test_search_by_glob_with_special_characters() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("SPECIAL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert files with special characters in names
         let files = ["file_with_underscore.txt", "file%with%percent.txt", "normal.txt"];
 
         for name in files {
             let file = create_test_file(volume_id, name, &format!("C:\\{name}"), 100);
-            database.insert_file(&file).unwrap();
+            database.insert_file(&file).expect("test operation");
         }
 
         // Searching for literal underscore should match only files with underscore
-        let results = database.search_by_glob("*_*", 10).unwrap();
+        let results = database.search_by_glob("*_*", 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "file_with_underscore.txt");
 
         // Searching for literal percent should match only files with percent
-        let results = database.search_by_glob("*%*", 10).unwrap();
+        let results = database.search_by_glob("*%*", 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "file%with%percent.txt");
     }
 
     #[test]
     fn test_database_stats() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("STATS123", "E:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert files and directories
         let file = create_test_file(volume_id, "file.txt", "E:\\file.txt", 1000);
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
         let directory = create_test_directory(volume_id, "folder", "E:\\folder");
-        database.insert_file(&directory).unwrap();
+        database.insert_file(&directory).expect("test operation");
 
-        let stats = database.get_stats().unwrap();
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_files, 1);
         assert_eq!(stats.total_directories, 1);
         assert_eq!(stats.volume_count, 1);
@@ -1019,9 +1025,9 @@ mod tests {
 
     #[test]
     fn test_database_stats_empty() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
-        let stats = database.get_stats().unwrap();
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_files, 0);
         assert_eq!(stats.total_directories, 0);
         assert_eq!(stats.volume_count, 0);
@@ -1030,26 +1036,26 @@ mod tests {
 
     #[test]
     fn test_database_stats_with_multiple_volumes() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Create multiple volumes
         let volume1 = create_test_volume("VOL1", "C:");
         let volume2 = create_test_volume("VOL2", "D:");
-        let volume_id1 = database.upsert_volume(&volume1).unwrap();
-        let volume_id2 = database.upsert_volume(&volume2).unwrap();
+        let volume_id1 = database.upsert_volume(&volume1).expect("test operation");
+        let volume_id2 = database.upsert_volume(&volume2).expect("test operation");
 
         // Add files to both volumes
         database
             .insert_file(&create_test_file(volume_id1, "file1.txt", "C:\\file1.txt", 500))
-            .unwrap();
+            .expect("test operation");
         database
             .insert_file(&create_test_file(volume_id1, "file2.txt", "C:\\file2.txt", 300))
-            .unwrap();
+            .expect("test operation");
         database
             .insert_file(&create_test_file(volume_id2, "file3.txt", "D:\\file3.txt", 200))
-            .unwrap();
+            .expect("test operation");
 
-        let stats = database.get_stats().unwrap();
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_files, 3);
         assert_eq!(stats.volume_count, 2);
         assert_eq!(stats.total_size, 1000);
@@ -1057,16 +1063,16 @@ mod tests {
 
     #[test]
     fn test_upsert_volume_insert() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("NEW_VOL", "F:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
         assert!(volume_id > 0);
 
-        let retrieved = database.get_volume_by_serial("NEW_VOL").unwrap();
+        let retrieved = database.get_volume_by_serial("NEW_VOL").expect("test operation");
         assert!(retrieved.is_some());
 
-        let retrieved = retrieved.unwrap();
+        let retrieved = retrieved.expect("test operation");
         assert_eq!(retrieved.serial_number, "NEW_VOL");
         assert_eq!(retrieved.mount_point, "F:");
         assert!(retrieved.is_online);
@@ -1074,41 +1080,44 @@ mod tests {
 
     #[test]
     fn test_upsert_volume_update() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Insert initial volume
         let mut volume = create_test_volume("UPDATE_VOL", "G:");
         volume.label = Some("Original Label".to_string());
-        database.upsert_volume(&volume).unwrap();
+        database.upsert_volume(&volume).expect("test operation");
 
         // Update the same volume with new data
         volume.label = Some("Updated Label".to_string());
         volume.mount_point = "H:".to_string();
-        database.upsert_volume(&volume).unwrap();
+        database.upsert_volume(&volume).expect("test operation");
 
         // Verify update
-        let retrieved = database.get_volume_by_serial("UPDATE_VOL").unwrap().unwrap();
+        let retrieved = database
+            .get_volume_by_serial("UPDATE_VOL")
+            .expect("test operation")
+            .expect("test operation");
         assert_eq!(retrieved.label, Some("Updated Label".to_string()));
         assert_eq!(retrieved.mount_point, "H:");
 
         // Should still be only one volume
-        let all_volumes = database.get_all_volumes().unwrap();
+        let all_volumes = database.get_all_volumes().expect("test operation");
         assert_eq!(all_volumes.len(), 1);
     }
 
     #[test]
     fn test_upsert_volume_returns_correct_id_on_update() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Insert initial volume and get its ID
         let volume = create_test_volume("ID_CHECK_VOL", "I:");
-        let first_id = database.upsert_volume(&volume).unwrap();
+        let first_id = database.upsert_volume(&volume).expect("test operation");
         assert!(first_id > 0, "First insert should return a valid ID");
 
         // Update the same volume and verify we get the same ID back
         let mut updated_volume = create_test_volume("ID_CHECK_VOL", "I:");
         updated_volume.label = Some("Updated".to_string());
-        let second_id = database.upsert_volume(&updated_volume).unwrap();
+        let second_id = database.upsert_volume(&updated_volume).expect("test operation");
 
         assert_eq!(
             first_id, second_id,
@@ -1128,26 +1137,32 @@ mod tests {
 
     #[test]
     fn test_get_volume_by_serial_not_found() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
-        let result = database.get_volume_by_serial("NONEXISTENT").unwrap();
+        let result = database.get_volume_by_serial("NONEXISTENT").expect("test operation");
         assert!(result.is_none());
     }
 
     #[test]
     fn test_get_all_volumes() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Start empty
-        let volumes = database.get_all_volumes().unwrap();
+        let volumes = database.get_all_volumes().expect("test operation");
         assert!(volumes.is_empty());
 
         // Add some volumes
-        database.upsert_volume(&create_test_volume("VOL_A", "A:")).unwrap();
-        database.upsert_volume(&create_test_volume("VOL_B", "B:")).unwrap();
-        database.upsert_volume(&create_test_volume("VOL_C", "C:")).unwrap();
+        database
+            .upsert_volume(&create_test_volume("VOL_A", "A:"))
+            .expect("test operation");
+        database
+            .upsert_volume(&create_test_volume("VOL_B", "B:"))
+            .expect("test operation");
+        database
+            .upsert_volume(&create_test_volume("VOL_C", "C:"))
+            .expect("test operation");
 
-        let volumes = database.get_all_volumes().unwrap();
+        let volumes = database.get_all_volumes().expect("test operation");
         assert_eq!(volumes.len(), 3);
 
         let serials: Vec<_> = volumes.iter().map(|v| v.serial_number.as_str()).collect();
@@ -1158,10 +1173,10 @@ mod tests {
 
     #[test]
     fn test_insert_files_batch() {
-        let mut database = Database::open_in_memory().unwrap();
+        let mut database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("BATCH_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let files: Vec<FileEntry> = (0..100)
             .map(|index| {
@@ -1174,63 +1189,65 @@ mod tests {
             })
             .collect();
 
-        let count = database.insert_files_batch(&files).unwrap();
+        let count = database.insert_files_batch(&files).expect("test operation");
         assert_eq!(count, 100);
 
-        let stats = database.get_stats().unwrap();
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_files, 100);
     }
 
     #[test]
     fn test_insert_files_batch_empty() {
-        let mut database = Database::open_in_memory().unwrap();
+        let mut database = Database::open_in_memory().expect("test operation");
 
         let files: Vec<FileEntry> = vec![];
-        let count = database.insert_files_batch(&files).unwrap();
+        let count = database.insert_files_batch(&files).expect("test operation");
         assert_eq!(count, 0);
     }
 
     #[test]
     fn test_delete_file_by_path() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("DELETE_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let file_path = "C:\\to_delete.txt";
         database
             .insert_file(&create_test_file(volume_id, "to_delete.txt", file_path, 100))
-            .unwrap();
+            .expect("test operation");
 
         // Verify file exists
-        let results = database.search_by_name("to_delete", 10).unwrap();
+        let results = database.search_by_name("to_delete", 10).expect("test operation");
         assert_eq!(results.len(), 1);
 
         // Delete the file
-        let deleted = database.delete_file_by_path(file_path).unwrap();
+        let deleted = database.delete_file_by_path(file_path).expect("test operation");
         assert!(deleted);
 
         // Verify file is gone
-        let results = database.search_by_name("to_delete", 10).unwrap();
+        let results = database.search_by_name("to_delete", 10).expect("test operation");
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_delete_file_by_path_not_found() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
-        let deleted = database.delete_file_by_path("C:\\nonexistent.txt").unwrap();
+        let deleted = database
+            .delete_file_by_path("C:\\nonexistent.txt")
+            .expect("test operation");
         assert!(!deleted);
     }
 
     #[test]
     fn test_delete_files_for_volume() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume1 = create_test_volume("VOL_DEL1", "C:");
         let volume2 = create_test_volume("VOL_DEL2", "D:");
-        let volume_id1 = database.upsert_volume(&volume1).unwrap();
-        let volume_id2 = database.upsert_volume(&volume2).unwrap();
+        let volume_id1 = database.upsert_volume(&volume1).expect("test operation");
+        let volume_id2 = database.upsert_volume(&volume2).expect("test operation");
 
         // Add files to both volumes
         for index in 0..5 {
@@ -1241,7 +1258,7 @@ mod tests {
                     &format!("C:\\file{index}.txt"),
                     100,
                 ))
-                .unwrap();
+                .expect("test operation");
         }
         for index in 0..3 {
             database
@@ -1251,46 +1268,46 @@ mod tests {
                     &format!("D:\\other{index}.txt"),
                     100,
                 ))
-                .unwrap();
+                .expect("test operation");
         }
 
         // Delete files for volume 1
-        let deleted_count = database.delete_files_for_volume(volume_id1).unwrap();
+        let deleted_count = database.delete_files_for_volume(volume_id1).expect("test operation");
         assert_eq!(deleted_count, 5);
 
         // Volume 2 files should remain
-        let stats = database.get_stats().unwrap();
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_files, 3);
     }
 
     #[test]
     fn test_search_by_name_case_insensitive() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("CASE_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         database
             .insert_file(&create_test_file(volume_id, "Document.PDF", "C:\\Document.PDF", 100))
-            .unwrap();
+            .expect("test operation");
 
         // Search should be case-insensitive
-        let results = database.search_by_name("document", 10).unwrap();
+        let results = database.search_by_name("document", 10).expect("test operation");
         assert_eq!(results.len(), 1);
 
-        let results = database.search_by_name("DOCUMENT", 10).unwrap();
+        let results = database.search_by_name("DOCUMENT", 10).expect("test operation");
         assert_eq!(results.len(), 1);
 
-        let results = database.search_by_name("pdf", 10).unwrap();
+        let results = database.search_by_name("pdf", 10).expect("test operation");
         assert_eq!(results.len(), 1);
     }
 
     #[test]
     fn test_search_by_name_limit() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("LIMIT_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert many matching files
         for index in 0..50 {
@@ -1301,33 +1318,33 @@ mod tests {
                     &format!("C:\\document{index}.txt"),
                     100,
                 ))
-                .unwrap();
+                .expect("test operation");
         }
 
         // Search with limit
-        let results = database.search_by_name("document", 10).unwrap();
+        let results = database.search_by_name("document", 10).expect("test operation");
         assert_eq!(results.len(), 10);
 
-        let results = database.search_by_name("document", 25).unwrap();
+        let results = database.search_by_name("document", 25).expect("test operation");
         assert_eq!(results.len(), 25);
 
-        let results = database.search_by_name("document", 100).unwrap();
+        let results = database.search_by_name("document", 100).expect("test operation");
         assert_eq!(results.len(), 50);
     }
 
     #[test]
     fn test_search_by_exact_name() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("EXACT_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         database
             .insert_file(&create_test_file(volume_id, "readme.txt", "C:\\readme.txt", 100))
-            .unwrap();
+            .expect("test operation");
         database
             .insert_file(&create_test_file(volume_id, "README.txt", "C:\\docs\\README.txt", 200))
-            .unwrap();
+            .expect("test operation");
         database
             .insert_file(&create_test_file(
                 volume_id,
@@ -1335,23 +1352,23 @@ mod tests {
                 "C:\\readme_backup.txt",
                 150,
             ))
-            .unwrap();
+            .expect("test operation");
 
         // Exact name search should only match exact names (case-insensitive)
-        let results = database.search_by_exact_name("readme.txt", 10).unwrap();
+        let results = database.search_by_exact_name("readme.txt", 10).expect("test operation");
         assert_eq!(results.len(), 2); // readme.txt and README.txt
 
         // Should not match partial names
-        let results = database.search_by_exact_name("readme", 10).unwrap();
+        let results = database.search_by_exact_name("readme", 10).expect("test operation");
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_search_by_path() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("PATH_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         database
             .insert_file(&create_test_file(
@@ -1360,7 +1377,7 @@ mod tests {
                 "C:\\Users\\test\\Documents\\file.txt",
                 100,
             ))
-            .unwrap();
+            .expect("test operation");
         database
             .insert_file(&create_test_file(
                 volume_id,
@@ -1368,108 +1385,126 @@ mod tests {
                 "C:\\Users\\admin\\Documents\\other.txt",
                 100,
             ))
-            .unwrap();
+            .expect("test operation");
         database
             .insert_file(&create_test_file(volume_id, "readme.txt", "C:\\readme.txt", 100))
-            .unwrap();
+            .expect("test operation");
 
         // Search by path fragment
-        let results = database.search_by_path("Documents", 10).unwrap();
+        let results = database.search_by_path("Documents", 10).expect("test operation");
         assert_eq!(results.len(), 2);
 
-        let results = database.search_by_path("Users\\test", 10).unwrap();
+        let results = database.search_by_path("Users\\test", 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "file.txt");
     }
 
     #[test]
     fn test_update_volume_usn() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("USN_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Update USN
-        database.update_volume_usn(volume_id, 12345).unwrap();
+        database.update_volume_usn(volume_id, 12345).expect("test operation");
 
         // Verify update
-        let retrieved = database.get_volume_by_serial("USN_VOL").unwrap().unwrap();
+        let retrieved = database
+            .get_volume_by_serial("USN_VOL")
+            .expect("test operation")
+            .expect("test operation");
         assert_eq!(retrieved.last_usn, Some(12345));
         assert!(retrieved.last_scan_time.is_some());
     }
 
     #[test]
     fn test_update_volume_usn_by_drive() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Test with mount point without trailing slash
         let mut volume1 = create_test_volume("DRIVE_USN1", "C:");
         volume1.mount_point = "C:".to_string();
-        database.upsert_volume(&volume1).unwrap();
+        database.upsert_volume(&volume1).expect("test operation");
 
         // Test with mount point with trailing slash
         let mut volume2 = create_test_volume("DRIVE_USN2", "D:\\");
         volume2.mount_point = "D:\\".to_string();
-        database.upsert_volume(&volume2).unwrap();
+        database.upsert_volume(&volume2).expect("test operation");
 
         // Update USN by drive letter
-        database.update_volume_usn_by_drive('C', 111).unwrap();
-        database.update_volume_usn_by_drive('D', 222).unwrap();
+        database.update_volume_usn_by_drive('C', 111).expect("test operation");
+        database.update_volume_usn_by_drive('D', 222).expect("test operation");
 
         // Verify updates
-        let vol1 = database.get_volume_by_serial("DRIVE_USN1").unwrap().unwrap();
+        let vol1 = database
+            .get_volume_by_serial("DRIVE_USN1")
+            .expect("test operation")
+            .expect("test operation");
         assert_eq!(vol1.last_usn, Some(111));
 
-        let vol2 = database.get_volume_by_serial("DRIVE_USN2").unwrap().unwrap();
+        let vol2 = database
+            .get_volume_by_serial("DRIVE_USN2")
+            .expect("test operation")
+            .expect("test operation");
         assert_eq!(vol2.last_usn, Some(222));
     }
 
     #[test]
     fn test_get_volume_last_usn() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // No volume yet
-        let usn = database.get_volume_last_usn('X').unwrap();
+        let usn = database.get_volume_last_usn('X').expect("test operation");
         assert!(usn.is_none());
 
         // Add volume with USN
         let mut volume = create_test_volume("USN_GET", "X:");
         volume.last_usn = Some(99999);
-        database.upsert_volume(&volume).unwrap();
+        database.upsert_volume(&volume).expect("test operation");
 
-        let usn = database.get_volume_last_usn('X').unwrap();
+        let usn = database.get_volume_last_usn('X').expect("test operation");
         assert_eq!(usn, Some(99999));
 
         // Test lowercase drive letter
-        let usn = database.get_volume_last_usn('x').unwrap();
+        let usn = database.get_volume_last_usn('x').expect("test operation");
         assert_eq!(usn, Some(99999));
     }
 
     #[test]
     fn test_set_volume_online() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("ONLINE_VOL", "Z:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Initially online
-        let vol = database.get_volume_by_serial("ONLINE_VOL").unwrap().unwrap();
+        let vol = database
+            .get_volume_by_serial("ONLINE_VOL")
+            .expect("test operation")
+            .expect("test operation");
         assert!(vol.is_online);
 
         // Set offline
-        database.set_volume_online(volume_id, false).unwrap();
-        let vol = database.get_volume_by_serial("ONLINE_VOL").unwrap().unwrap();
+        database.set_volume_online(volume_id, false).expect("test operation");
+        let vol = database
+            .get_volume_by_serial("ONLINE_VOL")
+            .expect("test operation")
+            .expect("test operation");
         assert!(!vol.is_online);
 
         // Set back online
-        database.set_volume_online(volume_id, true).unwrap();
-        let vol = database.get_volume_by_serial("ONLINE_VOL").unwrap().unwrap();
+        database.set_volume_online(volume_id, true).expect("test operation");
+        let vol = database
+            .get_volume_by_serial("ONLINE_VOL")
+            .expect("test operation")
+            .expect("test operation");
         assert!(vol.is_online);
     }
 
     #[test]
     fn test_volume_type_preserved() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume_types = [
             (VolumeType::Ntfs, "NTFS_VOL"),
@@ -1489,19 +1524,22 @@ mod tests {
                 last_usn: None,
                 is_online: true,
             };
-            database.upsert_volume(&volume).unwrap();
+            database.upsert_volume(&volume).expect("test operation");
 
-            let retrieved = database.get_volume_by_serial(serial).unwrap().unwrap();
+            let retrieved = database
+                .get_volume_by_serial(serial)
+                .expect("test operation")
+                .expect("test operation");
             assert_eq!(retrieved.volume_type, volume_type);
         }
     }
 
     #[test]
     fn test_file_with_timestamps() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("TIME_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let now = SystemTime::now();
         let created = now - std::time::Duration::from_secs(3600);
@@ -1520,9 +1558,11 @@ mod tests {
             mft_reference: Some(12345),
         };
 
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
-        let results = database.search_by_exact_name("timed_file.txt", 10).unwrap();
+        let results = database
+            .search_by_exact_name("timed_file.txt", 10)
+            .expect("test operation");
         assert_eq!(results.len(), 1);
 
         let retrieved = &results[0];
@@ -1533,7 +1573,7 @@ mod tests {
         // Verify timestamps are approximately correct (within 1 second due to precision loss)
         let created_diff = retrieved
             .created_time
-            .unwrap()
+            .expect("test operation")
             .duration_since(created)
             .unwrap_or_default();
         assert!(created_diff.as_secs() < 2);
@@ -1541,18 +1581,18 @@ mod tests {
 
     #[test]
     fn test_file_entry_id_assigned() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("ID_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let file = create_test_file(volume_id, "test.txt", "C:\\test.txt", 100);
-        let file_id = database.insert_file(&file).unwrap();
+        let file_id = database.insert_file(&file).expect("test operation");
         assert!(file_id > 0);
 
-        let results = database.search_by_exact_name("test.txt", 10).unwrap();
+        let results = database.search_by_exact_name("test.txt", 10).expect("test operation");
         assert!(results[0].id.is_some());
-        assert_eq!(results[0].id.unwrap(), file_id);
+        assert_eq!(results[0].id.expect("test operation"), file_id);
     }
 
     #[test]
@@ -1578,67 +1618,69 @@ mod tests {
 
     #[test]
     fn test_search_empty_pattern() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("EMPTY_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         database
             .insert_file(&create_test_file(volume_id, "file.txt", "C:\\file.txt", 100))
-            .unwrap();
+            .expect("test operation");
 
         // Empty pattern matches all (because of %% pattern)
-        let results = database.search_by_name("", 10).unwrap();
+        let results = database.search_by_name("", 10).expect("test operation");
         assert_eq!(results.len(), 1);
     }
 
     #[test]
     fn test_search_no_results() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("NO_RES_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         database
             .insert_file(&create_test_file(volume_id, "file.txt", "C:\\file.txt", 100))
-            .unwrap();
+            .expect("test operation");
 
-        let results = database.search_by_name("nonexistent_xyz", 10).unwrap();
+        let results = database.search_by_name("nonexistent_xyz", 10).expect("test operation");
         assert!(results.is_empty());
 
-        let results = database.search_by_glob("*.xyz", 10).unwrap();
+        let results = database.search_by_glob("*.xyz", 10).expect("test operation");
         assert!(results.is_empty());
 
-        let results = database.search_by_exact_name("nothere.txt", 10).unwrap();
+        let results = database
+            .search_by_exact_name("nothere.txt", 10)
+            .expect("test operation");
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_large_file_size() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("LARGE_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Test with a very large file size (10 TB)
         let large_size: u64 = 10 * 1024 * 1024 * 1024 * 1024;
         let file = create_test_file(volume_id, "huge.bin", "C:\\huge.bin", large_size);
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
-        let results = database.search_by_exact_name("huge.bin", 10).unwrap();
+        let results = database.search_by_exact_name("huge.bin", 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].size, large_size);
 
-        let stats = database.get_stats().unwrap();
+        let stats = database.get_stats().expect("test operation");
         assert_eq!(stats.total_size, large_size);
     }
 
     #[test]
     fn test_unicode_filenames() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("UNICODE_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let unicode_names = [
             "文档.txt",
@@ -1650,39 +1692,39 @@ mod tests {
 
         for name in unicode_names {
             let file = create_test_file(volume_id, name, &format!("C:\\{name}"), 100);
-            database.insert_file(&file).unwrap();
+            database.insert_file(&file).expect("test operation");
         }
 
         // Search for unicode files
-        let results = database.search_by_name("文档", 10).unwrap();
+        let results = database.search_by_name("文档", 10).expect("test operation");
         assert_eq!(results.len(), 1);
 
-        let results = database.search_by_glob("*.txt", 10).unwrap();
+        let results = database.search_by_glob("*.txt", 10).expect("test operation");
         assert_eq!(results.len(), 3);
 
-        let results = database.search_by_name("emoji", 10).unwrap();
+        let results = database.search_by_name("emoji", 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert!(results[0].name.contains("😀"));
     }
 
     #[test]
     fn test_file_with_parent_id() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("PARENT_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert parent directory
         let parent_dir = create_test_directory(volume_id, "Documents", "C:\\Documents");
-        let parent_id = database.insert_file(&parent_dir).unwrap();
+        let parent_id = database.insert_file(&parent_dir).expect("test operation");
 
         // Insert child file with parent reference
         let mut child_file = create_test_file(volume_id, "file.txt", "C:\\Documents\\file.txt", 100);
         child_file.parent_id = Some(parent_id);
-        database.insert_file(&child_file).unwrap();
+        database.insert_file(&child_file).expect("test operation");
 
         // Search and verify parent_id is preserved
-        let results = database.search_by_exact_name("file.txt", 10).unwrap();
+        let results = database.search_by_exact_name("file.txt", 10).expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].parent_id, Some(parent_id));
     }
@@ -1698,49 +1740,52 @@ mod tests {
 
     #[test]
     fn test_connection_accessor() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
         let connection = database.connection();
 
         // Verify we can use the connection for raw queries
         let count: i64 = connection
             .query_row("SELECT COUNT(*) FROM volumes", [], |row| row.get(0))
-            .unwrap();
+            .expect("test operation");
         assert_eq!(count, 0);
     }
 
     #[test]
     fn test_volume_label_optional() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Volume without label
         let mut volume = create_test_volume("NO_LABEL", "X:");
         volume.label = None;
-        database.upsert_volume(&volume).unwrap();
+        database.upsert_volume(&volume).expect("test operation");
 
-        let retrieved = database.get_volume_by_serial("NO_LABEL").unwrap().unwrap();
+        let retrieved = database
+            .get_volume_by_serial("NO_LABEL")
+            .expect("test operation")
+            .expect("test operation");
         assert!(retrieved.label.is_none());
     }
 
     #[test]
     fn test_glob_single_character_wildcard() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("SINGLE_WILD", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         let files = ["file1.txt", "file2.txt", "file10.txt", "fileX.txt"];
         for name in files {
             database
                 .insert_file(&create_test_file(volume_id, name, &format!("C:\\{name}"), 100))
-                .unwrap();
+                .expect("test operation");
         }
 
         // ? should match single character
-        let results = database.search_by_glob("file?.txt", 10).unwrap();
+        let results = database.search_by_glob("file?.txt", 10).expect("test operation");
         assert_eq!(results.len(), 3); // file1, file2, fileX
 
         // Multiple ? wildcards
-        let results = database.search_by_glob("file??.txt", 10).unwrap();
+        let results = database.search_by_glob("file??.txt", 10).expect("test operation");
         assert_eq!(results.len(), 1); // file10
     }
 
@@ -1763,10 +1808,10 @@ mod tests {
 
     #[test]
     fn test_file_with_negative_timestamps_in_database() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("NEG_TIME_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert a file with valid timestamps
         let file = FileEntry {
@@ -1781,7 +1826,7 @@ mod tests {
             modified_time: Some(SystemTime::UNIX_EPOCH),
             mft_reference: None,
         };
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
         // Manually insert a file with negative timestamps using raw SQL
         database
@@ -1799,10 +1844,12 @@ mod tests {
                     -500i64
                 ],
             )
-            .unwrap();
+            .expect("test operation");
 
         // Search should succeed and return the file with None timestamps
-        let results = database.search_by_exact_name("negative_time.txt", 10).unwrap();
+        let results = database
+            .search_by_exact_name("negative_time.txt", 10)
+            .expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "negative_time.txt");
         assert_eq!(results[0].size, 200);
@@ -1812,27 +1859,29 @@ mod tests {
 
     #[test]
     fn test_file_with_max_u64_size() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("MAX_SIZE_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // SQLite stores integers as i64, so the max safe positive value is i64::MAX
         let max_safe_size = i64::MAX as u64;
         let file = create_test_file(volume_id, "max_size.bin", "C:\\max_size.bin", max_safe_size);
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
-        let results = database.search_by_exact_name("max_size.bin", 10).unwrap();
+        let results = database
+            .search_by_exact_name("max_size.bin", 10)
+            .expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].size, max_safe_size);
     }
 
     #[test]
     fn test_file_with_negative_size_in_database() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("NEG_SIZE_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Manually insert a file with negative size using raw SQL (simulating corrupted data)
         database
@@ -1842,10 +1891,12 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![volume_id, "negative_size.txt", "C:\\negative_size.txt", false, -100i64],
             )
-            .unwrap();
+            .expect("test operation");
 
         // Search should succeed and return the file with size defaulting to 0
-        let results = database.search_by_exact_name("negative_size.txt", 10).unwrap();
+        let results = database
+            .search_by_exact_name("negative_size.txt", 10)
+            .expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "negative_size.txt");
         assert_eq!(results[0].size, 0); // Negative size should default to 0
@@ -1853,25 +1904,29 @@ mod tests {
 
     #[test]
     fn test_file_with_mft_reference_edge_cases() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("MFT_REF_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Test with valid MFT reference
         let mut file = create_test_file(volume_id, "valid_mft.txt", "C:\\valid_mft.txt", 100);
         file.mft_reference = Some(12345);
-        database.insert_file(&file).unwrap();
+        database.insert_file(&file).expect("test operation");
 
-        let results = database.search_by_exact_name("valid_mft.txt", 10).unwrap();
+        let results = database
+            .search_by_exact_name("valid_mft.txt", 10)
+            .expect("test operation");
         assert_eq!(results[0].mft_reference, Some(12345));
 
         // Test with large MFT reference (max i64 as u64)
         let mut file2 = create_test_file(volume_id, "large_mft.txt", "C:\\large_mft.txt", 100);
         file2.mft_reference = Some(i64::MAX as u64);
-        database.insert_file(&file2).unwrap();
+        database.insert_file(&file2).expect("test operation");
 
-        let results = database.search_by_exact_name("large_mft.txt", 10).unwrap();
+        let results = database
+            .search_by_exact_name("large_mft.txt", 10)
+            .expect("test operation");
         assert_eq!(results[0].mft_reference, Some(i64::MAX as u64));
 
         // Manually insert a file with negative MFT reference (simulating corrupted data)
@@ -1882,17 +1937,19 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![volume_id, "neg_mft.txt", "C:\\neg_mft.txt", false, 100, -1i64],
             )
-            .unwrap();
+            .expect("test operation");
 
         // Search should succeed and return the file with mft_reference as None
-        let results = database.search_by_exact_name("neg_mft.txt", 10).unwrap();
+        let results = database
+            .search_by_exact_name("neg_mft.txt", 10)
+            .expect("test operation");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mft_reference, None); // Negative MFT reference should become None
     }
 
     #[test]
     fn test_volume_with_negative_last_scan_time() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         // Manually insert a volume with negative last_scan_time
         database
@@ -1902,20 +1959,20 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params!["NEG_SCAN_VOL", "Test", "C:", "ntfs", -1000i64, true],
             )
-            .unwrap();
+            .expect("test operation");
 
-        let volume = database.get_volume_by_serial("NEG_SCAN_VOL").unwrap();
+        let volume = database.get_volume_by_serial("NEG_SCAN_VOL").expect("test operation");
         assert!(volume.is_some());
-        let volume = volume.unwrap();
+        let volume = volume.expect("test operation");
         assert!(volume.last_scan_time.is_none()); // Negative timestamp should become None
     }
 
     #[test]
     fn test_search_with_corrupted_integer_data() {
-        let database = Database::open_in_memory().unwrap();
+        let database = Database::open_in_memory().expect("test operation");
 
         let volume = create_test_volume("CORRUPT_VOL", "C:");
-        let volume_id = database.upsert_volume(&volume).unwrap();
+        let volume_id = database.upsert_volume(&volume).expect("test operation");
 
         // Insert multiple files with various edge case values
         database
@@ -1929,24 +1986,36 @@ mod tests {
                  ({volume_id}, 'neg_mft.txt', 'C:\\neg_mft.txt', 0, 750, 1700000000, 1700000000, -42),
                  ({volume_id}, 'all_neg.txt', 'C:\\all_neg.txt', 0, -1, -1000, -2000, -3000)"
             ))
-            .unwrap();
+            .expect("test operation");
 
         // Search should return all files without errors
-        let results = database.search_by_glob("*.txt", 100).unwrap();
+        let results = database.search_by_glob("*.txt", 100).expect("test operation");
         assert_eq!(results.len(), 5);
 
         // Verify the corrupted values are handled correctly
-        let neg_size = results.iter().find(|f| f.name == "neg_size.txt").unwrap();
+        let neg_size = results
+            .iter()
+            .find(|f| f.name == "neg_size.txt")
+            .expect("test operation");
         assert_eq!(neg_size.size, 0);
 
-        let neg_time = results.iter().find(|f| f.name == "neg_time.txt").unwrap();
+        let neg_time = results
+            .iter()
+            .find(|f| f.name == "neg_time.txt")
+            .expect("test operation");
         assert!(neg_time.created_time.is_none());
         assert!(neg_time.modified_time.is_none());
 
-        let neg_mft = results.iter().find(|f| f.name == "neg_mft.txt").unwrap();
+        let neg_mft = results
+            .iter()
+            .find(|f| f.name == "neg_mft.txt")
+            .expect("test operation");
         assert!(neg_mft.mft_reference.is_none());
 
-        let all_neg = results.iter().find(|f| f.name == "all_neg.txt").unwrap();
+        let all_neg = results
+            .iter()
+            .find(|f| f.name == "all_neg.txt")
+            .expect("test operation");
         assert_eq!(all_neg.size, 0);
         assert!(all_neg.created_time.is_none());
         assert!(all_neg.modified_time.is_none());

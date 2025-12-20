@@ -287,10 +287,22 @@ mod tests {
 
     #[test]
     fn test_output_format_from_str() {
-        assert_eq!("simple".parse::<OutputFormat>().unwrap(), OutputFormat::Simple);
-        assert_eq!("DETAILED".parse::<OutputFormat>().unwrap(), OutputFormat::Detailed);
-        assert_eq!("Simple".parse::<OutputFormat>().unwrap(), OutputFormat::Simple);
-        assert_eq!("SIMPLE".parse::<OutputFormat>().unwrap(), OutputFormat::Simple);
+        assert_eq!(
+            "simple".parse::<OutputFormat>().expect("parse simple"),
+            OutputFormat::Simple
+        );
+        assert_eq!(
+            "DETAILED".parse::<OutputFormat>().expect("parse detailed"),
+            OutputFormat::Detailed
+        );
+        assert_eq!(
+            "Simple".parse::<OutputFormat>().expect("parse Simple"),
+            OutputFormat::Simple
+        );
+        assert_eq!(
+            "SIMPLE".parse::<OutputFormat>().expect("parse SIMPLE"),
+            OutputFormat::Simple
+        );
         assert!("invalid".parse::<OutputFormat>().is_err());
         assert!("".parse::<OutputFormat>().is_err());
     }

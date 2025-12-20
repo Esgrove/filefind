@@ -1,5 +1,10 @@
 //! Shared library for filefind - configuration, database, and common types.
 
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use colored::Colorize;
+
 pub mod config;
 pub mod database;
 pub mod ipc;
@@ -12,10 +17,6 @@ pub use ipc::{
     get_ipc_path, read_message, serialize_command, serialize_response, write_message,
 };
 pub use types::{FileChangeEvent, FileEntry, IndexedVolume, VolumeType};
-
-use std::path::Path;
-
-use colored::Colorize;
 
 /// Project name constant.
 pub const PROJECT_NAME: &str = "filefind";
@@ -226,6 +227,31 @@ pub fn format_size(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// Format a large number with thousands separators (e.g., 1234567 -> "1,234,567").
+#[must_use]
+pub fn format_number(number: u64) -> String {
+    let string = number.to_string();
+    let mut result = String::new();
+
+    for (count, character) in string.chars().rev().enumerate() {
+        if count > 0 && count % 3 == 0 {
+            result.insert(0, ',');
+        }
+        result.insert(0, character);
+    }
+
+    result
+}
+
+/// Get the log directory path: ~/logs/filefind/
+///
+/// # Errors
+/// Returns an error if the home directory cannot be determined.
+pub fn get_log_directory() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    Ok(home.join("logs").join(PROJECT_NAME))
 }
 
 #[cfg(test)]
@@ -487,5 +513,60 @@ mod tests {
         assert!(!is_mapped_network_drive(Path::new("C:\\")));
         assert!(!is_mapped_network_drive(Path::new("Z:\\")));
         assert!(!is_mapped_network_drive(Path::new(r"\\server\share")));
+    }
+
+    #[test]
+    fn test_format_number_zero() {
+        assert_eq!(format_number(0), "0");
+    }
+
+    #[test]
+    fn test_format_number_small() {
+        assert_eq!(format_number(1), "1");
+        assert_eq!(format_number(12), "12");
+        assert_eq!(format_number(123), "123");
+        assert_eq!(format_number(999), "999");
+    }
+
+    #[test]
+    fn test_format_number_thousands() {
+        assert_eq!(format_number(1000), "1,000");
+        assert_eq!(format_number(1234), "1,234");
+        assert_eq!(format_number(12345), "12,345");
+        assert_eq!(format_number(123_456), "123,456");
+    }
+
+    #[test]
+    fn test_format_number_millions() {
+        assert_eq!(format_number(1_000_000), "1,000,000");
+        assert_eq!(format_number(1_234_567), "1,234,567");
+        assert_eq!(format_number(12_345_678), "12,345,678");
+        assert_eq!(format_number(123_456_789), "123,456,789");
+    }
+
+    #[test]
+    fn test_format_number_billions() {
+        assert_eq!(format_number(1_000_000_000), "1,000,000,000");
+        assert_eq!(format_number(1_234_567_890), "1,234,567,890");
+    }
+
+    #[test]
+    fn test_format_number_large() {
+        // Test u64 max value
+        assert_eq!(format_number(u64::MAX), "18,446,744,073,709,551,615");
+    }
+
+    #[test]
+    fn test_get_log_directory() {
+        let result = get_log_directory();
+        assert!(result.is_ok());
+
+        let path = result.expect("should return path");
+        let path_str = path.to_string_lossy();
+
+        // Should contain the project name
+        assert!(path_str.contains(PROJECT_NAME));
+        // Should contain "logs" directory
+        assert!(path_str.contains("logs"));
     }
 }

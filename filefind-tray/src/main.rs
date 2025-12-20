@@ -9,10 +9,9 @@
 mod app;
 mod icons;
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use clap::Parser;
+use filefind::get_log_directory;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -74,10 +73,4 @@ fn init_logging(verbose: bool) -> Result<()> {
     tracing::debug!("Logging to {}", log_dir.display());
 
     Ok(())
-}
-
-/// Get the log directory path: ~/logs/filefind/
-fn get_log_directory() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    Ok(home.join("logs").join(filefind::PROJECT_NAME))
 }

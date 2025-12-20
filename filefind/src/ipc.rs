@@ -908,7 +908,7 @@ mod tests {
             uptime_seconds: 3600,
             is_paused: false,
         };
-        let response = DaemonResponse::Status(status.clone());
+        let response = DaemonResponse::Status(status);
 
         // Step 4: Server sends response
         let mut response_buffer = Vec::new();
@@ -1000,16 +1000,16 @@ mod tests {
             DaemonStateInfo::Stopping,
         ];
 
-        for state in states {
-            let status = DaemonStatus {
-                state,
+        for daemon_state in states {
+            let daemon_status = DaemonStatus {
+                state: daemon_state,
                 indexed_files: 123,
                 indexed_directories: 45,
                 monitored_volumes: 2,
                 uptime_seconds: 60,
                 is_paused: false,
             };
-            let response = DaemonResponse::Status(status);
+            let response = DaemonResponse::Status(daemon_status);
 
             // Full roundtrip
             let mut buffer = Vec::new();
@@ -1021,7 +1021,7 @@ mod tests {
             let received_response = deserialize_response(&received_bytes).expect("deserialize");
 
             match received_response {
-                DaemonResponse::Status(s) => assert_eq!(s.state, state),
+                DaemonResponse::Status(s) => assert_eq!(s.state, daemon_state),
                 other => panic!("Expected Status response, got {other:?}"),
             }
         }
@@ -1089,7 +1089,7 @@ mod tests {
         }
     }
 
-    /// Tests boundary values for numeric fields in DaemonStatus.
+    /// Tests boundary values for numeric fields in `DaemonStatus`.
     #[test]
     fn test_integration_status_boundary_values() {
         use std::io::Cursor;
@@ -1322,13 +1322,13 @@ mod tests {
         let mut read_handle = std::ptr::null_mut();
         let mut write_handle = std::ptr::null_mut();
 
-        let result = unsafe { CreatePipe(&mut read_handle, &mut write_handle, std::ptr::null(), 0) };
+        let result = unsafe { CreatePipe(&raw mut read_handle, &raw mut write_handle, std::ptr::null(), 0) };
 
         assert!(result != 0, "Failed to create pipe");
 
         unsafe {
-            let read_owned = OwnedHandle::from_raw_handle(read_handle as *mut std::ffi::c_void);
-            let write_owned = OwnedHandle::from_raw_handle(write_handle as *mut std::ffi::c_void);
+            let read_owned = OwnedHandle::from_raw_handle(read_handle);
+            let write_owned = OwnedHandle::from_raw_handle(write_handle);
             (std::fs::File::from(read_owned), std::fs::File::from(write_owned))
         }
     }

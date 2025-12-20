@@ -14,15 +14,15 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use filefind::{
-    Config, DaemonStateInfo, Database, FileChangeEvent, FileEntry, IpcClient, print_error, print_info, print_success,
-    print_warning,
+    Config, DaemonStateInfo, Database, FileChangeEvent, FileEntry, IpcClient, format_number, print_error, print_info,
+    print_success, print_warning,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc_server::{IpcServerState, IpcToDaemon, spawn_ipc_server};
 use crate::mft::detect_ntfs_volumes;
-use crate::scanner::{format_number, run_scan};
+use crate::scanner::run_scan;
 use crate::usn::UsnMonitor;
 use crate::watcher::{FileWatcher, WatcherConfig};
 

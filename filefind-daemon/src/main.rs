@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use filefind::Config;
+use filefind::{Config, get_log_directory};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -178,7 +178,7 @@ fn init_logging(verbose: bool, foreground: bool) -> Result<()> {
     Ok(())
 }
 
-/// Delete the database file.
+/// Delete the database file and start fresh.
 fn reset_database(force: bool, config: &Config) -> Result<()> {
     let database_path = config.database_path();
 
@@ -205,10 +205,4 @@ fn reset_database(force: bool, config: &Config) -> Result<()> {
     println!("Database deleted: {}", database_path.display());
 
     Ok(())
-}
-
-/// Get the log directory path: ~/logs/filefind/
-fn get_log_directory() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    Ok(home.join("logs").join(filefind::PROJECT_NAME))
 }

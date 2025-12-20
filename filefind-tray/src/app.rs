@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use tray_icon::menu::{AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
-use filefind::{DaemonStateInfo, DaemonStatus, IpcClient};
+use filefind::{DaemonStateInfo, DaemonStatus, IpcClient, format_number};
 
 use crate::icons;
 
@@ -116,7 +116,7 @@ pub fn run() -> Result<()> {
             }
 
             // Periodically update status
-            if last_update.elapsed() >= update_interval {
+            if last_update.elapsed() >= UPDATE_INTERVAL {
                 update_tray_status(&tray_icon, &ipc_client);
                 last_update = std::time::Instant::now();
             }
@@ -297,23 +297,6 @@ fn format_status_tooltip(status: &DaemonStatus) -> String {
         DaemonStateInfo::Stopping => "Filefind - Stopping...".to_string(),
         DaemonStateInfo::Stopped => "Filefind - Stopped".to_string(),
     }
-}
-
-/// Format a number with thousand separators.
-fn format_number(number: u64) -> String {
-    let string = number.to_string();
-    let mut result = String::new();
-    let chars: Vec<char> = string.chars().collect();
-    let length = chars.len();
-
-    for (index, char) in chars.iter().enumerate() {
-        if index > 0 && (length - index).is_multiple_of(3) {
-            result.push(',');
-        }
-        result.push(*char);
-    }
-
-    result
 }
 
 /// Start the daemon process.
