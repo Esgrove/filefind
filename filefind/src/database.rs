@@ -101,10 +101,10 @@ impl Database {
                 );
 
                 -- Indexes for fast searching
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path ON files(full_path);
                 CREATE INDEX IF NOT EXISTS idx_files_name ON files(name COLLATE NOCASE);
                 CREATE INDEX IF NOT EXISTS idx_files_volume ON files(volume_id);
                 CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
-                CREATE INDEX IF NOT EXISTS idx_files_path ON files(full_path);
                 CREATE INDEX IF NOT EXISTS idx_files_is_directory ON files(is_directory);
                 CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_time);
 
@@ -186,7 +186,17 @@ impl Database {
             )
             .context("Failed to upsert volume")?;
 
-        let volume_id = self.connection.last_insert_rowid();
+        // last_insert_rowid() returns 0 when ON CONFLICT triggers an UPDATE,
+        // so we need to query for the actual ID by serial number
+        let volume_id: i64 = self
+            .connection
+            .query_row(
+                "SELECT id FROM volumes WHERE serial_number = ?1",
+                params![volume.serial_number],
+                |row| row.get(0),
+            )
+            .context("Failed to get volume ID after upsert")?;
+
         Ok(volume_id)
     }
 
@@ -263,6 +273,15 @@ impl Database {
                 r"
                 INSERT INTO files (volume_id, parent_id, name, full_path, is_directory, size, created_time, modified_time, mft_reference)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                ON CONFLICT(full_path) DO UPDATE SET
+                    volume_id = excluded.volume_id,
+                    parent_id = excluded.parent_id,
+                    name = excluded.name,
+                    is_directory = excluded.is_directory,
+                    size = excluded.size,
+                    created_time = excluded.created_time,
+                    modified_time = excluded.modified_time,
+                    mft_reference = excluded.mft_reference
                 ",
                 params![
                     file.volume_id,
@@ -293,6 +312,15 @@ impl Database {
                 r"
                 INSERT INTO files (volume_id, parent_id, name, full_path, is_directory, size, created_time, modified_time, mft_reference)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                ON CONFLICT(full_path) DO UPDATE SET
+                    volume_id = excluded.volume_id,
+                    parent_id = excluded.parent_id,
+                    name = excluded.name,
+                    is_directory = excluded.is_directory,
+                    size = excluded.size,
+                    created_time = excluded.created_time,
+                    modified_time = excluded.modified_time,
+                    mft_reference = excluded.mft_reference
                 ",
             )?;
 
@@ -1066,6 +1094,36 @@ mod tests {
         // Should still be only one volume
         let all_volumes = database.get_all_volumes().unwrap();
         assert_eq!(all_volumes.len(), 1);
+    }
+
+    #[test]
+    fn test_upsert_volume_returns_correct_id_on_update() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Insert initial volume and get its ID
+        let volume = create_test_volume("ID_CHECK_VOL", "I:");
+        let first_id = database.upsert_volume(&volume).unwrap();
+        assert!(first_id > 0, "First insert should return a valid ID");
+
+        // Update the same volume and verify we get the same ID back
+        let mut updated_volume = create_test_volume("ID_CHECK_VOL", "I:");
+        updated_volume.label = Some("Updated".to_string());
+        let second_id = database.upsert_volume(&updated_volume).unwrap();
+
+        assert_eq!(
+            first_id, second_id,
+            "upsert_volume should return the same ID on update, not 0"
+        );
+        assert!(second_id > 0, "ID should not be 0 after update");
+
+        // Verify the ID can be used as a foreign key
+        let file = create_test_file(second_id, "test.txt", "I:\\test.txt", 100);
+        let insert_result = database.insert_file(&file);
+        assert!(
+            insert_result.is_ok(),
+            "Should be able to insert file with volume_id from upsert: {:?}",
+            insert_result.err()
+        );
     }
 
     #[test]
