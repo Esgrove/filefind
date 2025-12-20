@@ -140,7 +140,9 @@ fn run(config: CliConfig) -> Result<()> {
     let search_duration = start_time.elapsed();
 
     // Filter results by drive
-    let results: Vec<_> = filter_by_drives(results, &config.drives);
+    let mut results: Vec<_> = filter_by_drives(results, &config.drives);
+
+    results.sort_unstable_by(|a, b| a.full_path.cmp(&b.full_path));
 
     // Separate directories and files
     let (directories, files): (Vec<_>, Vec<_>) = results.iter().partition(|e| e.is_directory);
@@ -231,10 +233,6 @@ fn display_grouped_output(
     options: &DisplayOptions,
     highlight_pattern: Option<&str>,
 ) {
-    // Sort directories by path
-    let mut sorted_directories: Vec<_> = directories.to_vec();
-    sorted_directories.sort_by(|a, b| a.full_path.cmp(&b.full_path));
-
     if options.files_only {
         // Files only mode: show full paths
         for file in files {
@@ -242,7 +240,7 @@ fn display_grouped_output(
         }
     } else if options.directories_only {
         // Dirs only mode: show full path with file count
-        for directory in &sorted_directories {
+        for directory in directories {
             let file_count = count_files_in_directory(files, &directory.full_path);
             if file_count > 0 {
                 println!(
@@ -256,7 +254,7 @@ fn display_grouped_output(
         }
     } else {
         // Normal mode: group files under directories
-        display_grouped(&sorted_directories, files, options.files_per_dir, highlight_pattern);
+        display_grouped(directories, files, options.files_per_dir, highlight_pattern);
     }
 }
 
