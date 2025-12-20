@@ -32,8 +32,10 @@ const UPDATE_INTERVAL: Duration = Duration::from_secs(3);
 ///
 /// This function does not return under normal operation as it runs the event loop.
 pub fn run() -> Result<()> {
+    tracing::info!("Starting tray application");
+
     // Create the tray icon (must be done on the thread with the event loop)
-    let tray_icon = create_tray_icon()?;
+    let (tray_icon, status_item) = create_tray_icon()?;
 
     // Create IPC client for daemon communication
     let ipc_client = IpcClient::new();
@@ -42,8 +44,12 @@ pub fn run() -> Result<()> {
     let should_quit = Arc::new(AtomicBool::new(false));
     let quit_flag = should_quit.clone();
 
+    // Track previous state for change detection
+    let mut previous_state: Option<DaemonStateInfo> = None;
+
     // Initial status update
-    update_tray_status(&tray_icon, &ipc_client);
+    tracing::info!("Checking initial daemon status...");
+    previous_state = update_tray_status(&tray_icon, &status_item, &ipc_client, previous_state);
 
     // Subscribe to menu events
     let menu_channel = MenuEvent::receiver();
@@ -76,13 +82,13 @@ pub fn run() -> Result<()> {
 
             // Periodically update status
             if last_update.elapsed() >= UPDATE_INTERVAL {
-                update_tray_status(&tray_icon, &ipc_client);
+                previous_state = update_tray_status(&tray_icon, &status_item, &ipc_client, previous_state);
                 last_update = std::time::Instant::now();
             }
 
             // Handle menu events (non-blocking)
             if let Ok(event) = menu_channel.try_recv() {
-                handle_menu_event(&event.id.0, &tray_icon, &ipc_client, &quit_flag);
+                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &quit_flag);
             }
 
             // Process Windows messages with a timeout
@@ -117,13 +123,13 @@ pub fn run() -> Result<()> {
 
             // Periodically update status
             if last_update.elapsed() >= UPDATE_INTERVAL {
-                update_tray_status(&tray_icon, &ipc_client);
+                previous_state = update_tray_status(&tray_icon, &status_item, &ipc_client, previous_state);
                 last_update = std::time::Instant::now();
             }
 
             // Handle menu events
             if let Ok(event) = menu_channel.try_recv() {
-                handle_menu_event(&event.id.0, &tray_icon, &ipc_client, &quit_flag);
+                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &quit_flag);
             }
 
             std::thread::sleep(Duration::from_millis(100));
@@ -134,7 +140,13 @@ pub fn run() -> Result<()> {
 }
 
 /// Handle a menu event.
-fn handle_menu_event(menu_id: &str, tray_icon: &TrayIcon, ipc_client: &IpcClient, quit_flag: &AtomicBool) {
+fn handle_menu_event(
+    menu_id: &str,
+    tray_icon: &TrayIcon,
+    status_item: &MenuItem,
+    ipc_client: &IpcClient,
+    quit_flag: &AtomicBool,
+) {
     match menu_id {
         menu_ids::START => {
             tracing::info!("Starting daemon...");
@@ -143,21 +155,23 @@ fn handle_menu_event(menu_id: &str, tray_icon: &TrayIcon, ipc_client: &IpcClient
             }
             // Update status after a short delay
             std::thread::sleep(Duration::from_millis(500));
-            update_tray_status(tray_icon, ipc_client);
+            update_tray_status(tray_icon, status_item, ipc_client, None);
         }
         menu_ids::STOP => {
             tracing::info!("Stopping daemon...");
-            if let Err(error) = ipc_client.stop_daemon() {
-                tracing::error!("Failed to stop daemon: {}", error);
+            match ipc_client.stop_daemon() {
+                Ok(()) => tracing::info!("Stop command sent successfully"),
+                Err(error) => tracing::error!("Failed to stop daemon: {}", error),
             }
             // Update status after a short delay
             std::thread::sleep(Duration::from_millis(500));
-            update_tray_status(tray_icon, ipc_client);
+            update_tray_status(tray_icon, status_item, ipc_client, None);
         }
         menu_ids::RESCAN => {
             tracing::info!("Triggering rescan...");
-            if let Err(error) = ipc_client.rescan() {
-                tracing::error!("Failed to trigger rescan: {}", error);
+            match ipc_client.rescan() {
+                Ok(()) => tracing::info!("Rescan command sent successfully"),
+                Err(error) => tracing::error!("Failed to trigger rescan: {}", error),
             }
         }
         menu_ids::OPEN_CLI => {
@@ -185,9 +199,9 @@ fn handle_menu_event(menu_id: &str, tray_icon: &TrayIcon, ipc_client: &IpcClient
 }
 
 /// Create the tray icon with menu.
-fn create_tray_icon() -> Result<TrayIcon> {
+fn create_tray_icon() -> Result<(TrayIcon, MenuItem)> {
     let icon = icons::create_stopped_icon()?;
-    let menu = create_menu()?;
+    let (menu, status_item) = create_menu()?;
 
     let tray_icon = TrayIconBuilder::new()
         .with_icon(icon)
@@ -196,11 +210,13 @@ fn create_tray_icon() -> Result<TrayIcon> {
         .build()
         .context("Failed to build tray icon")?;
 
-    Ok(tray_icon)
+    Ok((tray_icon, status_item))
 }
 
 /// Create the tray menu.
-fn create_menu() -> Result<Menu> {
+///
+/// Returns the menu and the status menu item so it can be updated later.
+fn create_menu() -> Result<(Menu, MenuItem)> {
     let menu = Menu::new();
 
     // Status item (disabled, shows current state)
@@ -245,15 +261,55 @@ fn create_menu() -> Result<Menu> {
     menu.append(&about_item)?;
     menu.append(&quit_item)?;
 
-    Ok(menu)
+    Ok((menu, status_item))
 }
 
-/// Update the tray icon and tooltip based on daemon status.
-fn update_tray_status(tray_icon: &TrayIcon, ipc_client: &IpcClient) {
+/// Update the tray icon, tooltip, and menu status based on daemon status.
+///
+/// Returns the current state for tracking state changes.
+#[allow(clippy::unnecessary_wraps)]
+fn update_tray_status(
+    tray_icon: &TrayIcon,
+    status_item: &MenuItem,
+    ipc_client: &IpcClient,
+    previous_state: Option<DaemonStateInfo>,
+) -> Option<DaemonStateInfo> {
     let status = get_daemon_status(ipc_client);
+    let current_state = status.state;
+
+    // Log state changes
+    match previous_state {
+        None => {
+            // First successful status check
+            tracing::info!(
+                "Connected to daemon: state={:?}, files={}, directories={}",
+                current_state,
+                format_number(status.indexed_files),
+                format_number(status.indexed_directories)
+            );
+        }
+        Some(prev) if prev != current_state => {
+            tracing::info!(
+                "Daemon state changed: {:?} -> {:?} (files: {}, directories: {})",
+                prev,
+                current_state,
+                format_number(status.indexed_files),
+                format_number(status.indexed_directories)
+            );
+        }
+        _ => {
+            // No state change, log at trace level
+            tracing::trace!(
+                "Status update: {:?}, files={}, directories={}",
+                current_state,
+                status.indexed_files,
+                status.indexed_directories
+            );
+        }
+    }
 
     // Update icon based on state
-    let icon = match status.state {
+    let icon = match current_state {
         DaemonStateInfo::Running => icons::create_running_icon(),
         DaemonStateInfo::Scanning => icons::create_scanning_icon(),
         DaemonStateInfo::Starting | DaemonStateInfo::Stopping => icons::create_default_icon(),
@@ -267,14 +323,34 @@ fn update_tray_status(tray_icon: &TrayIcon, ipc_client: &IpcClient) {
     // Update tooltip
     let tooltip = format_status_tooltip(&status);
     let _ = tray_icon.set_tooltip(Some(tooltip));
+
+    // Update menu status item
+    let status_text = format_status_menu_text(&status);
+    status_item.set_text(status_text);
+
+    Some(current_state)
+}
+
+/// Format the status for the menu item.
+fn format_status_menu_text(status: &DaemonStatus) -> String {
+    match status.state {
+        DaemonStateInfo::Running => format!("Status: Running ({} files)", format_number(status.indexed_files)),
+        DaemonStateInfo::Scanning => format!("Status: Scanning ({} files)", format_number(status.indexed_files)),
+        DaemonStateInfo::Starting => "Status: Starting...".to_string(),
+        DaemonStateInfo::Stopping => "Status: Stopping...".to_string(),
+        DaemonStateInfo::Stopped => "Status: Stopped".to_string(),
+    }
 }
 
 /// Get the current daemon status.
 fn get_daemon_status(ipc_client: &IpcClient) -> DaemonStatus {
     match ipc_client.get_status() {
-        Ok(status) => status,
+        Ok(status) => {
+            tracing::trace!("Got daemon status: {:?}", status.state);
+            status
+        }
         Err(error) => {
-            tracing::warn!("Failed to get daemon status: {}", error);
+            tracing::warn!("Failed to get daemon status (daemon may not be running): {}", error);
             DaemonStatus::default()
         }
     }
