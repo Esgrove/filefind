@@ -143,6 +143,13 @@ fn run(config: CliConfig) -> Result<()> {
     // Separate directories and files
     let (directories, files): (Vec<_>, Vec<_>) = results.iter().partition(|e| e.is_directory);
 
+    // Determine if we should highlight (only for simple patterns, not regex or glob)
+    let highlight_pattern = if !config.regex && !pattern.contains('*') && !pattern.contains('?') {
+        Some(pattern.as_str())
+    } else {
+        None
+    };
+
     // Display results based on mode
     let display_options = DisplayOptions {
         directories_only: config.dirs_only,
@@ -151,8 +158,8 @@ fn run(config: CliConfig) -> Result<()> {
     };
 
     match config.output_format {
-        OutputFormat::Simple => display_simple(&directories, &files, &display_options),
-        OutputFormat::Detailed => display_detailed(&directories, &files, &display_options),
+        OutputFormat::Simple => display_simple(&directories, &files, &display_options, highlight_pattern),
+        OutputFormat::Detailed => display_detailed(&directories, &files, &display_options, highlight_pattern),
     }
 
     // Show search stats if verbose
@@ -189,30 +196,61 @@ fn filter_by_drives(results: Vec<filefind::types::FileEntry>, drives: &[String])
         .collect()
 }
 
+/// Highlight a pattern within text (case-insensitive).
+fn highlight_match(text: &str, pattern: Option<&str>) -> String {
+    let Some(pattern) = pattern else {
+        return text.to_string();
+    };
+
+    let text_lower = text.to_lowercase();
+    let pattern_lower = pattern.to_lowercase();
+
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    for (start, _) in text_lower.match_indices(&pattern_lower) {
+        // Add text before the match
+        result.push_str(&text[last_end..start]);
+        // Add highlighted match using original case from text
+        let matched_text = &text[start..start + pattern.len()];
+        result.push_str(&matched_text.green().bold().to_string());
+        last_end = start + pattern.len();
+    }
+
+    // Add remaining text
+    result.push_str(&text[last_end..]);
+    result
+}
+
 /// Display results in simple format.
 fn display_simple(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
+    highlight_pattern: Option<&str>,
 ) {
     if options.files_only {
         // Files only mode: show full paths
         for file in files {
-            println!("{}", file.full_path);
+            println!("{}", highlight_match(&file.full_path, highlight_pattern));
         }
     } else if options.directories_only {
         // Dirs only mode: show full path with file count
         for directory in directories {
             let file_count = count_files_in_directory(files, &directory.full_path);
             if file_count > 0 {
-                println!("{} ({} files)", directory.full_path, file_count);
+                println!(
+                    "{} ({} files)",
+                    highlight_match(&directory.full_path, highlight_pattern),
+                    file_count
+                );
             } else {
-                println!("{}", directory.full_path);
+                println!("{}", highlight_match(&directory.full_path, highlight_pattern));
             }
         }
     } else {
         // Normal mode: group files under directories
-        display_grouped(directories, files, options.files_per_dir);
+        display_grouped(directories, files, options.files_per_dir, highlight_pattern);
     }
 }
 
@@ -221,6 +259,7 @@ fn display_grouped(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     files_per_dir: usize,
+    highlight_pattern: Option<&str>,
 ) {
     // Group files by their parent directory
     let mut files_by_dir: HashMap<String, Vec<&filefind::types::FileEntry>> = HashMap::new();
@@ -234,11 +273,11 @@ fn display_grouped(
 
     // First, show matched directories with their files
     for directory in directories {
-        println!("{}", directory.full_path.bold());
+        println!("{}", highlight_match(&directory.full_path, highlight_pattern).bold());
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
             let total_files = dir_files.len();
             for file in dir_files.iter().take(files_per_dir) {
-                println!("  {}", file.name);
+                println!("  {}", highlight_match(&file.name, highlight_pattern));
             }
             if total_files > files_per_dir {
                 println!("  {} (+{} more files)", "...".dimmed(), total_files - files_per_dir);
@@ -254,10 +293,10 @@ fn display_grouped(
 
     for dir_path in other_dirs {
         if let Some(dir_files) = files_by_dir.get(dir_path) {
-            println!("{}", dir_path.bold());
+            println!("{}", highlight_match(dir_path, highlight_pattern).bold());
             let total_files = dir_files.len();
             for file in dir_files.iter().take(files_per_dir) {
-                println!("  {}", file.name);
+                println!("  {}", highlight_match(&file.name, highlight_pattern));
             }
             if total_files > files_per_dir {
                 println!("  {} (+{} more files)", "...".dimmed(), total_files - files_per_dir);
@@ -283,11 +322,17 @@ fn display_detailed(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
+    highlight_pattern: Option<&str>,
 ) {
     if options.files_only {
         for file in files {
             let size_str = format_size(file.size);
-            println!("{} {:>10}  {}", "FILE".normal(), size_str, file.full_path.bold());
+            println!(
+                "{} {:>10}  {}",
+                "FILE".normal(),
+                size_str,
+                highlight_match(&file.full_path, highlight_pattern).bold()
+            );
         }
     } else if options.directories_only {
         for directory in directories {
@@ -297,21 +342,36 @@ fn display_detailed(
                     "{} {:>10}  {} ({} files)",
                     "DIR ".cyan(),
                     "-",
-                    directory.full_path.bold(),
+                    highlight_match(&directory.full_path, highlight_pattern).bold(),
                     file_count
                 );
             } else {
-                println!("{} {:>10}  {}", "DIR ".cyan(), "-", directory.full_path.bold());
+                println!(
+                    "{} {:>10}  {}",
+                    "DIR ".cyan(),
+                    "-",
+                    highlight_match(&directory.full_path, highlight_pattern).bold()
+                );
             }
         }
     } else {
         // Show all directories first, then all files
         for directory in directories {
-            println!("{} {:>10}  {}", "DIR ".cyan(), "-", directory.full_path.bold());
+            println!(
+                "{} {:>10}  {}",
+                "DIR ".cyan(),
+                "-",
+                highlight_match(&directory.full_path, highlight_pattern).bold()
+            );
         }
         for file in files {
             let size_str = format_size(file.size);
-            println!("{} {:>10}  {}", "FILE".normal(), size_str, file.full_path.bold());
+            println!(
+                "{} {:>10}  {}",
+                "FILE".normal(),
+                size_str,
+                highlight_match(&file.full_path, highlight_pattern).bold()
+            );
         }
     }
 }
