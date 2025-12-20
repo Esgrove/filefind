@@ -23,10 +23,11 @@ if [ -d "target/release" ]; then
 fi
 
 # Touch source files to ensure recompilation
-find filefind-cli filefind-common filefind-daemon -name "*.rs" -exec touch {} \;
+find filefind filefind-cli filefind-daemon filefind-tray -name "*.rs" -exec touch {} \;
 
 cargo install --force --path filefind-cli
 cargo install --force --path filefind-daemon
+cargo install --force --path filefind-tray
 echo ""
 
 print_green "Installed binaries:"

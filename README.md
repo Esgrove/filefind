@@ -22,6 +22,7 @@ This project is organized as a Cargo workspace with multiple crates:
 - **filefind**: Shared library with database schema, configuration, and utilities
 - **filefind-daemon**: Background service that indexes and monitors file systems
 - **filefind-cli**: Command-line interface for searching the file index
+- **filefind-tray**: System tray application for daemon control
 
 ## Installation
 
@@ -78,6 +79,23 @@ Register-ScheduledTask -TaskName "filefind daemon" -Action $action -Trigger $tri
 ```
 
 The daemon can still be stopped anytime using `filefindd stop` or the tray application.
+
+### System tray application
+
+The tray application provides a convenient way to control the daemon from the system tray:
+
+```shell
+# Start the tray application
+filefind-tray
+```
+
+Features:
+
+- **Status indicator**: Icon color shows daemon state (green=running, gray=stopped, orange=scanning)
+- **Tooltip**: Shows indexed file and directory counts
+- **Menu options**: Start, Stop, Rescan, Open CLI, Quit
+
+The tray application can be added to Windows startup the same way as the daemon.
 
 ### Search for files
 
@@ -139,9 +157,10 @@ color = true
 
 ### NTFS Master File Table (MFT)
 
-On NTFS drives, filefind reads the MFT directly from disk. The MFT is a special hidden file
-that NTFS uses to track all files and folders. By reading it directly, we bypass the overhead
-of Windows file system APIs and can scan millions of files in seconds.
+On NTFS drives, filefind reads the MFT directly from disk.
+The MFT is a special hidden file that NTFS uses to track all files and folders.
+By reading it directly,
+we bypass the overhead of Windows file system APIs and can scan millions of files in seconds.
 
 ### USN Journal
 
@@ -151,14 +170,13 @@ efficiently detect new, modified, renamed, and deleted files.
 
 ### Non-NTFS drives
 
-For network drives and non-NTFS file systems, filefind falls back to traditional directory
-scanning with file system watchers for real-time updates.
+For network drives and non-NTFS file systems,
+filefind falls back to traditional directory scanning with file system watchers for real-time updates.
 
 ## Requirements
 
 - Windows 10/11
 - Administrator privileges (required for MFT and USN Journal access)
-- Rust 1.85+ (for building from source)
 
 ## License
 
