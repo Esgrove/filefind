@@ -18,7 +18,7 @@ use filefind::{
     print_warning,
 };
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc_server::{IpcServerState, IpcToDaemon, spawn_ipc_server};
 use crate::mft::detect_ntfs_volumes;
@@ -533,7 +533,8 @@ impl Daemon {
         }
 
         // Could not resolve path - would need MFT lookup
-        debug!(
+        // This is common for files in directories not in our cache, so use trace level
+        trace!(
             "Could not resolve path for file '{}' with parent ref {}",
             name, parent_reference
         );
@@ -550,6 +551,12 @@ impl Daemon {
             FileChangeEvent::Created(path) => {
                 debug!("File created: {}", path.display());
 
+                // Get volume_id from drive letter
+                let Some(volume_id) = self.get_volume_id_for_path(&path) else {
+                    trace!("No volume found for path: {}", path.display());
+                    return;
+                };
+
                 // Get file metadata and insert into database
                 if let Ok(metadata) = std::fs::metadata(&path) {
                     let name = path
@@ -559,7 +566,7 @@ impl Daemon {
 
                     let entry = FileEntry {
                         id: None,
-                        volume_id: 0, // Will be resolved by database
+                        volume_id,
                         parent_id: None,
                         name,
                         full_path: path.to_string_lossy().to_string(),
@@ -595,6 +602,12 @@ impl Daemon {
                 let from_str = from.to_string_lossy();
                 let _ = db.delete_file_by_path(&from_str);
 
+                // Get volume_id from drive letter
+                let Some(volume_id) = self.get_volume_id_for_path(&to) else {
+                    trace!("No volume found for renamed path: {}", to.display());
+                    return;
+                };
+
                 // Insert new entry
                 if let Ok(metadata) = std::fs::metadata(&to) {
                     let name = to
@@ -604,7 +617,7 @@ impl Daemon {
 
                     let entry = FileEntry {
                         id: None,
-                        volume_id: 0,
+                        volume_id,
                         parent_id: None,
                         name,
                         full_path: to.to_string_lossy().to_string(),
@@ -621,6 +634,23 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// Get the volume ID for a given path by looking up the drive letter.
+    fn get_volume_id_for_path(&self, path: &std::path::Path) -> Option<i64> {
+        let path_str = path.to_string_lossy();
+        let drive_letter = path_str.chars().next()?;
+
+        let db = self.database.as_ref()?;
+
+        // Query volume by mount point (drive letter)
+        let mount_point = format!("{}:", drive_letter.to_ascii_uppercase());
+        let volumes = db.get_all_volumes().ok()?;
+
+        volumes
+            .iter()
+            .find(|v| v.mount_point.eq_ignore_ascii_case(&mount_point))
+            .and_then(|v| v.id)
     }
 
     /// Build the path cache from the database for faster path resolution.
