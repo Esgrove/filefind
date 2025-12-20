@@ -229,6 +229,10 @@ fn display_simple(
     options: &DisplayOptions,
     highlight_pattern: Option<&str>,
 ) {
+    // Sort directories by path
+    let mut sorted_directories: Vec<_> = directories.to_vec();
+    sorted_directories.sort_by(|a, b| a.full_path.cmp(&b.full_path));
+
     if options.files_only {
         // Files only mode: show full paths
         for file in files {
@@ -236,7 +240,7 @@ fn display_simple(
         }
     } else if options.directories_only {
         // Dirs only mode: show full path with file count
-        for directory in directories {
+        for directory in &sorted_directories {
             let file_count = count_files_in_directory(files, &directory.full_path);
             if file_count > 0 {
                 println!(
@@ -250,7 +254,7 @@ fn display_simple(
         }
     } else {
         // Normal mode: group files under directories
-        display_grouped(directories, files, options.files_per_dir, highlight_pattern);
+        display_grouped(&sorted_directories, files, options.files_per_dir, highlight_pattern);
     }
 }
 
@@ -280,7 +284,7 @@ fn display_grouped(
                 println!("  {}", highlight_match(&file.name, highlight_pattern));
             }
             if total_files > files_per_dir {
-                println!("  {} (+{} more files)", "...".dimmed(), total_files - files_per_dir);
+                println!("  {} ({} files)", "...".dimmed(), total_files - files_per_dir);
             }
         }
     }
@@ -299,7 +303,7 @@ fn display_grouped(
                 println!("  {}", highlight_match(&file.name, highlight_pattern));
             }
             if total_files > files_per_dir {
-                println!("  {} (+{} more files)", "...".dimmed(), total_files - files_per_dir);
+                println!("  {} ({} files)", "...".dimmed(), total_files - files_per_dir);
             }
         }
     }
@@ -324,6 +328,10 @@ fn display_detailed(
     options: &DisplayOptions,
     highlight_pattern: Option<&str>,
 ) {
+    // Sort directories by path
+    let mut sorted_directories: Vec<_> = directories.to_vec();
+    sorted_directories.sort_by(|a, b| a.full_path.cmp(&b.full_path));
+
     if options.files_only {
         for file in files {
             let size_str = format_size(file.size);
@@ -335,7 +343,7 @@ fn display_detailed(
             );
         }
     } else if options.directories_only {
-        for directory in directories {
+        for directory in &sorted_directories {
             let file_count = count_files_in_directory(files, &directory.full_path);
             if file_count > 0 {
                 println!(
@@ -356,7 +364,7 @@ fn display_detailed(
         }
     } else {
         // Show all directories first, then all files
-        for directory in directories {
+        for directory in &sorted_directories {
             println!(
                 "{} {:>10}  {}",
                 "DIR ".cyan(),
