@@ -917,18 +917,17 @@ pub fn show_stats(config: &Config) -> Result<()> {
     let database = Database::open(&database_path)?;
     let stats = database.get_stats()?;
 
-    println!("{}", "Index Statistics".bold());
+    println!("{}", "Filefind index".bold());
+    println!("  Files:          {}", format_number(stats.total_files));
+    println!("  Directories:    {}", format_number(stats.total_directories));
+    println!("  Volumes:        {}", stats.volume_count);
+    println!("  Total size:     {}", filefind::format_size(stats.total_size));
     println!();
-    println!("  Files:        {}", format_number(stats.total_files));
-    println!("  Directories:  {}", format_number(stats.total_directories));
-    println!("  Volumes:      {}", stats.volume_count);
-    println!("  Total size:   {}", filefind::format_size(stats.total_size));
-    println!();
-    println!("  Database:     {}", database_path.display());
+    println!("  Database:       {}", database_path.display());
 
     // Show database file size
     if let Ok(metadata) = std::fs::metadata(&database_path) {
-        println!("  DB file size: {}", filefind::format_size(metadata.len()));
+        println!("  DB file size:   {}", filefind::format_size(metadata.len()));
     }
 
     Ok(())

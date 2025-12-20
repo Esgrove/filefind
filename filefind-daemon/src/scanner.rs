@@ -6,14 +6,58 @@
 //! - Directory walking for non-NTFS volumes (fallback)
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
-use filefind::{Config, Database, PathType, classify_path, print_error, print_info, print_success, print_warning};
+use filefind::{
+    Config, Database, PathType, classify_path, is_network_path, print_error, print_info, print_success, print_warning,
+};
 
 use crate::mft::{MftScanner, detect_ntfs_volumes};
 use crate::watcher::scan_directory;
+
+/// Check if a path looks like a drive letter path (e.g., "X:", "X:\", "X:\Data").
+fn is_drive_letter_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    let bytes = path_str.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// Check if a path is accessible.
+///
+/// This function handles the case where `Path::exists()` returns false for mapped
+/// network drives when running in an elevated process. On Windows, network drive
+/// mappings are per-session and per-elevation level, so an admin process won't see
+/// drives mapped in the non-elevated user session.
+///
+/// For drive letter paths, we attempt to read the directory to verify accessibility
+/// rather than relying solely on `exists()`.
+fn is_path_accessible(path: &Path) -> bool {
+    // First try the simple exists check
+    if path.exists() {
+        return true;
+    }
+
+    // For drive letter paths, try to actually access the drive
+    // This can succeed even when exists() returns false for network drives
+    if is_drive_letter_path(path) {
+        // Normalize to root if it's just "X:" without trailing backslash
+        let root_path = if path.to_string_lossy().len() == 2 {
+            PathBuf::from(format!("{}\\", path.display()))
+        } else {
+            path.to_path_buf()
+        };
+
+        // Try to read the directory - this is more reliable than exists()
+        if fs::read_dir(&root_path).is_ok() {
+            return true;
+        }
+    }
+
+    false
+}
 
 /// Run a one-time scan.
 ///
@@ -45,8 +89,12 @@ pub async fn run_scan(path: Option<PathBuf>, force: bool, config: &Config) -> Re
 pub async fn scan_single_path(database: &mut Database, scan_path: &Path, force: bool, config: &Config) -> Result<()> {
     print_info!("Scanning: {}", scan_path.display());
 
-    if !scan_path.exists() {
-        print_error!("Path does not exist: {}", scan_path.display());
+    if !is_path_accessible(scan_path) {
+        print_error!("Path does not exist or is not accessible: {}", scan_path.display());
+        if is_drive_letter_path(scan_path) {
+            print_error!("Note: If this is a mapped network drive and you're running as administrator,");
+            print_error!("      the drive mapping may not be visible. Try using a UNC path instead.");
+        }
         return Ok(());
     }
 
@@ -163,8 +211,12 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
         for path_str in &config.daemon.paths {
             let scan_path = PathBuf::from(path_str);
 
-            if !scan_path.exists() {
-                print_warning!("Skipping non-existent path: {}", scan_path.display());
+            if !is_path_accessible(&scan_path) {
+                print_warning!("Skipping non-existent or inaccessible path: {}", scan_path.display());
+                if is_drive_letter_path(&scan_path) {
+                    print_warning!("  Note: If this is a mapped network drive and you're running as administrator,");
+                    print_warning!("        the drive mapping may not be visible. Try using a UNC path instead.");
+                }
                 continue;
             }
 
@@ -398,11 +450,18 @@ pub fn scan_ntfs_volume_filtered(
 
 /// Scan a directory and insert entries into the database.
 pub async fn scan_directory_to_db(database: &mut Database, path: &Path, exclude_patterns: &[String]) -> Result<usize> {
-    // Create a dummy volume entry for non-NTFS paths
+    // Determine volume type based on path
+    let volume_type = if is_network_path(path) {
+        filefind::types::VolumeType::Network
+    } else {
+        filefind::types::VolumeType::Local
+    };
+
+    // Create a volume entry for non-NTFS paths
     let volume_info = filefind::types::IndexedVolume::new(
         format!("path:{}", path.display()),
         path.to_string_lossy().into_owned(),
-        filefind::types::VolumeType::Local,
+        volume_type,
     );
     let volume_id = database.upsert_volume(&volume_info)?;
 
@@ -662,5 +721,59 @@ mod tests {
         let results = database.search_by_exact_name("deep.txt", 10).expect("search");
         assert_eq!(results.len(), 1);
         assert!(results[0].full_path.contains('d'));
+    }
+
+    #[test]
+    fn test_is_drive_letter_path() {
+        // Valid drive letter paths
+        assert!(is_drive_letter_path(Path::new("C:")));
+        assert!(is_drive_letter_path(Path::new("C:\\")));
+        assert!(is_drive_letter_path(Path::new("D:\\Users")));
+        assert!(is_drive_letter_path(Path::new("X:\\Data\\Files")));
+        assert!(is_drive_letter_path(Path::new("Z:")));
+
+        // Lowercase drive letters
+        assert!(is_drive_letter_path(Path::new("c:")));
+        assert!(is_drive_letter_path(Path::new("c:\\")));
+
+        // Not drive letter paths
+        assert!(!is_drive_letter_path(Path::new("\\\\server\\share")));
+        assert!(!is_drive_letter_path(Path::new("relative\\path")));
+        assert!(!is_drive_letter_path(Path::new(".")));
+        assert!(!is_drive_letter_path(Path::new("..")));
+        assert!(!is_drive_letter_path(Path::new("")));
+        assert!(!is_drive_letter_path(Path::new("1:\\invalid")));
+        assert!(!is_drive_letter_path(Path::new("CC:\\")));
+    }
+
+    #[test]
+    fn test_is_path_accessible_existing_directory() {
+        let temp = tempdir().expect("create temp dir");
+        let root = temp.path();
+
+        // Existing directory should be accessible
+        assert!(is_path_accessible(root));
+
+        // Create a subdirectory and verify it's accessible
+        let subdir = root.join("subdir");
+        fs::create_dir(&subdir).expect("create subdir");
+        assert!(is_path_accessible(&subdir));
+    }
+
+    #[test]
+    fn test_is_path_accessible_non_existent() {
+        // Non-existent paths should not be accessible
+        assert!(!is_path_accessible(Path::new("Q:\\NonExistentDrive\\Path")));
+        assert!(!is_path_accessible(Path::new("\\\\nonexistent\\share")));
+    }
+
+    #[test]
+    fn test_is_path_accessible_existing_file() {
+        let temp = tempdir().expect("create temp dir");
+        let file_path = temp.path().join("test.txt");
+        fs::write(&file_path, "test content").expect("write file");
+
+        // Existing file should be accessible via exists() check
+        assert!(is_path_accessible(&file_path));
     }
 }
