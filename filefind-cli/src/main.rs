@@ -2,7 +2,7 @@
 
 mod config;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -28,8 +28,8 @@ use crate::config::{CliConfig, DisplayOptions};
     about = "Fast file search using the filefind index"
 )]
 pub struct Args {
-    /// Search pattern (supports glob patterns like *.txt)
-    pub pattern: Option<String>,
+    /// Search patterns (supports glob patterns like *.txt).
+    pub patterns: Vec<String>,
 
     /// Use regex pattern for search
     #[arg(short = 'r', long)]
@@ -74,6 +74,10 @@ pub struct Args {
     /// Print verbose output.
     #[arg(short = 'v', long)]
     pub verbose: bool,
+
+    /// Exact pattern matches only
+    #[arg(short = 'e', long)]
+    pub exact: bool,
 }
 
 /// Output format argument for CLI.
@@ -102,11 +106,11 @@ fn main() -> Result<()> {
     // Build the final config from user config and CLI args
     let config = CliConfig::from_args(args)?;
 
-    run(config)
+    run(&config)
 }
 
 /// Run the CLI with the given configuration.
-fn run(config: CliConfig) -> Result<()> {
+fn run(config: &CliConfig) -> Result<()> {
     if !config.database_path.exists() {
         print_error!("Database not found at: {}", config.database_path.display());
         bail!("Run the filefind daemon first to build the index");
@@ -122,20 +126,33 @@ fn run(config: CliConfig) -> Result<()> {
         return list_volumes(&database);
     }
 
-    let Some(pattern) = config.pattern else {
+    if config.patterns.is_empty() {
         print_error!("No search pattern provided");
-        bail!("Usage: filefind <pattern>\n       filefind --stats\n       filefind --list");
-    };
+        bail!("Usage: filefind <pattern> [patterns...]\n       filefind --stats\n       filefind --list");
+    }
 
     let start_time = Instant::now();
 
-    let results = if config.regex {
-        database.search_by_regex(&pattern, config.case_sensitive, usize::MAX)?
-    } else if pattern.contains('*') || pattern.contains('?') {
-        database.search_by_glob(&pattern, usize::MAX)?
-    } else {
-        database.search_by_name(&pattern, usize::MAX)?
-    };
+    // Search with all patterns and combine results
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut results = Vec::new();
+
+    for pattern in &config.patterns {
+        let pattern_results = if config.regex {
+            database.search_by_regex(pattern, config.case_sensitive, usize::MAX)?
+        } else if pattern.contains('*') || pattern.contains('?') {
+            database.search_by_glob(pattern, usize::MAX)?
+        } else {
+            database.search_by_name(pattern, usize::MAX)?
+        };
+
+        // Deduplicate results across patterns
+        for entry in pattern_results {
+            if seen_paths.insert(entry.full_path.clone()) {
+                results.push(entry);
+            }
+        }
+    }
 
     let search_duration = start_time.elapsed();
 
@@ -147,11 +164,16 @@ fn run(config: CliConfig) -> Result<()> {
     // Separate directories and files
     let (directories, files): (Vec<_>, Vec<_>) = results.iter().partition(|e| e.is_directory);
 
-    // Determine if we should highlight (only for simple patterns, not regex or glob)
-    let highlight_pattern = if !config.regex && !pattern.contains('*') && !pattern.contains('?') {
-        Some(pattern.as_str())
+    // Collect patterns to highlight (only simple patterns, not regex or glob)
+    let highlight_patterns: Vec<&str> = if config.regex {
+        Vec::new()
     } else {
-        None
+        config
+            .patterns
+            .iter()
+            .filter(|p| !p.contains('*') && !p.contains('?'))
+            .map(String::as_str)
+            .collect()
     };
 
     // Display results based on mode
@@ -162,8 +184,8 @@ fn run(config: CliConfig) -> Result<()> {
     };
 
     match config.output_format {
-        OutputFormat::Grouped => display_grouped_output(&directories, &files, &display_options, highlight_pattern),
-        OutputFormat::Simple => display_simple(&directories, &files, &display_options, highlight_pattern),
+        OutputFormat::Grouped => display_grouped_output(&directories, &files, &display_options, &highlight_patterns),
+        OutputFormat::Simple => display_simple(&directories, &files, &display_options, &highlight_patterns),
     }
 
     // Show search stats if verbose
@@ -200,25 +222,58 @@ fn filter_by_drives(results: Vec<filefind::types::FileEntry>, drives: &[String])
         .collect()
 }
 
-/// Highlight a pattern within text (case-insensitive).
-fn highlight_match(text: &str, pattern: Option<&str>) -> String {
-    let Some(pattern) = pattern else {
+/// Highlight multiple patterns within text (case-insensitive).
+///
+/// Finds all matches for all patterns, merges overlapping ranges, and highlights them.
+fn highlight_match(text: &str, patterns: &[&str]) -> String {
+    if patterns.is_empty() {
         return text.to_string();
-    };
+    }
 
     let text_lower = text.to_lowercase();
-    let pattern_lower = pattern.to_lowercase();
 
+    // Collect all match ranges (start, end) for all patterns
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for pattern in patterns {
+        let pattern_lower = pattern.to_lowercase();
+        for (start, matched) in text_lower.match_indices(&pattern_lower) {
+            ranges.push((start, start + matched.len()));
+        }
+    }
+
+    if ranges.is_empty() {
+        return text.to_string();
+    }
+
+    // Sort by start position, then by end position (longer matches first)
+    ranges.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+
+    // Merge overlapping ranges
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                // Overlapping or adjacent, extend the range
+                last.1 = last.1.max(end);
+            } else {
+                merged.push((start, end));
+            }
+        } else {
+            merged.push((start, end));
+        }
+    }
+
+    // Build result with highlighted ranges
     let mut result = String::new();
     let mut last_end = 0;
 
-    for (start, _) in text_lower.match_indices(&pattern_lower) {
+    for (start, end) in merged {
         // Add text before the match
         result.push_str(&text[last_end..start]);
         // Add highlighted match using original case from text
-        let matched_text = &text[start..start + pattern.len()];
+        let matched_text = &text[start..end];
         result.push_str(&matched_text.green().bold().to_string());
-        last_end = start + pattern.len();
+        last_end = end;
     }
 
     // Add remaining text
@@ -231,12 +286,12 @@ fn display_grouped_output(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
-    highlight_pattern: Option<&str>,
+    highlight_patterns: &[&str],
 ) {
     if options.files_only {
         // Files only mode: show full paths
         for file in files {
-            println!("{}", highlight_match(&file.full_path, highlight_pattern));
+            println!("{}", highlight_match(&file.full_path, highlight_patterns));
         }
     } else if options.directories_only {
         // Dirs only mode: show full path with file count
@@ -245,16 +300,16 @@ fn display_grouped_output(
             if file_count > 0 {
                 println!(
                     "{} ({} files)",
-                    highlight_match(&directory.full_path, highlight_pattern),
+                    highlight_match(&directory.full_path, highlight_patterns),
                     file_count
                 );
             } else {
-                println!("{}", highlight_match(&directory.full_path, highlight_pattern));
+                println!("{}", highlight_match(&directory.full_path, highlight_patterns));
             }
         }
     } else {
         // Normal mode: group files under directories
-        display_grouped(directories, files, options.files_per_dir, highlight_pattern);
+        display_grouped(directories, files, options.files_per_dir, highlight_patterns);
     }
 }
 
@@ -263,7 +318,7 @@ fn display_grouped(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     files_per_dir: usize,
-    highlight_pattern: Option<&str>,
+    highlight_patterns: &[&str],
 ) {
     // Group files by their parent directory
     let mut files_by_dir: HashMap<String, Vec<&filefind::types::FileEntry>> = HashMap::new();
@@ -328,7 +383,7 @@ fn display_simple(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
-    highlight_pattern: Option<&str>,
+    highlight_patterns: &[&str],
 ) {
     // Sort directories by path
     let mut sorted_directories: Vec<_> = directories.to_vec();
@@ -336,19 +391,19 @@ fn display_simple(
 
     if options.files_only {
         for file in files {
-            println!("{}", highlight_match(&file.full_path, highlight_pattern));
+            println!("{}", highlight_match(&file.full_path, highlight_patterns));
         }
     } else if options.directories_only {
         for directory in &sorted_directories {
-            println!("{}", highlight_match(&directory.full_path, highlight_pattern));
+            println!("{}", highlight_match(&directory.full_path, highlight_patterns));
         }
     } else {
         // Show all directories first, then all files
         for directory in &sorted_directories {
-            println!("{}", highlight_match(&directory.full_path, highlight_pattern));
+            println!("{}", highlight_match(&directory.full_path, highlight_patterns));
         }
         for file in files {
-            println!("{}", highlight_match(&file.full_path, highlight_pattern));
+            println!("{}", highlight_match(&file.full_path, highlight_patterns));
         }
     }
 }
