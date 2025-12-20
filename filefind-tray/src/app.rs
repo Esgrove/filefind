@@ -26,7 +26,7 @@ mod menu_ids {
     pub const QUIT: &str = "quit";
 }
 
-const UPDATE_INTERVAL: Duration = Duration::from_secs(3);
+const UPDATE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Run the tray application.
 ///
