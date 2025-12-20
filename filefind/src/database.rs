@@ -211,7 +211,7 @@ impl Database {
                     label: row.get(2)?,
                     mount_point: row.get(3)?,
                     volume_type: VolumeType::parse(row.get::<_, String>(4)?.as_str()),
-                    last_scan_time: row.get::<_, Option<i64>>(5)?.map(unix_to_system_time),
+                    last_scan_time: row.get::<_, Option<i64>>(5)?.and_then(unix_to_system_time),
                     last_usn: row.get(6)?,
                     is_online: row.get(7)?,
                 })
@@ -242,7 +242,7 @@ impl Database {
                     label: row.get(2)?,
                     mount_point: row.get(3)?,
                     volume_type: VolumeType::parse(row.get::<_, String>(4)?.as_str()),
-                    last_scan_time: row.get::<_, Option<i64>>(5)?.map(unix_to_system_time),
+                    last_scan_time: row.get::<_, Option<i64>>(5)?.and_then(unix_to_system_time),
                     last_usn: row.get(6)?,
                     is_online: row.get(7)?,
                 })
@@ -608,6 +608,14 @@ impl Database {
 
 /// Convert a database row to a `FileEntry`.
 fn row_to_file_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
+    // Size is stored as INTEGER (i64) in SQLite, convert safely to u64
+    let size_i64: i64 = row.get(6)?;
+    let size = u64::try_from(size_i64).unwrap_or(0);
+
+    // MFT reference is stored as INTEGER (i64) in SQLite, convert safely to u64
+    let mft_reference: Option<i64> = row.get(9)?;
+    let mft_reference = mft_reference.and_then(|v| u64::try_from(v).ok());
+
     Ok(FileEntry {
         id: Some(row.get(0)?),
         volume_id: row.get(1)?,
@@ -615,10 +623,10 @@ fn row_to_file_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
         name: row.get(3)?,
         full_path: row.get(4)?,
         is_directory: row.get(5)?,
-        size: row.get(6)?,
-        created_time: row.get::<_, Option<i64>>(7)?.map(unix_to_system_time),
-        modified_time: row.get::<_, Option<i64>>(8)?.map(unix_to_system_time),
-        mft_reference: row.get(9)?,
+        size,
+        created_time: row.get::<_, Option<i64>>(7)?.and_then(unix_to_system_time),
+        modified_time: row.get::<_, Option<i64>>(8)?.and_then(unix_to_system_time),
+        mft_reference,
     })
 }
 
@@ -631,8 +639,14 @@ fn system_time_to_unix(time: SystemTime) -> i64 {
 }
 
 /// Convert a Unix timestamp to a `SystemTime`.
-fn unix_to_system_time(timestamp: i64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(timestamp as u64)
+///
+/// Returns `None` if the timestamp is negative (before Unix epoch).
+fn unix_to_system_time(timestamp: i64) -> Option<SystemTime> {
+    if timestamp >= 0 {
+        Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(timestamp as u64))
+    } else {
+        None
+    }
 }
 
 /// Convert a glob pattern to a SQL LIKE pattern.
@@ -1476,13 +1490,17 @@ mod tests {
         assert_eq!(unix, 0);
 
         let back = unix_to_system_time(unix);
-        assert_eq!(back, epoch);
+        assert_eq!(back, Some(epoch));
 
         // Test a known timestamp
         let timestamp = 1_700_000_000i64;
-        let time = unix_to_system_time(timestamp);
+        let time = unix_to_system_time(timestamp).expect("valid timestamp");
         let back = system_time_to_unix(time);
         assert_eq!(back, timestamp);
+
+        // Test negative timestamp returns None
+        let negative = unix_to_system_time(-1);
+        assert_eq!(negative, None);
     }
 
     #[test]
@@ -1651,5 +1669,214 @@ mod tests {
         // Multiple ? wildcards
         let results = database.search_by_glob("file??.txt", 10).unwrap();
         assert_eq!(results.len(), 1); // file10
+    }
+
+    #[test]
+    fn test_negative_timestamp_returns_none() {
+        // Negative timestamps (before Unix epoch) should return None
+        assert_eq!(unix_to_system_time(-1), None);
+        assert_eq!(unix_to_system_time(-1000), None);
+        assert_eq!(unix_to_system_time(i64::MIN), None);
+
+        // Zero and positive timestamps should work
+        assert!(unix_to_system_time(0).is_some());
+        assert!(unix_to_system_time(1).is_some());
+        assert!(unix_to_system_time(1_700_000_000).is_some());
+
+        // Very large timestamps (far future) - use a reasonable upper bound
+        // Year 3000 is approximately 32503680000 seconds from epoch
+        assert!(unix_to_system_time(32_503_680_000).is_some());
+    }
+
+    #[test]
+    fn test_file_with_negative_timestamps_in_database() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("NEG_TIME_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert a file with valid timestamps
+        let file = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "old_file.txt".to_string(),
+            full_path: "C:\\old_file.txt".to_string(),
+            is_directory: false,
+            size: 100,
+            created_time: Some(SystemTime::UNIX_EPOCH),
+            modified_time: Some(SystemTime::UNIX_EPOCH),
+            mft_reference: None,
+        };
+        database.insert_file(&file).unwrap();
+
+        // Manually insert a file with negative timestamps using raw SQL
+        database
+            .connection
+            .execute(
+                "INSERT INTO files (volume_id, name, full_path, is_directory, size, created_time, modified_time)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    volume_id,
+                    "negative_time.txt",
+                    "C:\\negative_time.txt",
+                    false,
+                    200,
+                    -1000i64,
+                    -500i64
+                ],
+            )
+            .unwrap();
+
+        // Search should succeed and return the file with None timestamps
+        let results = database.search_by_exact_name("negative_time.txt", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "negative_time.txt");
+        assert_eq!(results[0].size, 200);
+        assert!(results[0].created_time.is_none());
+        assert!(results[0].modified_time.is_none());
+    }
+
+    #[test]
+    fn test_file_with_max_u64_size() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("MAX_SIZE_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // SQLite stores integers as i64, so the max safe positive value is i64::MAX
+        let max_safe_size = i64::MAX as u64;
+        let file = create_test_file(volume_id, "max_size.bin", "C:\\max_size.bin", max_safe_size);
+        database.insert_file(&file).unwrap();
+
+        let results = database.search_by_exact_name("max_size.bin", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].size, max_safe_size);
+    }
+
+    #[test]
+    fn test_file_with_negative_size_in_database() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("NEG_SIZE_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Manually insert a file with negative size using raw SQL (simulating corrupted data)
+        database
+            .connection
+            .execute(
+                "INSERT INTO files (volume_id, name, full_path, is_directory, size)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![volume_id, "negative_size.txt", "C:\\negative_size.txt", false, -100i64],
+            )
+            .unwrap();
+
+        // Search should succeed and return the file with size defaulting to 0
+        let results = database.search_by_exact_name("negative_size.txt", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "negative_size.txt");
+        assert_eq!(results[0].size, 0); // Negative size should default to 0
+    }
+
+    #[test]
+    fn test_file_with_mft_reference_edge_cases() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("MFT_REF_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Test with valid MFT reference
+        let mut file = create_test_file(volume_id, "valid_mft.txt", "C:\\valid_mft.txt", 100);
+        file.mft_reference = Some(12345);
+        database.insert_file(&file).unwrap();
+
+        let results = database.search_by_exact_name("valid_mft.txt", 10).unwrap();
+        assert_eq!(results[0].mft_reference, Some(12345));
+
+        // Test with large MFT reference (max i64 as u64)
+        let mut file2 = create_test_file(volume_id, "large_mft.txt", "C:\\large_mft.txt", 100);
+        file2.mft_reference = Some(i64::MAX as u64);
+        database.insert_file(&file2).unwrap();
+
+        let results = database.search_by_exact_name("large_mft.txt", 10).unwrap();
+        assert_eq!(results[0].mft_reference, Some(i64::MAX as u64));
+
+        // Manually insert a file with negative MFT reference (simulating corrupted data)
+        database
+            .connection
+            .execute(
+                "INSERT INTO files (volume_id, name, full_path, is_directory, size, mft_reference)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![volume_id, "neg_mft.txt", "C:\\neg_mft.txt", false, 100, -1i64],
+            )
+            .unwrap();
+
+        // Search should succeed and return the file with mft_reference as None
+        let results = database.search_by_exact_name("neg_mft.txt", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].mft_reference, None); // Negative MFT reference should become None
+    }
+
+    #[test]
+    fn test_volume_with_negative_last_scan_time() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Manually insert a volume with negative last_scan_time
+        database
+            .connection
+            .execute(
+                "INSERT INTO volumes (serial_number, label, mount_point, volume_type, last_scan_time, is_online)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params!["NEG_SCAN_VOL", "Test", "C:", "ntfs", -1000i64, true],
+            )
+            .unwrap();
+
+        let volume = database.get_volume_by_serial("NEG_SCAN_VOL").unwrap();
+        assert!(volume.is_some());
+        let volume = volume.unwrap();
+        assert!(volume.last_scan_time.is_none()); // Negative timestamp should become None
+    }
+
+    #[test]
+    fn test_search_with_corrupted_integer_data() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("CORRUPT_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert multiple files with various edge case values
+        database
+            .connection
+            .execute_batch(&format!(
+                "INSERT INTO files (volume_id, name, full_path, is_directory, size, created_time, modified_time, mft_reference)
+                 VALUES
+                 ({volume_id}, 'normal.txt', 'C:\\normal.txt', 0, 100, 1700000000, 1700000000, 12345),
+                 ({volume_id}, 'neg_size.txt', 'C:\\neg_size.txt', 0, -999, 1700000000, 1700000000, NULL),
+                 ({volume_id}, 'neg_time.txt', 'C:\\neg_time.txt', 0, 500, -1, -1, 67890),
+                 ({volume_id}, 'neg_mft.txt', 'C:\\neg_mft.txt', 0, 750, 1700000000, 1700000000, -42),
+                 ({volume_id}, 'all_neg.txt', 'C:\\all_neg.txt', 0, -1, -1000, -2000, -3000)"
+            ))
+            .unwrap();
+
+        // Search should return all files without errors
+        let results = database.search_by_glob("*.txt", 100).unwrap();
+        assert_eq!(results.len(), 5);
+
+        // Verify the corrupted values are handled correctly
+        let neg_size = results.iter().find(|f| f.name == "neg_size.txt").unwrap();
+        assert_eq!(neg_size.size, 0);
+
+        let neg_time = results.iter().find(|f| f.name == "neg_time.txt").unwrap();
+        assert!(neg_time.created_time.is_none());
+        assert!(neg_time.modified_time.is_none());
+
+        let neg_mft = results.iter().find(|f| f.name == "neg_mft.txt").unwrap();
+        assert!(neg_mft.mft_reference.is_none());
+
+        let all_neg = results.iter().find(|f| f.name == "all_neg.txt").unwrap();
+        assert_eq!(all_neg.size, 0);
+        assert!(all_neg.created_time.is_none());
+        assert!(all_neg.modified_time.is_none());
+        assert!(all_neg.mft_reference.is_none());
     }
 }
