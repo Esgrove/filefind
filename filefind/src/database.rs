@@ -270,10 +270,10 @@ impl Database {
                     file.name,
                     file.full_path,
                     file.is_directory,
-                    file.size,
+                    i64::try_from(file.size).unwrap_or(i64::MAX),
                     file.created_time.map(system_time_to_unix),
                     file.modified_time.map(system_time_to_unix),
-                    file.mft_reference,
+                    file.mft_reference.map(|v| i64::try_from(v).unwrap_or(i64::MAX)),
                 ],
             )
             .context("Failed to insert file")?;
@@ -303,10 +303,10 @@ impl Database {
                     file.name,
                     file.full_path,
                     file.is_directory,
-                    file.size,
+                    i64::try_from(file.size).unwrap_or(i64::MAX),
                     file.created_time.map(system_time_to_unix),
                     file.modified_time.map(system_time_to_unix),
-                    file.mft_reference,
+                    file.mft_reference.map(|v| i64::try_from(v).unwrap_or(i64::MAX)),
                 ])?;
             }
         }
@@ -361,7 +361,10 @@ impl Database {
         )?;
 
         let files = statement
-            .query_map(params![search_pattern, limit], row_to_file_entry)?
+            .query_map(
+                params![search_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                row_to_file_entry,
+            )?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search files")?;
 
@@ -384,7 +387,10 @@ impl Database {
         )?;
 
         let files = statement
-            .query_map(params![name, limit], row_to_file_entry)?
+            .query_map(
+                params![name, i64::try_from(limit).unwrap_or(i64::MAX)],
+                row_to_file_entry,
+            )?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search files")?;
 
@@ -413,7 +419,10 @@ impl Database {
         )?;
 
         let files = statement
-            .query_map(params![sql_pattern, limit], row_to_file_entry)?
+            .query_map(
+                params![sql_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                row_to_file_entry,
+            )?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search files by glob")?;
 
@@ -454,7 +463,10 @@ impl Database {
         )?;
 
         let files = statement
-            .query_map(params![effective_pattern, limit], row_to_file_entry)?
+            .query_map(
+                params![effective_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                row_to_file_entry,
+            )?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search files by regex")?;
 
@@ -479,7 +491,10 @@ impl Database {
         )?;
 
         let files = statement
-            .query_map(params![search_pattern, limit], row_to_file_entry)?
+            .query_map(
+                params![search_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                row_to_file_entry,
+            )?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search files by path")?;
 
@@ -491,33 +506,33 @@ impl Database {
     /// # Errors
     /// Returns an error if the database operation fails.
     pub fn get_stats(&self) -> Result<DatabaseStats> {
-        let total_files: u64 =
+        let total_files: i64 =
             self.connection
                 .query_row("SELECT COUNT(*) FROM files WHERE is_directory = 0", [], |row| {
                     row.get(0)
                 })?;
 
-        let total_directories: u64 =
+        let total_directories: i64 =
             self.connection
                 .query_row("SELECT COUNT(*) FROM files WHERE is_directory = 1", [], |row| {
                     row.get(0)
                 })?;
 
-        let volume_count: u64 = self
+        let volume_count: i64 = self
             .connection
             .query_row("SELECT COUNT(*) FROM volumes", [], |row| row.get(0))?;
 
-        let total_size: u64 = self.connection.query_row(
+        let total_size: i64 = self.connection.query_row(
             "SELECT COALESCE(SUM(size), 0) FROM files WHERE is_directory = 0",
             [],
             |row| row.get(0),
         )?;
 
         Ok(DatabaseStats {
-            total_files,
-            total_directories,
-            volume_count,
-            total_size,
+            total_files: u64::try_from(total_files).unwrap_or(0),
+            total_directories: u64::try_from(total_directories).unwrap_or(0),
+            volume_count: u64::try_from(volume_count).unwrap_or(0),
+            total_size: u64::try_from(total_size).unwrap_or(0),
         })
     }
 
