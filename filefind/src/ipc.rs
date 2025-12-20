@@ -530,14 +530,14 @@ mod tests {
 
         for command in commands {
             let bytes = serialize_command(&command);
-            assert!(bytes.is_ok(), "Failed to serialize {:?}", command);
+            assert!(bytes.is_ok(), "Failed to serialize {command:?}");
 
             let bytes = bytes.unwrap();
-            assert!(bytes.len() >= 3, "Serialized data too small for {:?}", command);
+            assert!(bytes.len() >= 3, "Serialized data too small for {command:?}");
 
             // Skip length prefix and deserialize
             let deserialized = deserialize_command(&bytes[2..]);
-            assert!(deserialized.is_ok(), "Failed to deserialize {:?}", command);
+            assert!(deserialized.is_ok(), "Failed to deserialize {command:?}");
             assert_eq!(deserialized.unwrap(), command);
         }
     }
@@ -562,11 +562,11 @@ mod tests {
 
         for response in responses {
             let bytes = serialize_response(&response);
-            assert!(bytes.is_ok(), "Failed to serialize {:?}", response);
+            assert!(bytes.is_ok(), "Failed to serialize {response:?}");
 
             let bytes = bytes.unwrap();
             let deserialized = deserialize_response(&bytes[2..]);
-            assert!(deserialized.is_ok(), "Failed to deserialize {:?}", response);
+            assert!(deserialized.is_ok(), "Failed to deserialize {response:?}");
             assert_eq!(deserialized.unwrap(), response);
         }
     }
@@ -575,7 +575,7 @@ mod tests {
     fn test_daemon_status_with_values() {
         let status = DaemonStatus {
             state: DaemonStateInfo::Scanning,
-            indexed_files: 123456,
+            indexed_files: 123_456,
             indexed_directories: 7890,
             monitored_volumes: 3,
             uptime_seconds: 3600,
@@ -583,7 +583,7 @@ mod tests {
         };
 
         assert_eq!(status.state, DaemonStateInfo::Scanning);
-        assert_eq!(status.indexed_files, 123456);
+        assert_eq!(status.indexed_files, 123_456);
         assert_eq!(status.indexed_directories, 7890);
         assert_eq!(status.monitored_volumes, 3);
         assert_eq!(status.uptime_seconds, 3600);
@@ -660,7 +660,7 @@ mod tests {
             is_paused: false,
         };
 
-        let response = DaemonResponse::Status(status.clone());
+        let response = DaemonResponse::Status(status);
         let bytes = serialize_response(&response).expect("serialize");
         let deserialized = deserialize_response(&bytes[2..]).expect("deserialize");
 
@@ -745,21 +745,21 @@ mod tests {
     #[test]
     fn test_daemon_command_debug() {
         let command = DaemonCommand::Ping;
-        let debug_str = format!("{:?}", command);
+        let debug_str = format!("{command:?}");
         assert!(debug_str.contains("Ping"));
     }
 
     #[test]
     fn test_daemon_response_debug() {
         let response = DaemonResponse::Ok;
-        let debug_str = format!("{:?}", response);
+        let debug_str = format!("{response:?}");
         assert!(debug_str.contains("Ok"));
     }
 
     #[test]
     fn test_daemon_status_debug() {
         let status = DaemonStatus::default();
-        let debug_str = format!("{:?}", status);
+        let debug_str = format!("{status:?}");
         assert!(debug_str.contains("DaemonStatus"));
         assert!(debug_str.contains("state"));
     }
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn test_daemon_state_info_debug() {
         let state = DaemonStateInfo::Scanning;
-        let debug_str = format!("{:?}", state);
+        let debug_str = format!("{state:?}");
         assert!(debug_str.contains("Scanning"));
     }
 

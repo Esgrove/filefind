@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -290,7 +290,7 @@ impl UsnMonitor {
                 if let Ok(journal_info) = self.query_journal()
                     && journal_info.journal_id != self.journal_id
                 {
-                    warn!("USN Journal was reset, need full rescan");
+                    tracing::warn!("USN Journal was reset, need full rescan");
                     self.journal_id = journal_info.journal_id;
                     self.last_usn = journal_info.first_usn;
                     return Ok((changes, self.last_usn));

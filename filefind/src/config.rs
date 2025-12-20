@@ -518,7 +518,7 @@ exclude_patterns = ["*.tmp", "*.bak", "~*"]
     #[test]
     fn test_output_format_debug() {
         let format = OutputFormat::Simple;
-        let debug_str = format!("{:?}", format);
+        let debug_str = format!("{format:?}");
         assert!(debug_str.contains("Simple"));
     }
 

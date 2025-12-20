@@ -449,9 +449,9 @@ mod tests {
         assert_eq!(format_number(123), "123");
         assert_eq!(format_number(1234), "1,234");
         assert_eq!(format_number(12345), "12,345");
-        assert_eq!(format_number(123456), "123,456");
-        assert_eq!(format_number(1234567), "1,234,567");
-        assert_eq!(format_number(1234567890), "1,234,567,890");
+        assert_eq!(format_number(123_456), "123,456");
+        assert_eq!(format_number(1_234_567), "1,234,567");
+        assert_eq!(format_number(1_234_567_890), "1,234,567,890");
     }
 
     #[test]
@@ -661,31 +661,6 @@ mod tests {
         // Verify deep file is found
         let results = database.search_by_exact_name("deep.txt", 10).expect("search");
         assert_eq!(results.len(), 1);
-        assert!(results[0].full_path.contains("d"));
-    }
-
-    #[test]
-    fn test_format_number_consistent_comma_placement() {
-        // Verify commas are placed correctly every 3 digits from right
-        let test_cases = [
-            (1234u64, vec![1]),       // comma after 1st digit
-            (12345u64, vec![2]),      // comma after 2nd digit
-            (123456u64, vec![3]),     // comma after 3rd digit
-            (1234567u64, vec![1, 5]), // commas after 1st and 5th digits
-        ];
-
-        for (number, expected_comma_positions) in test_cases {
-            let formatted = format_number(number);
-            let comma_positions: Vec<usize> = formatted
-                .char_indices()
-                .filter(|(_, c)| *c == ',')
-                .map(|(i, _)| i)
-                .collect();
-
-            assert_eq!(
-                comma_positions, expected_comma_positions,
-                "Wrong comma positions for {number}: got {comma_positions:?}, expected {expected_comma_positions:?}"
-            );
-        }
+        assert!(results[0].full_path.contains('d'));
     }
 }

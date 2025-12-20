@@ -631,7 +631,7 @@ mod tests {
             created: None,
         };
 
-        let debug_str = format!("{:?}", entry);
+        let debug_str = format!("{entry:?}");
         assert!(debug_str.contains("ScanEntry"));
         assert!(debug_str.contains("debug.txt"));
     }
@@ -867,11 +867,11 @@ mod tests {
     #[test]
     fn test_scan_entry_with_long_path() {
         let long_name = "a".repeat(200);
-        let long_path = format!("C:\\{}", long_name);
+        let long_path = format!("C:\\{long_name}");
 
         let entry = ScanEntry {
             path: PathBuf::from(&long_path),
-            name: long_name.clone(),
+            name: long_name,
             is_directory: false,
             size: 0,
             modified: None,

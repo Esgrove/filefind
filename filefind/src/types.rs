@@ -402,7 +402,7 @@ mod tests {
         let entry = FileEntry::new(1, "test.txt".to_string(), "C:\\test.txt".to_string(), false);
 
         let result = SearchResult {
-            entry: entry.clone(),
+            entry,
             score: 100,
             highlighted_name: Some("*test*.txt".to_string()),
         };
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn test_file_change_event_debug() {
         let event = FileChangeEvent::Created(PathBuf::from("C:\\test.txt"));
-        let debug_str = format!("{:?}", event);
+        let debug_str = format!("{event:?}");
         assert!(debug_str.contains("Created"));
     }
 
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn test_file_entry_debug() {
         let entry = FileEntry::new(1, "test.txt".to_string(), "C:\\test.txt".to_string(), false);
-        let debug_str = format!("{:?}", entry);
+        let debug_str = format!("{entry:?}");
         assert!(debug_str.contains("test.txt"));
         assert!(debug_str.contains("FileEntry"));
     }
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn test_indexed_volume_debug() {
         let volume = IndexedVolume::new("SERIAL".to_string(), "C:".to_string(), VolumeType::Ntfs);
-        let debug_str = format!("{:?}", volume);
+        let debug_str = format!("{volume:?}");
         assert!(debug_str.contains("SERIAL"));
         assert!(debug_str.contains("IndexedVolume"));
     }
@@ -669,13 +669,13 @@ mod tests {
             volume_type: VolumeType::Removable,
             is_online: false,
             last_scan_time: Some(now),
-            last_usn: Some(999999),
+            last_usn: Some(999_999),
         };
 
         assert_eq!(volume.id, Some(1));
         assert_eq!(volume.label, Some("My Volume".to_string()));
         assert!(!volume.is_online);
-        assert_eq!(volume.last_usn, Some(999999));
+        assert_eq!(volume.last_usn, Some(999_999));
         assert!(volume.last_scan_time.is_some());
     }
 

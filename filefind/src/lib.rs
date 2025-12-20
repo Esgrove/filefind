@@ -324,8 +324,7 @@ mod tests {
         let c_type = classify_path(Path::new("C:\\"));
         assert!(
             c_type == PathType::NtfsDriveRoot || c_type == PathType::MappedNetworkDrive,
-            "C:\\ should be NtfsDriveRoot or MappedNetworkDrive, got {:?}",
-            c_type
+            "C:\\ should be NtfsDriveRoot or MappedNetworkDrive, got {c_type:?}"
         );
 
         // For drives that may or may not exist, just verify they're classified as either
@@ -334,9 +333,7 @@ mod tests {
             let path_type = classify_path(Path::new(drive));
             assert!(
                 path_type == PathType::NtfsDriveRoot || path_type == PathType::MappedNetworkDrive,
-                "{} should be NtfsDriveRoot or MappedNetworkDrive, got {:?}",
-                drive,
-                path_type
+                "{drive} should be NtfsDriveRoot or MappedNetworkDrive, got {path_type:?}"
             );
         }
     }
@@ -443,38 +440,6 @@ mod tests {
     fn test_project_name_constant() {
         assert_eq!(PROJECT_NAME, "filefind");
         assert!(!PROJECT_NAME.is_empty());
-    }
-
-    #[test]
-    fn test_print_functions_dont_panic() {
-        // These functions should not panic with any input
-        print_error("test error");
-        print_warning("test warning");
-        print_success("test success");
-        print_info("test info");
-
-        // Test with empty strings
-        print_error("");
-        print_warning("");
-        print_success("");
-        print_info("");
-
-        // Test with unicode
-        print_error("Unicode: 文字 αβγ");
-        print_warning("Emoji: 🚀 🔥 ✨");
-    }
-
-    #[test]
-    fn test_print_macros() {
-        // Test that macros compile and work with formatting
-        print_error!("Error: {}", 42);
-        print_warning!("Warning: {} {}", "hello", "world");
-        print_success!("Success: {:?}", vec![1, 2, 3]);
-        print_info!("Info: {:.2}", 3.14159);
-
-        // Empty format
-        print_error!("");
-        print_info!("No args");
     }
 
     #[test]

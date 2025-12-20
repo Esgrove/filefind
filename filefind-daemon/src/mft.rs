@@ -9,8 +9,12 @@
 //! - Only works on NTFS-formatted volumes.
 //! - Does NOT work on network drives, even if they report as NTFS.
 
-use anyhow::{Result, bail};
+use std::collections::HashMap;
+use std::time::SystemTime;
+
+use anyhow::{Context, Result, bail};
 use filefind::types::{FileEntry, IndexedVolume};
+use tracing::{debug, info};
 
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -25,6 +29,8 @@ use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{FSCTL_ENUM_USN_DATA, FSCTL_GET_NTFS_VOLUME_DATA, NTFS_VOLUME_DATA_BUFFER};
 #[cfg(windows)]
 use windows::core::PCWSTR;
+
+use filefind::types::VolumeType;
 
 /// Size of the buffer for reading MFT records.
 const MFT_BUFFER_SIZE: usize = 64 * 1024;
@@ -592,21 +598,12 @@ impl Drop for MftScanner {
 }
 
 /// Detect all available local NTFS volumes on the system.
-///
-/// This excludes network drives, even if they report as NTFS.
-/// Network drives don't support MFT scanning since MFT is a local NTFS structure.
 #[cfg(windows)]
 pub fn detect_ntfs_volumes() -> Vec<char> {
     let mut volumes = Vec::new();
 
     for letter in 'A'..='Z' {
         let drive_path = format!("{letter}:\\");
-
-        // Skip network drives - they can't use MFT scanning even if they report as NTFS
-        if is_network_path(Path::new(&drive_path)) {
-            debug!("Skipping network drive {letter}:");
-            continue;
-        }
 
         let root_path: Vec<u16> = drive_path.encode_utf16().chain(std::iter::once(0)).collect();
 

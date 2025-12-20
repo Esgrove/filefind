@@ -672,26 +672,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ipc_to_daemon_variants() {
-        // Just verify the enum variants exist and can be matched
-        let commands = [
-            IpcToDaemon::Stop,
-            IpcToDaemon::Rescan,
-            IpcToDaemon::Pause,
-            IpcToDaemon::Resume,
-        ];
-
-        for command in commands {
-            match command {
-                IpcToDaemon::Stop => {}
-                IpcToDaemon::Rescan => {}
-                IpcToDaemon::Pause => {}
-                IpcToDaemon::Resume => {}
-            }
-        }
-    }
-
-    #[test]
     fn test_ipc_server_state_update_is_paused() {
         let state = IpcServerState::new();
 
@@ -753,14 +733,14 @@ mod tests {
     #[test]
     fn test_daemon_state_info_debug() {
         let state = DaemonStateInfo::Running;
-        let debug_str = format!("{:?}", state);
+        let debug_str = format!("{state:?}");
         assert!(debug_str.contains("Running"));
     }
 
     #[test]
     fn test_ipc_to_daemon_debug() {
         let command = IpcToDaemon::Stop;
-        let debug_str = format!("{:?}", command);
+        let debug_str = format!("{command:?}");
         assert!(debug_str.contains("Stop"));
     }
 

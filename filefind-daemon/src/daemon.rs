@@ -938,7 +938,7 @@ mod tests {
             DaemonState::Stopping,
         ];
 
-        let displays: Vec<String> = states.iter().map(|s| s.to_string()).collect();
+        let displays: Vec<String> = states.iter().map(std::string::ToString::to_string).collect();
 
         // All should be unique
         for (index, display) in displays.iter().enumerate() {
@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn test_daemon_state_debug() {
         let state = DaemonState::Running;
-        let debug_str = format!("{:?}", state);
+        let debug_str = format!("{state:?}");
         assert!(debug_str.contains("Running"));
     }
 
@@ -1092,7 +1092,7 @@ mod tests {
     #[test]
     fn test_daemon_options_debug() {
         let options = DaemonOptions::default();
-        let debug_str = format!("{:?}", options);
+        let debug_str = format!("{options:?}");
         assert!(debug_str.contains("DaemonOptions"));
         assert!(debug_str.contains("foreground"));
     }
