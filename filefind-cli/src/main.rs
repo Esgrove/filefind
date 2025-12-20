@@ -277,16 +277,17 @@ fn display_grouped(
 
     // First, show matched directories with their files
     for directory in directories {
-        println!("{}", highlight_match(&directory.full_path, highlight_pattern).bold());
+        println!("{}", directory.full_path.bold().magenta());
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
             let total_files = dir_files.len();
             for file in dir_files.iter().take(files_per_dir) {
-                println!("  {}", highlight_match(&file.name, highlight_pattern));
+                println!("  {}", highlight_match(&file.name, highlight_patterns));
             }
             if total_files > files_per_dir {
                 println!("  {} ({} files)", "...".dimmed(), total_files - files_per_dir);
             }
         }
+        println!();
     }
 
     // Then show files in directories that weren't matched
@@ -297,14 +298,15 @@ fn display_grouped(
 
     for dir_path in other_dirs {
         if let Some(dir_files) = files_by_dir.get(dir_path) {
-            println!("{}", highlight_match(dir_path, highlight_pattern).bold());
+            println!("{}", dir_path.bold().cyan());
             let total_files = dir_files.len();
             for file in dir_files.iter().take(files_per_dir) {
-                println!("  {}", highlight_match(&file.name, highlight_pattern));
+                println!("  {}", highlight_match(&file.name, highlight_patterns));
             }
             if total_files > files_per_dir {
                 println!("  {} ({} files)", "...".dimmed(), total_files - files_per_dir);
             }
+            println!();
         }
     }
 }
