@@ -14,7 +14,6 @@ use clap::Parser;
 use filefind::get_log_directory;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -56,21 +55,21 @@ fn init_logging(verbose: bool) -> Result<()> {
     std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
     // Create a rolling file appender (daily rotation)
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "filefind-tray.log");
-
-    // Also log errors to stderr (useful when running from terminal)
-    let stderr = std::io::stderr.with_max_level(tracing::Level::WARN);
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("filefind-tray")
+        .filename_suffix("log")
+        .build(&log_dir)
+        .context("Failed to create log file appender")?;
 
     tracing_subscriber::registry()
         .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(file_appender.and(stderr))
+                .with_writer(file_appender)
                 .with_ansi(false),
         )
         .init();
-
-    tracing::debug!("Logging to {}", log_dir.display());
 
     Ok(())
 }

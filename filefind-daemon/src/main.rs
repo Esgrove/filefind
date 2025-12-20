@@ -159,7 +159,13 @@ fn init_logging(verbose: bool, foreground: bool) -> Result<()> {
         std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
         // Create a rolling file appender (daily rotation)
-        let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "filefindd.log");
+        // Use builder to get proper filename format: filefindd.2024-01-15.log
+        let file_appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("filefindd")
+            .filename_suffix("log")
+            .build(&log_dir)
+            .context("Failed to create log file appender")?;
 
         // Also log errors to stderr
         let stderr = std::io::stderr.with_max_level(tracing::Level::WARN);
