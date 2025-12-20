@@ -129,18 +129,13 @@ pub fn get_ipc_path() -> PathBuf {
 
 /// Serialize a command to bytes for transmission.
 ///
-/// Format: [length: u16 LE][postcard data...]
+/// Returns raw postcard bytes. Use `write_message` to add length framing.
 ///
 /// # Errors
 ///
 /// Returns an error if serialization fails.
 pub fn serialize_command(command: &DaemonCommand) -> Result<Vec<u8>> {
-    let data = postcard::to_stdvec(command).context("Failed to serialize command")?;
-    let len = u16::try_from(data.len()).context("Command too large")?;
-    let mut buffer = Vec::with_capacity(2 + data.len());
-    buffer.extend_from_slice(&len.to_le_bytes());
-    buffer.extend_from_slice(&data);
-    Ok(buffer)
+    postcard::to_stdvec(command).context("Failed to serialize command")
 }
 
 /// Deserialize a command from bytes.
@@ -154,18 +149,13 @@ pub fn deserialize_command(bytes: &[u8]) -> Result<DaemonCommand> {
 
 /// Serialize a response to bytes for transmission.
 ///
-/// Format: [length: u16 LE][postcard data...]
+/// Returns raw postcard bytes. Use `write_message` to add length framing.
 ///
 /// # Errors
 ///
 /// Returns an error if serialization fails.
 pub fn serialize_response(response: &DaemonResponse) -> Result<Vec<u8>> {
-    let data = postcard::to_stdvec(response).context("Failed to serialize response")?;
-    let len = u16::try_from(data.len()).context("Response too large")?;
-    let mut buffer = Vec::with_capacity(2 + data.len());
-    buffer.extend_from_slice(&len.to_le_bytes());
-    buffer.extend_from_slice(&data);
-    Ok(buffer)
+    postcard::to_stdvec(response).context("Failed to serialize response")
 }
 
 /// Deserialize a response from bytes.
@@ -380,6 +370,11 @@ impl Default for IpcClient {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    use std::os::windows::io::FromRawHandle;
+    #[cfg(windows)]
+    use std::os::windows::io::OwnedHandle;
+
     #[test]
     fn test_daemon_command_serialization() {
         let commands = vec![
@@ -393,8 +388,8 @@ mod tests {
 
         for command in commands {
             let bytes = serialize_command(&command).expect("serialize");
-            // Skip the 2-byte length prefix
-            let parsed = deserialize_command(&bytes[2..]).expect("deserialize");
+            // Raw postcard bytes, no length prefix
+            let parsed = deserialize_command(&bytes).expect("deserialize");
             assert_eq!(command, parsed);
         }
     }
@@ -410,8 +405,8 @@ mod tests {
 
         for response in responses {
             let bytes = serialize_response(&response).expect("serialize");
-            // Skip the 2-byte length prefix
-            let parsed = deserialize_response(&bytes[2..]).expect("deserialize");
+            // Raw postcard bytes, no length prefix
+            let parsed = deserialize_response(&bytes).expect("deserialize");
             assert_eq!(response, parsed);
         }
     }
@@ -529,10 +524,10 @@ mod tests {
             assert!(bytes.is_ok(), "Failed to serialize {command:?}");
 
             let bytes = bytes.unwrap();
-            assert!(bytes.len() >= 3, "Serialized data too small for {command:?}");
+            assert!(!bytes.is_empty(), "Serialized data empty for {command:?}");
 
-            // Skip length prefix and deserialize
-            let deserialized = deserialize_command(&bytes[2..]);
+            // Raw postcard bytes, no length prefix
+            let deserialized = deserialize_command(&bytes);
             assert!(deserialized.is_ok(), "Failed to deserialize {command:?}");
             assert_eq!(deserialized.unwrap(), command);
         }
@@ -561,7 +556,8 @@ mod tests {
             assert!(bytes.is_ok(), "Failed to serialize {response:?}");
 
             let bytes = bytes.unwrap();
-            let deserialized = deserialize_response(&bytes[2..]);
+            // Raw postcard bytes, no length prefix
+            let deserialized = deserialize_response(&bytes);
             assert!(deserialized.is_ok(), "Failed to deserialize {response:?}");
             assert_eq!(deserialized.unwrap(), response);
         }
@@ -621,7 +617,7 @@ mod tests {
         let response = DaemonResponse::Error(long_message.clone());
 
         let bytes = serialize_response(&response).expect("serialize");
-        let deserialized = deserialize_response(&bytes[2..]).expect("deserialize");
+        let deserialized = deserialize_response(&bytes).expect("deserialize");
 
         if let DaemonResponse::Error(msg) = deserialized {
             assert_eq!(msg, long_message);
@@ -636,7 +632,7 @@ mod tests {
         let response = DaemonResponse::Error(unicode_message.to_string());
 
         let bytes = serialize_response(&response).expect("serialize");
-        let deserialized = deserialize_response(&bytes[2..]).expect("deserialize");
+        let deserialized = deserialize_response(&bytes).expect("deserialize");
 
         if let DaemonResponse::Error(msg) = deserialized {
             assert_eq!(msg, unicode_message);
@@ -658,7 +654,7 @@ mod tests {
 
         let response = DaemonResponse::Status(status);
         let bytes = serialize_response(&response).expect("serialize");
-        let deserialized = deserialize_response(&bytes[2..]).expect("deserialize");
+        let deserialized = deserialize_response(&bytes).expect("deserialize");
 
         if let DaemonResponse::Status(s) = deserialized {
             assert_eq!(s.indexed_files, u64::MAX);
@@ -700,27 +696,25 @@ mod tests {
     }
 
     #[test]
-    fn test_serialize_command_length_prefix() {
+    fn test_serialize_command_raw_bytes() {
         let command = DaemonCommand::Ping;
         let bytes = serialize_command(&command).expect("serialize");
 
-        // Extract length prefix
-        let len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
-
-        // Length should match remaining bytes
-        assert_eq!(len, bytes.len() - 2);
+        // Should be raw postcard bytes (no length prefix)
+        // Verify we can deserialize directly
+        let decoded: DaemonCommand = deserialize_command(&bytes).expect("deserialize");
+        assert_eq!(decoded, command);
     }
 
     #[test]
-    fn test_serialize_response_length_prefix() {
+    fn test_serialize_response_raw_bytes() {
         let response = DaemonResponse::Ok;
         let bytes = serialize_response(&response).expect("serialize");
 
-        // Extract length prefix
-        let len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
-
-        // Length should match remaining bytes
-        assert_eq!(len, bytes.len() - 2);
+        // Should be raw postcard bytes (no length prefix)
+        // Verify we can deserialize directly
+        let decoded: DaemonResponse = deserialize_response(&bytes).expect("deserialize");
+        assert_eq!(decoded, response);
     }
 
     #[test]
@@ -818,5 +812,760 @@ mod tests {
         assert!(result.is_ok());
         // Empty message still has 2-byte length prefix (0x00, 0x00)
         assert_eq!(cursor.into_inner(), vec![0, 0]);
+    }
+
+    // ==================== Integration Tests ====================
+    // These tests simulate the full send/receive flow through pipes
+
+    /// Simulates the full client->server command flow using in-memory buffers.
+    #[test]
+    fn test_integration_command_roundtrip() {
+        use std::io::Cursor;
+
+        let commands = [
+            DaemonCommand::Stop,
+            DaemonCommand::GetStatus,
+            DaemonCommand::Rescan,
+            DaemonCommand::Pause,
+            DaemonCommand::Resume,
+            DaemonCommand::Ping,
+        ];
+
+        for original_command in commands {
+            // Client side: serialize and write
+            let mut buffer = Vec::new();
+            let command_bytes = serialize_command(&original_command).expect("serialize command");
+            write_message(&mut buffer, &command_bytes).expect("write message");
+
+            // Server side: read and deserialize
+            let mut cursor = Cursor::new(buffer);
+            let received_bytes = read_message(&mut cursor).expect("read message");
+            let received_command = deserialize_command(&received_bytes).expect("deserialize command");
+
+            assert_eq!(original_command, received_command);
+        }
+    }
+
+    /// Simulates the full server->client response flow using in-memory buffers.
+    #[test]
+    fn test_integration_response_roundtrip() {
+        use std::io::Cursor;
+
+        let responses = [
+            DaemonResponse::Ok,
+            DaemonResponse::Pong,
+            DaemonResponse::Error("test error".to_string()),
+            DaemonResponse::Error(String::new()),
+            DaemonResponse::Status(DaemonStatus::default()),
+            DaemonResponse::Status(DaemonStatus {
+                state: DaemonStateInfo::Running,
+                indexed_files: 1_234_567,
+                indexed_directories: 89_012,
+                monitored_volumes: 3,
+                uptime_seconds: 86400,
+                is_paused: false,
+            }),
+        ];
+
+        for original_response in responses {
+            // Server side: serialize and write
+            let mut buffer = Vec::new();
+            let response_bytes = serialize_response(&original_response).expect("serialize response");
+            write_message(&mut buffer, &response_bytes).expect("write message");
+
+            // Client side: read and deserialize
+            let mut cursor = Cursor::new(buffer);
+            let received_bytes = read_message(&mut cursor).expect("read message");
+            let received_response = deserialize_response(&received_bytes).expect("deserialize response");
+
+            assert_eq!(original_response, received_response);
+        }
+    }
+
+    /// Simulates a full request/response cycle (client sends command, server responds).
+    #[test]
+    fn test_integration_full_request_response_cycle() {
+        use std::io::Cursor;
+
+        // Step 1: Client sends GetStatus command
+        let command = DaemonCommand::GetStatus;
+        let mut request_buffer = Vec::new();
+        let command_bytes = serialize_command(&command).expect("serialize command");
+        write_message(&mut request_buffer, &command_bytes).expect("write command");
+
+        // Step 2: Server receives and parses command
+        let mut request_cursor = Cursor::new(request_buffer);
+        let received_command_bytes = read_message(&mut request_cursor).expect("read command");
+        let received_command = deserialize_command(&received_command_bytes).expect("deserialize command");
+        assert_eq!(received_command, DaemonCommand::GetStatus);
+
+        // Step 3: Server generates response
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Running,
+            indexed_files: 500_000,
+            indexed_directories: 50_000,
+            monitored_volumes: 2,
+            uptime_seconds: 3600,
+            is_paused: false,
+        };
+        let response = DaemonResponse::Status(status.clone());
+
+        // Step 4: Server sends response
+        let mut response_buffer = Vec::new();
+        let response_bytes = serialize_response(&response).expect("serialize response");
+        write_message(&mut response_buffer, &response_bytes).expect("write response");
+
+        // Step 5: Client receives and parses response
+        let mut response_cursor = Cursor::new(response_buffer);
+        let received_response_bytes = read_message(&mut response_cursor).expect("read response");
+        let received_response = deserialize_response(&received_response_bytes).expect("deserialize response");
+
+        // Verify the full cycle
+        match received_response {
+            DaemonResponse::Status(received_status) => {
+                assert_eq!(received_status.state, DaemonStateInfo::Running);
+                assert_eq!(received_status.indexed_files, 500_000);
+                assert_eq!(received_status.indexed_directories, 50_000);
+                assert_eq!(received_status.monitored_volumes, 2);
+                assert_eq!(received_status.uptime_seconds, 3600);
+                assert!(!received_status.is_paused);
+            }
+            other => panic!("Expected Status response, got {other:?}"),
+        }
+    }
+
+    /// Tests multiple commands/responses in sequence on same buffer.
+    #[test]
+    fn test_integration_multiple_messages_in_sequence() {
+        use std::io::Cursor;
+
+        let mut buffer = Vec::new();
+
+        // Write multiple commands to buffer
+        let commands = [DaemonCommand::Ping, DaemonCommand::GetStatus, DaemonCommand::Pause];
+
+        for command in &commands {
+            let command_bytes = serialize_command(command).expect("serialize");
+            write_message(&mut buffer, &command_bytes).expect("write");
+        }
+
+        // Read them back in order
+        let mut cursor = Cursor::new(buffer);
+        for expected_command in &commands {
+            let received_bytes = read_message(&mut cursor).expect("read");
+            let received_command = deserialize_command(&received_bytes).expect("deserialize");
+            assert_eq!(&received_command, expected_command);
+        }
+    }
+
+    /// Tests that the message framing handles various payload sizes correctly.
+    #[test]
+    fn test_integration_various_payload_sizes() {
+        use std::io::Cursor;
+
+        // Test with error messages of various lengths
+        let sizes = [0, 1, 10, 100, 255, 256, 500, 1000];
+
+        for size in sizes {
+            let error_message = "x".repeat(size);
+            let response = DaemonResponse::Error(error_message.clone());
+
+            // Serialize and write
+            let mut buffer = Vec::new();
+            let response_bytes = serialize_response(&response).expect("serialize");
+            write_message(&mut buffer, &response_bytes).expect("write");
+
+            // Read and deserialize
+            let mut cursor = Cursor::new(buffer);
+            let received_bytes = read_message(&mut cursor).expect("read");
+            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+
+            match received_response {
+                DaemonResponse::Error(msg) => assert_eq!(msg, error_message),
+                other => panic!("Expected Error response, got {other:?}"),
+            }
+        }
+    }
+
+    /// Tests status with all daemon states.
+    #[test]
+    fn test_integration_all_daemon_states() {
+        use std::io::Cursor;
+
+        let states = [
+            DaemonStateInfo::Stopped,
+            DaemonStateInfo::Starting,
+            DaemonStateInfo::Running,
+            DaemonStateInfo::Scanning,
+            DaemonStateInfo::Stopping,
+        ];
+
+        for state in states {
+            let status = DaemonStatus {
+                state,
+                indexed_files: 123,
+                indexed_directories: 45,
+                monitored_volumes: 2,
+                uptime_seconds: 60,
+                is_paused: false,
+            };
+            let response = DaemonResponse::Status(status);
+
+            // Full roundtrip
+            let mut buffer = Vec::new();
+            let response_bytes = serialize_response(&response).expect("serialize");
+            write_message(&mut buffer, &response_bytes).expect("write");
+
+            let mut cursor = Cursor::new(buffer);
+            let received_bytes = read_message(&mut cursor).expect("read");
+            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+
+            match received_response {
+                DaemonResponse::Status(s) => assert_eq!(s.state, state),
+                other => panic!("Expected Status response, got {other:?}"),
+            }
+        }
+    }
+
+    /// Tests that paused flag is correctly transmitted.
+    #[test]
+    fn test_integration_paused_flag_transmission() {
+        use std::io::Cursor;
+
+        for is_paused in [true, false] {
+            let status = DaemonStatus {
+                state: DaemonStateInfo::Running,
+                indexed_files: 100,
+                indexed_directories: 10,
+                monitored_volumes: 1,
+                uptime_seconds: 30,
+                is_paused,
+            };
+            let response = DaemonResponse::Status(status);
+
+            let mut buffer = Vec::new();
+            let response_bytes = serialize_response(&response).expect("serialize");
+            write_message(&mut buffer, &response_bytes).expect("write");
+
+            let mut cursor = Cursor::new(buffer);
+            let received_bytes = read_message(&mut cursor).expect("read");
+            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+
+            match received_response {
+                DaemonResponse::Status(s) => assert_eq!(s.is_paused, is_paused),
+                other => panic!("Expected Status response, got {other:?}"),
+            }
+        }
+    }
+
+    /// Tests error message with unicode characters.
+    #[test]
+    fn test_integration_unicode_error_message() {
+        use std::io::Cursor;
+
+        let unicode_messages = [
+            "文件未找到",
+            "Ошибка доступа",
+            "αβγδε",
+            "🚫 Error: File not found 📁",
+            "Mixed: Hello 世界 🌍",
+        ];
+
+        for message in unicode_messages {
+            let response = DaemonResponse::Error(message.to_string());
+
+            let mut buffer = Vec::new();
+            let response_bytes = serialize_response(&response).expect("serialize");
+            write_message(&mut buffer, &response_bytes).expect("write");
+
+            let mut cursor = Cursor::new(buffer);
+            let received_bytes = read_message(&mut cursor).expect("read");
+            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+
+            match received_response {
+                DaemonResponse::Error(msg) => assert_eq!(msg, message),
+                other => panic!("Expected Error response, got {other:?}"),
+            }
+        }
+    }
+
+    /// Tests boundary values for numeric fields in DaemonStatus.
+    #[test]
+    fn test_integration_status_boundary_values() {
+        use std::io::Cursor;
+
+        let test_cases = [
+            // (indexed_files, indexed_directories, monitored_volumes, uptime_seconds)
+            (0, 0, 0, 0),
+            (1, 1, 1, 1),
+            (u64::MAX, u64::MAX, u32::MAX, u64::MAX),
+            (u64::MAX / 2, u64::MAX / 2, u32::MAX / 2, u64::MAX / 2),
+            (1_000_000_000, 100_000_000, 100, 365 * 24 * 3600), // Realistic large values
+        ];
+
+        for (files, dirs, volumes, uptime) in test_cases {
+            let status = DaemonStatus {
+                state: DaemonStateInfo::Running,
+                indexed_files: files,
+                indexed_directories: dirs,
+                monitored_volumes: volumes,
+                uptime_seconds: uptime,
+                is_paused: false,
+            };
+            let response = DaemonResponse::Status(status);
+
+            let mut buffer = Vec::new();
+            let response_bytes = serialize_response(&response).expect("serialize");
+            write_message(&mut buffer, &response_bytes).expect("write");
+
+            let mut cursor = Cursor::new(buffer);
+            let received_bytes = read_message(&mut cursor).expect("read");
+            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+
+            match received_response {
+                DaemonResponse::Status(s) => {
+                    assert_eq!(s.indexed_files, files);
+                    assert_eq!(s.indexed_directories, dirs);
+                    assert_eq!(s.monitored_volumes, volumes);
+                    assert_eq!(s.uptime_seconds, uptime);
+                }
+                other => panic!("Expected Status response, got {other:?}"),
+            }
+        }
+    }
+
+    /// Tests that partial reads fail gracefully.
+    #[test]
+    fn test_integration_partial_read_fails() {
+        use std::io::Cursor;
+
+        // Create a valid message
+        let response = DaemonResponse::Ok;
+        let mut buffer = Vec::new();
+        let response_bytes = serialize_response(&response).expect("serialize");
+        write_message(&mut buffer, &response_bytes).expect("write");
+
+        // Truncate the buffer to simulate partial transmission
+        buffer.truncate(buffer.len() / 2);
+
+        let mut cursor = Cursor::new(buffer);
+        let result = read_message(&mut cursor);
+
+        // Should fail because message is incomplete
+        assert!(result.is_err());
+    }
+
+    /// Tests that corrupted length prefix is handled.
+    #[test]
+    fn test_integration_corrupted_length_prefix() {
+        use std::io::Cursor;
+
+        // Create a buffer with a length prefix that claims more data than available
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&100u16.to_le_bytes()); // Claims 100 bytes
+        buffer.extend_from_slice(&[0u8; 10]); // But only 10 bytes of data
+
+        let mut cursor = Cursor::new(buffer);
+        let result = read_message(&mut cursor);
+
+        // Should fail because not enough data
+        assert!(result.is_err());
+    }
+
+    /// Tests that invalid postcard data is handled gracefully.
+    #[test]
+    fn test_integration_invalid_postcard_data() {
+        use std::io::Cursor;
+
+        // Create a message with valid framing but invalid postcard content
+        let mut buffer = Vec::new();
+        let garbage_data = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB];
+        write_message(&mut buffer, &garbage_data).expect("write");
+
+        let mut cursor = Cursor::new(buffer);
+        let received_bytes = read_message(&mut cursor).expect("read");
+
+        // read_message should succeed (framing is valid)
+        assert_eq!(received_bytes, garbage_data);
+
+        // But deserialization should fail
+        let result = deserialize_command(&received_bytes);
+        assert!(result.is_err());
+
+        let result = deserialize_response(&received_bytes);
+        assert!(result.is_err());
+    }
+
+    /// Tests bidirectional communication simulation.
+    #[test]
+    fn test_integration_bidirectional_communication() {
+        use std::io::Cursor;
+
+        // Simulate a conversation:
+        // Client: Ping
+        // Server: Pong
+        // Client: GetStatus
+        // Server: Status(...)
+        // Client: Stop
+        // Server: Ok
+
+        // Request 1: Ping
+        let mut req1_buf = Vec::new();
+        write_message(&mut req1_buf, &serialize_command(&DaemonCommand::Ping).unwrap()).unwrap();
+
+        let mut cursor = Cursor::new(req1_buf);
+        let cmd = deserialize_command(&read_message(&mut cursor).unwrap()).unwrap();
+        assert_eq!(cmd, DaemonCommand::Ping);
+
+        // Response 1: Pong
+        let mut resp1_buf = Vec::new();
+        write_message(&mut resp1_buf, &serialize_response(&DaemonResponse::Pong).unwrap()).unwrap();
+
+        let mut cursor = Cursor::new(resp1_buf);
+        let resp = deserialize_response(&read_message(&mut cursor).unwrap()).unwrap();
+        assert_eq!(resp, DaemonResponse::Pong);
+
+        // Request 2: GetStatus
+        let mut req2_buf = Vec::new();
+        write_message(&mut req2_buf, &serialize_command(&DaemonCommand::GetStatus).unwrap()).unwrap();
+
+        let mut cursor = Cursor::new(req2_buf);
+        let cmd = deserialize_command(&read_message(&mut cursor).unwrap()).unwrap();
+        assert_eq!(cmd, DaemonCommand::GetStatus);
+
+        // Response 2: Status
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Running,
+            indexed_files: 42,
+            indexed_directories: 7,
+            monitored_volumes: 1,
+            uptime_seconds: 100,
+            is_paused: false,
+        };
+        let mut resp2_buf = Vec::new();
+        write_message(
+            &mut resp2_buf,
+            &serialize_response(&DaemonResponse::Status(status)).unwrap(),
+        )
+        .unwrap();
+
+        let mut cursor = Cursor::new(resp2_buf);
+        let resp = deserialize_response(&read_message(&mut cursor).unwrap()).unwrap();
+        match resp {
+            DaemonResponse::Status(s) => assert_eq!(s.indexed_files, 42),
+            other => panic!("Expected Status, got {other:?}"),
+        }
+
+        // Request 3: Stop
+        let mut req3_buf = Vec::new();
+        write_message(&mut req3_buf, &serialize_command(&DaemonCommand::Stop).unwrap()).unwrap();
+
+        let mut cursor = Cursor::new(req3_buf);
+        let cmd = deserialize_command(&read_message(&mut cursor).unwrap()).unwrap();
+        assert_eq!(cmd, DaemonCommand::Stop);
+
+        // Response 3: Ok
+        let mut resp3_buf = Vec::new();
+        write_message(&mut resp3_buf, &serialize_response(&DaemonResponse::Ok).unwrap()).unwrap();
+
+        let mut cursor = Cursor::new(resp3_buf);
+        let resp = deserialize_response(&read_message(&mut cursor).unwrap()).unwrap();
+        assert_eq!(resp, DaemonResponse::Ok);
+    }
+
+    /// Tests that zero-length messages work correctly.
+    #[test]
+    fn test_integration_zero_length_payload() {
+        use std::io::Cursor;
+
+        // Write a zero-length message
+        let mut buffer = Vec::new();
+        write_message(&mut buffer, &[]).expect("write empty");
+
+        // Should be just the length prefix (2 bytes of zeros)
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(buffer, vec![0, 0]);
+
+        // Read it back
+        let mut cursor = Cursor::new(buffer);
+        let received = read_message(&mut cursor).expect("read empty");
+        assert!(received.is_empty());
+    }
+
+    /// Tests message at maximum allowed size.
+    #[test]
+    fn test_integration_max_size_message() {
+        use std::io::Cursor;
+
+        // Create a message at exactly MAX_MESSAGE_SIZE (1024 bytes)
+        let large_payload = vec![0xABu8; 1024];
+
+        let mut buffer = Vec::new();
+        write_message(&mut buffer, &large_payload).expect("write max size");
+
+        let mut cursor = Cursor::new(buffer);
+        let received = read_message(&mut cursor).expect("read max size");
+
+        assert_eq!(received.len(), 1024);
+        assert_eq!(received, large_payload);
+    }
+
+    // ==================== Real Pipe Integration Tests ====================
+    // These tests use actual OS pipes for more realistic testing
+
+    /// Creates an anonymous pipe pair for testing.
+    /// Returns (reader, writer) file handles.
+    #[cfg(windows)]
+    fn create_test_pipe() -> (std::fs::File, std::fs::File) {
+        use windows_sys::Win32::System::Pipes::CreatePipe;
+
+        let mut read_handle = std::ptr::null_mut();
+        let mut write_handle = std::ptr::null_mut();
+
+        let result = unsafe { CreatePipe(&mut read_handle, &mut write_handle, std::ptr::null(), 0) };
+
+        assert!(result != 0, "Failed to create pipe");
+
+        unsafe {
+            let read_owned = OwnedHandle::from_raw_handle(read_handle as *mut std::ffi::c_void);
+            let write_owned = OwnedHandle::from_raw_handle(write_handle as *mut std::ffi::c_void);
+            (std::fs::File::from(read_owned), std::fs::File::from(write_owned))
+        }
+    }
+
+    /// Tests command roundtrip through a real OS pipe.
+    #[test]
+    #[cfg(windows)]
+    fn test_real_pipe_command_roundtrip() {
+        let (mut reader, mut writer) = create_test_pipe();
+
+        let commands = [
+            DaemonCommand::Stop,
+            DaemonCommand::GetStatus,
+            DaemonCommand::Rescan,
+            DaemonCommand::Pause,
+            DaemonCommand::Resume,
+            DaemonCommand::Ping,
+        ];
+
+        for original_command in commands {
+            // Write command to pipe
+            let command_bytes = serialize_command(&original_command).expect("serialize");
+            write_message(&mut writer, &command_bytes).expect("write to pipe");
+
+            // Read from pipe
+            let received_bytes = read_message(&mut reader).expect("read from pipe");
+            let received_command = deserialize_command(&received_bytes).expect("deserialize");
+
+            assert_eq!(original_command, received_command);
+        }
+    }
+
+    /// Tests response roundtrip through a real OS pipe.
+    #[test]
+    #[cfg(windows)]
+    fn test_real_pipe_response_roundtrip() {
+        let (mut reader, mut writer) = create_test_pipe();
+
+        let responses = [
+            DaemonResponse::Ok,
+            DaemonResponse::Pong,
+            DaemonResponse::Error("test error message".to_string()),
+            DaemonResponse::Status(DaemonStatus {
+                state: DaemonStateInfo::Running,
+                indexed_files: 123_456,
+                indexed_directories: 7_890,
+                monitored_volumes: 3,
+                uptime_seconds: 3600,
+                is_paused: true,
+            }),
+        ];
+
+        for original_response in responses {
+            // Write response to pipe
+            let response_bytes = serialize_response(&original_response).expect("serialize");
+            write_message(&mut writer, &response_bytes).expect("write to pipe");
+
+            // Read from pipe
+            let received_bytes = read_message(&mut reader).expect("read from pipe");
+            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+
+            assert_eq!(original_response, received_response);
+        }
+    }
+
+    /// Tests full request/response cycle through real pipes (simulating bidirectional communication).
+    #[test]
+    #[cfg(windows)]
+    fn test_real_pipe_full_cycle() {
+        // Create two pipe pairs: one for client->server, one for server->client
+        let (mut server_reader, mut client_writer) = create_test_pipe();
+        let (mut client_reader, mut server_writer) = create_test_pipe();
+
+        // Client sends GetStatus command
+        let command = DaemonCommand::GetStatus;
+        let command_bytes = serialize_command(&command).expect("serialize command");
+        write_message(&mut client_writer, &command_bytes).expect("client write");
+
+        // Server receives command
+        let received_bytes = read_message(&mut server_reader).expect("server read");
+        let received_command = deserialize_command(&received_bytes).expect("deserialize command");
+        assert_eq!(received_command, DaemonCommand::GetStatus);
+
+        // Server sends response
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Running,
+            indexed_files: 999_999,
+            indexed_directories: 88_888,
+            monitored_volumes: 4,
+            uptime_seconds: 7200,
+            is_paused: false,
+        };
+        let response = DaemonResponse::Status(status);
+        let response_bytes = serialize_response(&response).expect("serialize response");
+        write_message(&mut server_writer, &response_bytes).expect("server write");
+
+        // Client receives response
+        let received_bytes = read_message(&mut client_reader).expect("client read");
+        let received_response = deserialize_response(&received_bytes).expect("deserialize response");
+
+        match received_response {
+            DaemonResponse::Status(s) => {
+                assert_eq!(s.state, DaemonStateInfo::Running);
+                assert_eq!(s.indexed_files, 999_999);
+                assert_eq!(s.indexed_directories, 88_888);
+                assert_eq!(s.monitored_volumes, 4);
+                assert_eq!(s.uptime_seconds, 7200);
+                assert!(!s.is_paused);
+            }
+            other => panic!("Expected Status response, got {other:?}"),
+        }
+    }
+
+    /// Tests multiple sequential messages through real pipe.
+    #[test]
+    #[cfg(windows)]
+    fn test_real_pipe_multiple_messages() {
+        let (mut reader, mut writer) = create_test_pipe();
+
+        // Write multiple messages
+        let messages = [
+            DaemonCommand::Ping,
+            DaemonCommand::GetStatus,
+            DaemonCommand::Pause,
+            DaemonCommand::Resume,
+            DaemonCommand::Rescan,
+        ];
+
+        for command in &messages {
+            let bytes = serialize_command(command).expect("serialize");
+            write_message(&mut writer, &bytes).expect("write");
+        }
+
+        // Read all messages back
+        for expected in &messages {
+            let bytes = read_message(&mut reader).expect("read");
+            let received = deserialize_command(&bytes).expect("deserialize");
+            assert_eq!(&received, expected);
+        }
+    }
+
+    /// Tests threaded pipe communication (writer and reader in different threads).
+    #[test]
+    #[cfg(windows)]
+    fn test_real_pipe_threaded_communication() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let (mut reader, mut writer) = create_test_pipe();
+
+        let (tx, rx) = mpsc::channel();
+
+        // Spawn writer thread
+        let writer_handle = thread::spawn(move || {
+            let commands = [DaemonCommand::Ping, DaemonCommand::GetStatus, DaemonCommand::Stop];
+
+            for command in commands {
+                let bytes = serialize_command(&command).expect("serialize");
+                write_message(&mut writer, &bytes).expect("write");
+            }
+        });
+
+        // Spawn reader thread
+        let reader_handle = thread::spawn(move || {
+            let mut received = Vec::new();
+            for _ in 0..3 {
+                let bytes = read_message(&mut reader).expect("read");
+                let command = deserialize_command(&bytes).expect("deserialize");
+                received.push(command);
+            }
+            tx.send(received).expect("send to channel");
+        });
+
+        writer_handle.join().expect("writer thread");
+        reader_handle.join().expect("reader thread");
+
+        let received = rx.recv().expect("receive from channel");
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[0], DaemonCommand::Ping);
+        assert_eq!(received[1], DaemonCommand::GetStatus);
+        assert_eq!(received[2], DaemonCommand::Stop);
+    }
+
+    /// Tests that large status responses work through real pipe.
+    #[test]
+    #[cfg(windows)]
+    fn test_real_pipe_large_status() {
+        let (mut reader, mut writer) = create_test_pipe();
+
+        // Create status with large values
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Scanning,
+            indexed_files: 10_000_000_000, // 10 billion files
+            indexed_directories: 1_000_000_000,
+            monitored_volumes: 26,
+            uptime_seconds: 365 * 24 * 3600, // 1 year
+            is_paused: false,
+        };
+        let response = DaemonResponse::Status(status);
+
+        // Send through pipe
+        let bytes = serialize_response(&response).expect("serialize");
+        write_message(&mut writer, &bytes).expect("write");
+
+        // Receive from pipe
+        let received_bytes = read_message(&mut reader).expect("read");
+        let received = deserialize_response(&received_bytes).expect("deserialize");
+
+        match received {
+            DaemonResponse::Status(s) => {
+                assert_eq!(s.indexed_files, 10_000_000_000);
+                assert_eq!(s.indexed_directories, 1_000_000_000);
+                assert_eq!(s.monitored_volumes, 26);
+                assert_eq!(s.uptime_seconds, 365 * 24 * 3600);
+            }
+            other => panic!("Expected Status, got {other:?}"),
+        }
+    }
+
+    /// Tests error response with long message through real pipe.
+    #[test]
+    #[cfg(windows)]
+    fn test_real_pipe_long_error_message() {
+        let (mut reader, mut writer) = create_test_pipe();
+
+        let long_error = "Error: ".to_string() + &"x".repeat(500);
+        let response = DaemonResponse::Error(long_error.clone());
+
+        let bytes = serialize_response(&response).expect("serialize");
+        write_message(&mut writer, &bytes).expect("write");
+
+        let received_bytes = read_message(&mut reader).expect("read");
+        let received = deserialize_response(&received_bytes).expect("deserialize");
+
+        match received {
+            DaemonResponse::Error(msg) => assert_eq!(msg, long_error),
+            other => panic!("Expected Error, got {other:?}"),
+        }
     }
 }
