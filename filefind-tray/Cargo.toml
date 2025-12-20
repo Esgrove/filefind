@@ -16,8 +16,10 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 filefind = { workspace = true }
+dirs = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
 
 # Tray icon
 tray-icon = "0.21"

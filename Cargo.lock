@@ -473,8 +473,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "filefind",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "tray-icon",
  "windows-sys 0.61.2",

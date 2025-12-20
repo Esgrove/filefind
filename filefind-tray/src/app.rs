@@ -271,7 +271,13 @@ fn update_tray_status(tray_icon: &TrayIcon, ipc_client: &IpcClient) {
 
 /// Get the current daemon status.
 fn get_daemon_status(ipc_client: &IpcClient) -> DaemonStatus {
-    ipc_client.get_status().unwrap_or_default()
+    match ipc_client.get_status() {
+        Ok(status) => status,
+        Err(error) => {
+            tracing::warn!("Failed to get daemon status: {}", error);
+            DaemonStatus::default()
+        }
+    }
 }
 
 /// Format the status for the tooltip.

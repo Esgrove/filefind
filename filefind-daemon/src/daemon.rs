@@ -347,7 +347,7 @@ impl Daemon {
         let ntfs_drives = detect_ntfs_volumes();
         for drive_letter in ntfs_drives {
             if let Err(error) = self.start_usn_monitor(drive_letter) {
-                warn!("Failed to start USN monitor for {}:\\: {}", drive_letter, error);
+                warn!("Failed to start USN monitor for {drive_letter}:\\ - {error}");
             }
         }
 

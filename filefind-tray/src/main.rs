@@ -9,9 +9,15 @@
 mod app;
 mod icons;
 
-use anyhow::Result;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
 use clap::Parser;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser)]
 #[command(
@@ -20,16 +26,58 @@ use tracing_subscriber::EnvFilter;
     name = env!("CARGO_BIN_NAME"),
     about
 )]
-pub struct Args {}
+pub struct Args {
+    /// Enable verbose logging
+    #[arg(short, long)]
+    verbose: bool,
+}
 
 fn main() -> Result<()> {
-    let _ = Args::parse();
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("filefind_tray=info".parse()?))
-        .init();
+    let args = Args::parse();
+
+    // Initialize logging to file
+    init_logging(args.verbose)?;
 
     tracing::info!("Starting filefind tray application");
 
     app::run()
+}
+
+/// Initialize logging to a file in the same directory as daemon logs.
+///
+/// Logs are written to ~/logs/filefind/filefind-tray.log with daily rotation.
+fn init_logging(verbose: bool) -> Result<()> {
+    let filter = if verbose {
+        EnvFilter::new("debug")
+    } else {
+        EnvFilter::new("info")
+    };
+
+    let log_dir = get_log_directory()?;
+    std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
+
+    // Create a rolling file appender (daily rotation)
+    let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "filefind-tray.log");
+
+    // Also log errors to stderr (useful when running from terminal)
+    let stderr = std::io::stderr.with_max_level(tracing::Level::WARN);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_appender.and(stderr))
+                .with_ansi(false),
+        )
+        .init();
+
+    tracing::debug!("Logging to {}", log_dir.display());
+
+    Ok(())
+}
+
+/// Get the log directory path: ~/logs/filefind/
+fn get_log_directory() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    Ok(home.join("logs").join(filefind::PROJECT_NAME))
 }

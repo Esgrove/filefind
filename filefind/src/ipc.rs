@@ -183,6 +183,10 @@ pub fn deserialize_response(bytes: &[u8]) -> Result<DaemonResponse> {
 ///
 /// Returns an error if writing fails.
 pub fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
+    // Write length prefix (2 bytes, little-endian)
+    let len = u16::try_from(data.len()).context("Message too large to send")?;
+    writer.write_all(&len.to_le_bytes())?;
+    // Write message data
     writer.write_all(data)?;
     writer.flush()?;
     Ok(())
@@ -479,22 +483,14 @@ mod tests {
         use std::io::Cursor;
 
         let original_data = b"test message data";
-        let serialized = {
-            let len = original_data.len() as u16;
-            let mut buffer = Vec::with_capacity(2 + original_data.len());
-            buffer.extend_from_slice(&len.to_le_bytes());
-            buffer.extend_from_slice(original_data);
-            buffer
-        };
 
-        // Write and read back
+        // Write message (write_message now adds length prefix automatically)
         let mut cursor = Cursor::new(Vec::new());
-        write_message(&mut cursor, &serialized).expect("write");
+        write_message(&mut cursor, original_data).expect("write");
 
+        // Read it back
         cursor.set_position(0);
-        // Skip the length prefix we added to serialized, read the actual message
-        let mut read_cursor = Cursor::new(cursor.into_inner());
-        let read_data = read_message(&mut read_cursor).expect("read");
+        let read_data = read_message(&mut cursor).expect("read");
 
         assert_eq!(read_data, original_data);
     }
@@ -820,6 +816,7 @@ mod tests {
         let result = write_message(&mut cursor, &[]);
 
         assert!(result.is_ok());
-        assert!(cursor.into_inner().is_empty());
+        // Empty message still has 2-byte length prefix (0x00, 0x00)
+        assert_eq!(cursor.into_inner(), vec![0, 0]);
     }
 }
