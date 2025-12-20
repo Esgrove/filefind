@@ -100,9 +100,11 @@ pub struct CliConfig {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
-    #[default]
+    /// Simple list of paths without type or size information.
     Simple,
-    Detailed,
+    /// Files grouped by directory (default).
+    #[default]
+    Grouped,
 }
 
 impl Default for DaemonConfig {
@@ -183,7 +185,7 @@ impl std::fmt::Display for OutputFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Simple => write!(f, "simple"),
-            Self::Detailed => write!(f, "detailed"),
+            Self::Grouped => write!(f, "grouped"),
         }
     }
 }
@@ -194,7 +196,7 @@ impl std::str::FromStr for OutputFormat {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "simple" => Ok(Self::Simple),
-            "detailed" => Ok(Self::Detailed),
+            "grouped" => Ok(Self::Grouped),
             _ => Err(format!("Unknown output format: {s}")),
         }
     }
@@ -209,7 +211,7 @@ fn default_log_level() -> String {
 }
 
 const fn default_format() -> OutputFormat {
-    OutputFormat::Simple
+    OutputFormat::Grouped
 }
 
 const fn default_max_results() -> usize {
@@ -233,6 +235,7 @@ mod tests {
         assert_eq!(config.daemon.scan_interval, 3600);
         assert_eq!(config.cli.max_results, 100);
         assert!(config.cli.color);
+        assert_eq!(config.cli.format, OutputFormat::Grouped);
     }
 
     #[test]
@@ -256,7 +259,7 @@ mod tests {
     fn test_cli_config_default() {
         let config = CliConfig::default();
 
-        assert_eq!(config.format, OutputFormat::Simple);
+        assert_eq!(config.format, OutputFormat::Grouped);
         assert_eq!(config.max_results, 100);
         assert!(config.color);
         assert!(!config.case_sensitive);
@@ -282,7 +285,7 @@ mod tests {
     #[test]
     fn test_output_format_display() {
         assert_eq!(OutputFormat::Simple.to_string(), "simple");
-        assert_eq!(OutputFormat::Detailed.to_string(), "detailed");
+        assert_eq!(OutputFormat::Grouped.to_string(), "grouped");
     }
 
     #[test]
@@ -292,8 +295,8 @@ mod tests {
             OutputFormat::Simple
         );
         assert_eq!(
-            "DETAILED".parse::<OutputFormat>().expect("parse detailed"),
-            OutputFormat::Detailed
+            "GROUPED".parse::<OutputFormat>().expect("parse grouped"),
+            OutputFormat::Grouped
         );
         assert_eq!(
             "Simple".parse::<OutputFormat>().expect("parse Simple"),
@@ -310,19 +313,19 @@ mod tests {
     #[test]
     fn test_output_format_default() {
         let format = OutputFormat::default();
-        assert_eq!(format, OutputFormat::Simple);
+        assert_eq!(format, OutputFormat::Grouped);
     }
 
     #[test]
     fn test_output_format_equality() {
         assert_eq!(OutputFormat::Simple, OutputFormat::Simple);
-        assert_eq!(OutputFormat::Detailed, OutputFormat::Detailed);
-        assert_ne!(OutputFormat::Simple, OutputFormat::Detailed);
+        assert_eq!(OutputFormat::Grouped, OutputFormat::Grouped);
+        assert_ne!(OutputFormat::Simple, OutputFormat::Grouped);
     }
 
     #[test]
     fn test_output_format_clone_copy() {
-        let original = OutputFormat::Detailed;
+        let original = OutputFormat::Grouped;
         let cloned = original;
         assert_eq!(original, cloned);
     }
@@ -339,7 +342,7 @@ scan_interval = 7200
 log_level = "debug"
 
 [cli]
-format = "detailed"
+format = "grouped"
 max_results = 50
 color = false
 case_sensitive = true
@@ -354,7 +357,7 @@ show_hidden = true
         assert_eq!(config.daemon.exclude, vec!["C:\\Windows", "C:\\Temp"]);
         assert_eq!(config.daemon.scan_interval, 7200);
         assert_eq!(config.daemon.log_level, "debug");
-        assert_eq!(config.cli.format, OutputFormat::Detailed);
+        assert_eq!(config.cli.format, OutputFormat::Grouped);
         assert_eq!(config.cli.max_results, 50);
         assert!(!config.cli.color);
         assert!(config.cli.case_sensitive);
@@ -384,7 +387,7 @@ max_results = 200
 
         // Default values
         assert_eq!(config.daemon.scan_interval, 3600);
-        assert_eq!(config.cli.format, OutputFormat::Simple);
+        assert_eq!(config.cli.format, OutputFormat::Grouped);
         assert!(config.cli.color);
     }
 
@@ -477,7 +480,7 @@ exclude_patterns = ["*.tmp", "*.bak", "~*"]
 
     #[test]
     fn test_default_format_value() {
-        assert_eq!(default_format(), OutputFormat::Simple);
+        assert_eq!(default_format(), OutputFormat::Grouped);
     }
 
     #[test]

@@ -43,8 +43,8 @@ exclude = [
 # database_path = ""
 
 [cli]
-# Default output format: "simple", "detailed", "json"
-# format = "simple"
+# Default output format: "simple" (list of paths) or "grouped" (files grouped by directory)
+# format = "grouped"
 
 # Maximum number of results to show (0 = unlimited)
 # max_results = 100

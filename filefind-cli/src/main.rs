@@ -79,8 +79,10 @@ pub struct Args {
 /// Output format argument for CLI.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormatArg {
+    /// Simple list of paths without type or size information.
     Simple,
-    Detailed,
+    /// Files grouped by directory (default).
+    Grouped,
 }
 
 fn main() -> Result<()> {
@@ -158,8 +160,8 @@ fn run(config: CliConfig) -> Result<()> {
     };
 
     match config.output_format {
+        OutputFormat::Grouped => display_grouped_output(&directories, &files, &display_options, highlight_pattern),
         OutputFormat::Simple => display_simple(&directories, &files, &display_options, highlight_pattern),
-        OutputFormat::Detailed => display_detailed(&directories, &files, &display_options, highlight_pattern),
     }
 
     // Show search stats if verbose
@@ -222,8 +224,8 @@ fn highlight_match(text: &str, pattern: Option<&str>) -> String {
     result
 }
 
-/// Display results in simple format.
-fn display_simple(
+/// Display results in grouped format (files grouped by directory).
+fn display_grouped_output(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
@@ -321,8 +323,8 @@ fn count_files_in_directory(files: &[&filefind::types::FileEntry], dir_path: &st
         .count()
 }
 
-/// Display results in detailed format.
-fn display_detailed(
+/// Display results in simple list format
+fn display_simple(
     directories: &[&filefind::types::FileEntry],
     files: &[&filefind::types::FileEntry],
     options: &DisplayOptions,
@@ -334,52 +336,19 @@ fn display_detailed(
 
     if options.files_only {
         for file in files {
-            let size_str = format_size(file.size);
-            println!(
-                "{} {:>10}  {}",
-                "FILE".normal(),
-                size_str,
-                highlight_match(&file.full_path, highlight_pattern).bold()
-            );
+            println!("{}", highlight_match(&file.full_path, highlight_pattern));
         }
     } else if options.directories_only {
         for directory in &sorted_directories {
-            let file_count = count_files_in_directory(files, &directory.full_path);
-            if file_count > 0 {
-                println!(
-                    "{} {:>10}  {} ({} files)",
-                    "DIR ".cyan(),
-                    "-",
-                    highlight_match(&directory.full_path, highlight_pattern).bold(),
-                    file_count
-                );
-            } else {
-                println!(
-                    "{} {:>10}  {}",
-                    "DIR ".cyan(),
-                    "-",
-                    highlight_match(&directory.full_path, highlight_pattern).bold()
-                );
-            }
+            println!("{}", highlight_match(&directory.full_path, highlight_pattern));
         }
     } else {
         // Show all directories first, then all files
         for directory in &sorted_directories {
-            println!(
-                "{} {:>10}  {}",
-                "DIR ".cyan(),
-                "-",
-                highlight_match(&directory.full_path, highlight_pattern).bold()
-            );
+            println!("{}", highlight_match(&directory.full_path, highlight_pattern));
         }
         for file in files {
-            let size_str = format_size(file.size);
-            println!(
-                "{} {:>10}  {}",
-                "FILE".normal(),
-                size_str,
-                highlight_match(&file.full_path, highlight_pattern).bold()
-            );
+            println!("{}", highlight_match(&file.full_path, highlight_pattern));
         }
     }
 }

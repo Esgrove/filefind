@@ -109,7 +109,7 @@ impl From<OutputFormatArg> for OutputFormat {
     fn from(value: OutputFormatArg) -> Self {
         match value {
             OutputFormatArg::Simple => Self::Simple,
-            OutputFormatArg::Detailed => Self::Detailed,
+            OutputFormatArg::Grouped => Self::Grouped,
         }
     }
 }
