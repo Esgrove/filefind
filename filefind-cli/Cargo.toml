@@ -19,6 +19,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 colored = { workspace = true }
+regex = { workspace = true }
 
 [lints]
 workspace = true

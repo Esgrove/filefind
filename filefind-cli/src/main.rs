@@ -72,7 +72,7 @@ pub struct Args {
     pub completion: Option<Shell>,
 
     /// Print verbose output.
-    #[arg(short = 'V', long)]
+    #[arg(short = 'v', long)]
     pub verbose: bool,
 }
 
@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     }
 
     // Build the final config from user config and CLI args
-    let config = CliConfig::from_args(args);
+    let config = CliConfig::from_args(args)?;
 
     run(config)
 }
@@ -128,8 +128,7 @@ fn run(config: CliConfig) -> Result<()> {
     let start_time = Instant::now();
 
     let results = if config.regex {
-        // For now, fall back to glob search - regex support can be added later
-        database.search_by_name(&pattern, usize::MAX)?
+        database.search_by_regex(&pattern, config.case_sensitive, usize::MAX)?
     } else if pattern.contains('*') || pattern.contains('?') {
         database.search_by_glob(&pattern, usize::MAX)?
     } else {

@@ -3,9 +3,12 @@
 //! Handles storing and querying the file index.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use regex::Regex;
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, params};
 use tracing::{debug, info};
 
@@ -65,6 +68,8 @@ impl Database {
 
     /// Initialize the database schema.
     fn initialize(&self) -> Result<()> {
+        self.register_regexp_function()?;
+
         self.connection
             .execute_batch(
                 r"
@@ -115,6 +120,37 @@ impl Database {
             .context("Failed to initialize database schema")?;
 
         debug!("Database schema initialized");
+        Ok(())
+    }
+
+    /// Register the REGEXP function for regex searches.
+    ///
+    /// This enables SQL queries like: `SELECT * FROM files WHERE name REGEXP 'pattern'`
+    fn register_regexp_function(&self) -> Result<()> {
+        self.connection.create_scalar_function(
+            "regexp",
+            2,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                // Get the pattern and compile/cache it
+                let pattern: Arc<Regex> = ctx.get_or_create_aux(0, |vr| {
+                    let pattern_str = vr
+                        .as_str()
+                        .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                    Regex::new(pattern_str).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
+                })?;
+
+                // Get the text to match against
+                let text = ctx
+                    .get_raw(1)
+                    .as_str()
+                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+
+                Ok(pattern.is_match(text))
+            },
+        )?;
+
+        debug!("Registered REGEXP function");
         Ok(())
     }
 
@@ -380,6 +416,47 @@ impl Database {
             .query_map(params![sql_pattern, limit], row_to_file_entry)?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search files by glob")?;
+
+        Ok(files)
+    }
+
+    /// Search for files by regex pattern.
+    ///
+    /// Uses `SQLite`'s `REGEXP` function (registered at database initialization).
+    /// The regex is matched against the file name only, not the full path.
+    ///
+    /// # Arguments
+    /// * `pattern` - A regular expression pattern (Rust regex syntax)
+    /// * `case_sensitive` - Whether the match should be case-sensitive
+    /// * `limit` - Maximum number of results to return
+    ///
+    /// # Errors
+    /// Returns an error if the regex pattern is invalid or if the database operation fails.
+    pub fn search_by_regex(&self, pattern: &str, case_sensitive: bool, limit: usize) -> Result<Vec<FileEntry>> {
+        // Validate the regex pattern before querying
+        Regex::new(pattern).with_context(|| format!("Invalid regex pattern: {pattern}"))?;
+
+        // Prepend case-insensitive flag if needed
+        let effective_pattern = if case_sensitive {
+            pattern.to_string()
+        } else {
+            format!("(?i){pattern}")
+        };
+
+        let mut statement = self.connection.prepare(
+            r"
+            SELECT id, volume_id, parent_id, name, full_path, is_directory, size, created_time, modified_time, mft_reference
+            FROM files
+            WHERE name REGEXP ?1
+            ORDER BY name
+            LIMIT ?2
+            ",
+        )?;
+
+        let files = statement
+            .query_map(params![effective_pattern, limit], row_to_file_entry)?
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to search files by regex")?;
 
         Ok(files)
     }
@@ -702,6 +779,138 @@ mod tests {
 
         let results = database.search_by_glob("data.???", 10).unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_by_regex() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("REGEX_VOL", "R:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert test files
+        let files = [
+            "IMG_0001.jpg",
+            "IMG_0002.jpg",
+            "IMG_1234.png",
+            "photo_001.jpg",
+            "document.pdf",
+            "report2024.txt",
+        ];
+
+        for name in files {
+            let file = create_test_file(volume_id, name, &format!("R:\\{name}"), 100);
+            database.insert_file(&file).unwrap();
+        }
+
+        // Search for IMG_ followed by digits
+        let results = database.search_by_regex(r"IMG_\d+", false, 10).unwrap();
+        assert_eq!(results.len(), 3);
+
+        // Search for files ending in .jpg
+        let results = database.search_by_regex(r"\.jpg$", false, 10).unwrap();
+        assert_eq!(results.len(), 3);
+
+        // Search for files with exactly 4 digits
+        let results = database.search_by_regex(r"\d{4}", false, 10).unwrap();
+        assert_eq!(results.len(), 4); // IMG_0001, IMG_0002, IMG_1234, report2024
+
+        // Search for files starting with photo or IMG
+        let results = database.search_by_regex(r"^(photo|IMG)", false, 10).unwrap();
+        assert_eq!(results.len(), 4);
+    }
+
+    #[test]
+    fn test_search_by_regex_case_sensitivity() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("CASE_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let files = ["README.md", "readme.txt", "ReadMe.doc", "other.txt"];
+
+        for name in files {
+            let file = create_test_file(volume_id, name, &format!("C:\\{name}"), 100);
+            database.insert_file(&file).unwrap();
+        }
+
+        // Case-insensitive search (default)
+        let results = database.search_by_regex(r"^readme", false, 10).unwrap();
+        assert_eq!(results.len(), 3);
+
+        // Case-sensitive search
+        let results = database.search_by_regex(r"^readme", true, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "readme.txt");
+
+        // Case-sensitive search for uppercase
+        let results = database.search_by_regex(r"^README", true, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "README.md");
+    }
+
+    #[test]
+    fn test_search_by_regex_invalid_pattern() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Invalid regex pattern (unclosed bracket)
+        let result = database.search_by_regex(r"[invalid", false, 10);
+        assert!(result.is_err());
+
+        // Invalid regex pattern (bad repetition)
+        let result = database.search_by_regex(r"*invalid", false, 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_by_regex_no_results() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("EMPTY_VOL", "E:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let file = create_test_file(volume_id, "document.txt", "E:\\document.txt", 100);
+        database.insert_file(&file).unwrap();
+
+        // Search for pattern that won't match
+        let results = database.search_by_regex(r"^xyz\d+\.pdf$", false, 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_by_regex_special_characters() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("SPECIAL_VOL", "S:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let files = [
+            "file.test.txt",
+            "file-test.txt",
+            "file_test.txt",
+            "file(1).txt",
+            "file[2].txt",
+        ];
+
+        for name in files {
+            let file = create_test_file(volume_id, name, &format!("S:\\{name}"), 100);
+            database.insert_file(&file).unwrap();
+        }
+
+        // Search for literal dot (escaped)
+        let results = database.search_by_regex(r"file\.test", false, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "file.test.txt");
+
+        // Search for parentheses (escaped)
+        let results = database.search_by_regex(r"\(\d\)", false, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "file(1).txt");
+
+        // Search for brackets (escaped)
+        let results = database.search_by_regex(r"\[\d\]", false, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "file[2].txt");
     }
 
     #[test]

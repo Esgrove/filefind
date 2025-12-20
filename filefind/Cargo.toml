@@ -16,7 +16,8 @@ tracing = { workspace = true }
 
 # Crate-specific dependencies
 postcard = { version = "1.1", features = ["use-std"] }
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+regex = { workspace = true }
+rusqlite = { version = "0.37.0", features = ["bundled", "functions"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
 

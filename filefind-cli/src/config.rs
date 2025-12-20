@@ -5,7 +5,9 @@
 
 use std::path::PathBuf;
 
+use anyhow::{Context, Result};
 use filefind::config::{OutputFormat, UserConfig};
+use regex::Regex;
 
 use crate::{Args, OutputFormatArg};
 
@@ -68,9 +70,18 @@ impl CliConfig {
     /// Build a search config by merging user config with CLI arguments.
     ///
     /// CLI arguments take precedence over user config values.
-    #[must_use]
-    pub fn from_args(args: Args) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if regex mode is enabled and the pattern is invalid.
+    pub fn from_args(args: Args) -> Result<Self> {
         let user_config = UserConfig::load();
+
+        // Validate regex pattern if regex mode is enabled
+        if args.regex
+            && let Some(ref pattern) = args.pattern
+        {
+            Regex::new(pattern).with_context(|| format!("Invalid regex pattern: {pattern}"))?;
+        }
 
         // Determine the output format: CLI arg overrides user config
         let output_format = args.output.map_or(user_config.cli.format, OutputFormat::from);
@@ -78,7 +89,7 @@ impl CliConfig {
         // Case sensitivity: CLI arg overrides user config
         let case_sensitive = args.case || user_config.cli.case_sensitive;
 
-        Self {
+        Ok(Self {
             pattern: args.pattern,
             regex: args.regex,
             case_sensitive,
@@ -91,7 +102,7 @@ impl CliConfig {
             list_volumes: args.list,
             verbose: args.verbose,
             database_path: user_config.database_path(),
-        }
+        })
     }
 }
 
