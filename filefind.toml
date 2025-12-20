@@ -39,6 +39,9 @@ exclude = [
 # Log level: "error", "warn", "info", "debug", "trace"
 # log_level = "info"
 
+# Verbose output (typically set via CLI --verbose flag)
+# verbose = false
+
 # Database location (default: ~/.local/share/filefind/filefind.db)
 # database_path = ""
 

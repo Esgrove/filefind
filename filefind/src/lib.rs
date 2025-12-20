@@ -10,7 +10,7 @@ pub mod database;
 pub mod ipc;
 pub mod types;
 
-pub use config::{CONFIG_PATH, UserConfig as Config};
+pub use config::{CONFIG_PATH, LogLevel, UserConfig as Config};
 pub use database::Database;
 pub use ipc::{
     DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, IpcClient, deserialize_command, deserialize_response,

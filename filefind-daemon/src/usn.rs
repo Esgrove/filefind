@@ -174,7 +174,7 @@ impl UsnMonitor {
         // Query the USN Journal to get the journal ID
         let journal_data = Self::query_usn_journal_static(volume_handle)?;
 
-        info!(
+        debug!(
             "Opened USN Journal for {}:\\ (Journal ID: {}, First USN: {}, Next USN: {})",
             drive_letter, journal_data.UsnJournalID, journal_data.FirstUsn, journal_data.NextUsn
         );

@@ -10,6 +10,7 @@ version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+clap = { workspace = true }
 colored = { workspace = true }
 dirs = { workspace = true }
 tracing = { workspace = true }

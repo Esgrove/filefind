@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use clap::ValueEnum;
 use serde::Deserialize;
 use tracing::warn;
 
@@ -64,8 +65,12 @@ pub struct DaemonConfig {
     pub scan_interval: u64,
 
     /// Log level.
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
+    #[serde(default)]
+    pub log_level: LogLevel,
+
+    /// Verbose output
+    #[serde(default)]
+    pub verbose: bool,
 
     /// Database file path.
     #[serde(default)]
@@ -107,6 +112,58 @@ pub enum OutputFormat {
     Grouped,
 }
 
+/// Log level for the daemon.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    /// Error messages only.
+    Error,
+    /// Warnings and errors.
+    Warn,
+    /// Informational messages
+    #[default]
+    Info,
+    /// Debug messages.
+    Debug,
+    /// Trace messages
+    Trace,
+}
+
+impl LogLevel {
+    /// Convert to a tracing filter string.
+    #[must_use]
+    pub const fn as_filter_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_filter_str())
+    }
+}
+
+impl std::str::FromStr for LogLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "error" => Ok(Self::Error),
+            "warn" | "warning" => Ok(Self::Warn),
+            "info" => Ok(Self::Info),
+            "debug" => Ok(Self::Debug),
+            "trace" => Ok(Self::Trace),
+            _ => Err(format!("Unknown log level: {s}")),
+        }
+    }
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -118,7 +175,8 @@ impl Default for DaemonConfig {
             ],
             exclude_patterns: Vec::new(),
             scan_interval: default_scan_interval(),
-            log_level: default_log_level(),
+            log_level: LogLevel::default(),
+            verbose: false,
             database_path: None,
         }
     }
@@ -206,10 +264,6 @@ const fn default_scan_interval() -> u64 {
     3600
 }
 
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
 const fn default_format() -> OutputFormat {
     OutputFormat::Grouped
 }
@@ -246,7 +300,8 @@ mod tests {
         assert!(!config.exclude.is_empty()); // Has default exclusions
         assert!(config.exclude_patterns.is_empty());
         assert_eq!(config.scan_interval, 3600);
-        assert_eq!(config.log_level, "info");
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert!(!config.verbose);
         assert!(config.database_path.is_none());
 
         // Verify default exclusions
@@ -356,7 +411,7 @@ show_hidden = true
         assert_eq!(config.daemon.paths, vec!["C:\\", "D:\\"]);
         assert_eq!(config.daemon.exclude, vec!["C:\\Windows", "C:\\Temp"]);
         assert_eq!(config.daemon.scan_interval, 7200);
-        assert_eq!(config.daemon.log_level, "debug");
+        assert_eq!(config.daemon.log_level, LogLevel::Debug);
         assert_eq!(config.cli.format, OutputFormat::Grouped);
         assert_eq!(config.cli.max_results, 50);
         assert!(!config.cli.color);
@@ -475,7 +530,7 @@ exclude_patterns = ["*.tmp", "*.bak", "~*"]
 
     #[test]
     fn test_default_log_level_value() {
-        assert_eq!(default_log_level(), "info");
+        assert_eq!(LogLevel::default(), LogLevel::Info);
     }
 
     #[test]

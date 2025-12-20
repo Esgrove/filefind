@@ -24,7 +24,7 @@ use crate::ipc_server::{IpcServerState, IpcToDaemon, spawn_ipc_server};
 use crate::mft::detect_ntfs_volumes;
 use crate::scanner::run_scan;
 use crate::usn::UsnMonitor;
-use crate::watcher::{FileWatcher, WatcherConfig};
+use crate::watcher::FileWatcher;
 
 /// Default USN Journal poll interval in milliseconds.
 const DEFAULT_USN_POLL_INTERVAL_MS: u64 = 1000;
@@ -144,6 +144,12 @@ impl Daemon {
         self.state
     }
 
+    /// Check if verbose output is enabled.
+    #[must_use]
+    pub const fn verbose(&self) -> bool {
+        self.config.daemon.verbose
+    }
+
     /// Check if the daemon is running.
     #[must_use]
     #[allow(dead_code)]
@@ -171,7 +177,9 @@ impl Daemon {
         self.ipc_state.state.store(DaemonStateInfo::Starting);
         self.shutdown.store(false, Ordering::Relaxed);
 
-        print_info!("Starting filefind daemon...");
+        if self.verbose() {
+            print_info!("Starting filefind daemon...");
+        }
 
         // Start IPC server
         let ipc_receiver = spawn_ipc_server(Arc::clone(&self.ipc_state), Arc::clone(&self.shutdown));
@@ -184,7 +192,9 @@ impl Daemon {
         }
 
         let database = Database::open(&database_path).context("Failed to open database")?;
-        print_info!("Database: {}", database_path.display());
+        if self.verbose() {
+            print_info!("Database: {}", database_path.display());
+        }
 
         self.database = Some(database);
 
@@ -196,7 +206,9 @@ impl Daemon {
         // Perform initial scan if requested or if database is empty
         if self.options.rescan || self.should_perform_initial_scan()? {
             self.ipc_state.state.store(DaemonStateInfo::Scanning);
-            print_info!("Performing initial scan...");
+            if self.verbose() {
+                print_info!("Performing initial scan...");
+            }
             run_scan(None, self.options.rescan, &self.config).await?;
 
             // Update stats after scan
@@ -218,7 +230,9 @@ impl Daemon {
 
         self.state = DaemonState::Running;
         self.ipc_state.state.store(DaemonStateInfo::Running);
-        print_success!("Daemon started successfully");
+        if self.verbose() {
+            print_success!("Daemon started successfully");
+        }
 
         Ok(())
     }
@@ -234,7 +248,9 @@ impl Daemon {
         self.ipc_state.state.store(DaemonStateInfo::Stopping);
         self.shutdown.store(true, Ordering::Relaxed);
 
-        print_info!("Stopping daemon...");
+        if self.verbose() {
+            print_info!("Stopping daemon...");
+        }
 
         // Stop all USN monitors
         for (drive_letter, monitor) in &self.volume_monitors {
@@ -247,20 +263,15 @@ impl Daemon {
 
         // Stop file watcher
         if let Some(ref watcher) = self.file_watcher {
-            info!("Stopping file watcher");
+            info!("Stopping file watcher for {} paths", watcher.watched_paths().len());
             watcher.stop();
         }
-        self.file_watcher = None;
-
-        // Close IPC receiver
-        self.ipc_receiver = None;
-
-        // Close database
-        self.database = None;
 
         self.state = DaemonState::Stopped;
         self.ipc_state.state.store(DaemonStateInfo::Stopped);
-        print_success!("Daemon stopped");
+        if self.config.daemon.verbose {
+            print_success!("Daemon stopped");
+        }
     }
 
     /// Run the daemon's main loop.
@@ -271,7 +282,9 @@ impl Daemon {
             self.start().await?;
         }
 
-        print_info!("Daemon running. Press Ctrl+C to stop.");
+        if self.verbose() {
+            print_info!("Daemon running. Press Ctrl+C to stop.");
+        }
 
         // Main loop - wait for shutdown signal
         while !self.shutdown.load(Ordering::Relaxed) {
@@ -345,9 +358,16 @@ impl Daemon {
 
     /// Start all monitors (USN Journal and file watcher).
     fn start_monitors(&mut self) -> Result<()> {
-        // Detect NTFS volumes and start USN monitors
+        // Get drives that are referenced in configured paths
+        let configured_drives = self.get_configured_drives();
+
+        // Detect NTFS volumes and start USN monitors only for configured drives
         let ntfs_drives = detect_ntfs_volumes();
         for drive_letter in ntfs_drives {
+            if !configured_drives.contains(&drive_letter) {
+                debug!("Skipping USN monitor for {drive_letter}:\\ (not in configured paths)");
+                continue;
+            }
             if let Err(error) = self.start_usn_monitor(drive_letter) {
                 warn!("Failed to start USN monitor for {drive_letter}:\\ - {error}");
             }
@@ -372,7 +392,7 @@ impl Daemon {
             .flatten()
             .unwrap_or(0);
 
-        info!("Starting USN monitor for {}:\\ (last USN: {})", drive_letter, last_usn);
+        info!("Starting USN monitor for {drive_letter}:");
 
         let usn_monitor = UsnMonitor::new(drive_letter, last_usn)?;
 
@@ -388,24 +408,55 @@ impl Daemon {
 
     /// Start file watcher for non-NTFS paths.
     fn start_file_watcher(&mut self, paths: Vec<PathBuf>) -> Result<()> {
-        let config = WatcherConfig {
+        let watcher = FileWatcher::new(
             paths,
-            exclude_patterns: self.config.daemon.exclude.clone(),
-            debounce_ms: self.options.watcher_debounce_ms,
-            recursive: true,
-        };
+            self.config.daemon.exclude.clone(),
+            self.options.watcher_debounce_ms,
+            true,
+        );
+        let watched_paths = watcher.watched_paths();
 
-        let watcher = FileWatcher::new(config.clone());
-        let path_count = watcher.watched_paths().len();
+        info!("Starting file watcher for {} paths", watched_paths.len());
+        for path in watched_paths {
+            info!("Watching {}", path.display());
+        }
 
         // Start the watcher and get the event receiver
-        let (receiver, _shutdown) = watcher.start(config.recursive, config.debounce_ms)?;
-
-        info!("Started file watcher for {} paths", path_count);
+        let (receiver, _shutdown) = watcher.start()?;
 
         self.watcher_receiver = Some(receiver);
 
         Ok(())
+    }
+
+    /// Extract drive letters from configured paths.
+    ///
+    /// Returns a list of uppercase drive letters that are referenced in the
+    /// daemon's configured paths. This is used to filter which NTFS volumes
+    /// should have USN monitors started.
+    fn get_configured_drives(&self) -> Vec<char> {
+        let mut drives: Vec<char> = self
+            .config
+            .daemon
+            .paths
+            .iter()
+            .filter_map(|path_str| {
+                let mut chars = path_str.chars();
+                let first = chars.next()?;
+                let second = chars.next()?;
+
+                // Check for drive letter pattern like "C:" or "C:\"
+                if first.is_ascii_alphabetic() && second == ':' {
+                    Some(first.to_ascii_uppercase())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        drives.sort_unstable();
+        drives.dedup();
+        drives
     }
 
     /// Get paths that are not on NTFS volumes.
@@ -585,8 +636,6 @@ impl Daemon {
             }
             FileChangeEvent::Modified(path) => {
                 debug!("File modified: {}", path.display());
-                // For modifications, we could update metadata but for now we just log it
-                // The file still exists in the index which is the main purpose
             }
             FileChangeEvent::Deleted(path) => {
                 debug!("File deleted: {}", path.display());
@@ -712,7 +761,9 @@ pub fn start_daemon(foreground: bool, rescan: bool, config: &Config) -> Result<(
     let mut daemon = Daemon::new(config.clone(), options);
 
     if foreground {
-        print_info!("Starting daemon in foreground mode...");
+        if config.daemon.verbose {
+            print_info!("Starting daemon in foreground mode...");
+        }
 
         // Run in foreground with tokio runtime
         tokio::runtime::Runtime::new()?.block_on(async {
@@ -880,7 +931,7 @@ pub fn detect_drives() {
 
     let volumes = detect_ntfs_volumes();
     if volumes.is_empty() {
-        println!("  No NTFS volumes detected.");
+        println!("  No NTFS volumes detected");
     } else {
         println!("  NTFS volumes (fast MFT scanning available):");
         for letter in &volumes {
@@ -889,8 +940,8 @@ pub fn detect_drives() {
     }
 
     println!();
-    print_info!("Run 'filefindd scan' to index all detected NTFS volumes.");
-    print_info!("Run 'filefindd scan <path>' to scan a specific directory.");
+    print_info!("Run 'filefindd scan' to index all detected NTFS volumes");
+    print_info!("Run 'filefindd scan <path>' to scan a specific directory");
 }
 
 /// Show index statistics.
@@ -1199,5 +1250,94 @@ mod tests {
         // IPC state should be initialized
         assert_eq!(daemon.ipc_state.state.load(), filefind::DaemonStateInfo::Stopped);
         assert!(!daemon.ipc_state.is_paused.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_get_configured_drives_empty() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let drives = daemon.get_configured_drives();
+        assert!(drives.is_empty());
+    }
+
+    #[test]
+    fn test_get_configured_drives_single_drive() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["C:\\Users".to_string()];
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let drives = daemon.get_configured_drives();
+        assert_eq!(drives, vec!['C']);
+    }
+
+    #[test]
+    fn test_get_configured_drives_multiple_drives() {
+        let mut config = Config::default();
+        config.daemon.paths = vec![
+            "C:\\Users".to_string(),
+            "D:\\Projects".to_string(),
+            "E:\\Data".to_string(),
+        ];
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let drives = daemon.get_configured_drives();
+        assert_eq!(drives, vec!['C', 'D', 'E']);
+    }
+
+    #[test]
+    fn test_get_configured_drives_deduplicates() {
+        let mut config = Config::default();
+        config.daemon.paths = vec![
+            "C:\\Users".to_string(),
+            "C:\\Projects".to_string(),
+            "D:\\Data".to_string(),
+            "C:\\Documents".to_string(),
+        ];
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let drives = daemon.get_configured_drives();
+        assert_eq!(drives, vec!['C', 'D']);
+    }
+
+    #[test]
+    fn test_get_configured_drives_lowercase_normalized() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["c:\\Users".to_string(), "d:\\Projects".to_string()];
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let drives = daemon.get_configured_drives();
+        assert_eq!(drives, vec!['C', 'D']);
+    }
+
+    #[test]
+    fn test_get_configured_drives_ignores_unc_paths() {
+        let mut config = Config::default();
+        config.daemon.paths = vec![
+            "C:\\Users".to_string(),
+            "\\\\server\\share".to_string(),
+            "\\\\192.168.1.1\\data".to_string(),
+        ];
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let drives = daemon.get_configured_drives();
+        assert_eq!(drives, vec!['C']);
+    }
+
+    #[test]
+    fn test_get_configured_drives_drive_letter_only() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["C:".to_string(), "D:\\".to_string()];
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let drives = daemon.get_configured_drives();
+        assert_eq!(drives, vec!['C', 'D']);
     }
 }

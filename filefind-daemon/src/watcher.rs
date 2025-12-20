@@ -30,45 +30,37 @@ pub struct FileWatcher {
     /// Patterns to exclude from watching.
     exclude_patterns: Vec<String>,
 
+    /// Debounce duration in milliseconds.
+    debounce_ms: u64,
+
+    /// Whether to watch recursively.
+    recursive: bool,
+
     /// Shutdown flag.
     shutdown: Arc<AtomicBool>,
 }
 
-/// Configuration for the file watcher.
-#[derive(Debug, Clone)]
-pub struct WatcherConfig {
-    /// Paths to watch.
-    pub paths: Vec<PathBuf>,
-
-    /// Patterns to exclude (glob-style).
-    pub exclude_patterns: Vec<String>,
-
-    /// Debounce duration in milliseconds.
-    /// Events for the same path within this window are coalesced.
-    pub debounce_ms: u64,
-
-    /// Whether to watch recursively.
-    pub recursive: bool,
-}
-
-impl Default for WatcherConfig {
+impl Default for FileWatcher {
     fn default() -> Self {
         Self {
-            paths: Vec::new(),
+            watched_paths: Vec::new(),
             exclude_patterns: Vec::new(),
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
 impl FileWatcher {
-    /// Create a new file watcher with the given configuration.
+    /// Create a new file watcher.
     #[must_use]
-    pub fn new(config: WatcherConfig) -> Self {
+    pub fn new(paths: Vec<PathBuf>, exclude_patterns: Vec<String>, debounce_ms: u64, recursive: bool) -> Self {
         Self {
-            watched_paths: config.paths,
-            exclude_patterns: config.exclude_patterns,
+            watched_paths: paths,
+            exclude_patterns,
+            debounce_ms,
+            recursive,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -80,6 +72,8 @@ impl FileWatcher {
         Self {
             watched_paths: vec![path],
             exclude_patterns: Vec::new(),
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -142,15 +136,13 @@ impl FileWatcher {
     /// Events for the same path within `debounce_ms` milliseconds are coalesced
     /// to avoid processing rapid duplicate events.
     #[allow(clippy::too_many_lines)]
-    pub fn start(
-        self,
-        recursive: bool,
-        debounce_ms: u64,
-    ) -> Result<(mpsc::Receiver<FileChangeEvent>, Arc<AtomicBool>)> {
+    pub fn start(self) -> Result<(mpsc::Receiver<FileChangeEvent>, Arc<AtomicBool>)> {
         let (event_tx, event_rx) = mpsc::channel(1000);
         let shutdown = self.shutdown.clone();
         let watched_paths = self.watched_paths.clone();
-        let exclude_patterns = self.exclude_patterns;
+        let exclude_patterns = self.exclude_patterns.clone();
+        let debounce_ms = self.debounce_ms;
+        let recursive = self.recursive;
 
         // Create a channel for notify events
         let (notify_tx, mut notify_rx) = mpsc::channel(1000);
@@ -310,6 +302,13 @@ impl FileWatcher {
     #[must_use]
     pub fn watched_paths(&self) -> &[PathBuf] {
         &self.watched_paths
+    }
+
+    /// Get the exclusion patterns.
+    #[cfg(test)]
+    #[must_use]
+    pub fn exclude_patterns(&self) -> &[String] {
+        &self.exclude_patterns
     }
 }
 
@@ -553,6 +552,8 @@ mod tests {
                 "*\\node_modules\\*".to_string(),
                 "Thumbs.db".to_string(),
             ],
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
@@ -568,6 +569,8 @@ mod tests {
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec!["*.bak".to_string(), "*.tmp".to_string()],
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
@@ -587,6 +590,8 @@ mod tests {
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec!["*cache*".to_string(), "*node_modules*".to_string()],
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
@@ -608,6 +613,8 @@ mod tests {
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec!["Thumbs.db".to_string(), ".git".to_string()],
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
@@ -626,6 +633,8 @@ mod tests {
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec![],
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
@@ -640,6 +649,8 @@ mod tests {
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec!["*.log".to_string(), "*temp*".to_string(), "secret.txt".to_string()],
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
@@ -850,67 +861,17 @@ mod tests {
     }
 
     #[test]
-    fn test_watcher_config_default() {
-        let config = WatcherConfig::default();
-        assert!(config.paths.is_empty());
-        assert!(config.exclude_patterns.is_empty());
-        assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
-        assert!(config.recursive);
-    }
-
-    #[test]
-    fn test_watcher_config_custom() {
-        let config = WatcherConfig {
-            paths: vec![PathBuf::from("C:\\Test")],
-            exclude_patterns: vec!["*.tmp".to_string()],
-            debounce_ms: 500,
-            recursive: false,
-        };
-
-        assert_eq!(config.paths.len(), 1);
-        assert_eq!(config.exclude_patterns.len(), 1);
-        assert_eq!(config.debounce_ms, 500);
-        assert!(!config.recursive);
-    }
-
-    #[test]
     fn test_file_watcher_new() {
-        let config = WatcherConfig {
-            paths: vec![PathBuf::from("C:\\Test1"), PathBuf::from("D:\\Test2")],
-            exclude_patterns: vec!["*.bak".to_string()],
-            debounce_ms: 200,
-            recursive: true,
-        };
+        let watcher = FileWatcher::new(
+            vec![PathBuf::from("C:\\Test1"), PathBuf::from("D:\\Test2")],
+            vec!["*.bak".to_string()],
+            200,
+            true,
+        );
 
-        let watcher = FileWatcher::new(config);
-
-        assert_eq!(watcher.watched_paths.len(), 2);
-        assert_eq!(watcher.exclude_patterns.len(), 1);
+        assert_eq!(watcher.watched_paths().len(), 2);
+        assert_eq!(watcher.exclude_patterns().len(), 1);
         assert!(!watcher.shutdown.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn test_watcher_config_debounce_range() {
-        // Test minimum debounce
-        let config = WatcherConfig {
-            debounce_ms: 0,
-            ..Default::default()
-        };
-        assert_eq!(config.debounce_ms, 0);
-
-        // Test typical debounce
-        let config = WatcherConfig {
-            debounce_ms: 100,
-            ..Default::default()
-        };
-        assert_eq!(config.debounce_ms, 100);
-
-        // Test large debounce
-        let config = WatcherConfig {
-            debounce_ms: 5000,
-            ..Default::default()
-        };
-        assert_eq!(config.debounce_ms, 5000);
     }
 
     #[test]
@@ -918,14 +879,14 @@ mod tests {
         let path = PathBuf::from("C:\\SinglePath");
         let watcher = FileWatcher::for_path(path.clone());
 
-        assert_eq!(watcher.watched_paths.len(), 1);
-        assert_eq!(watcher.watched_paths[0], path);
-        assert!(watcher.exclude_patterns.is_empty());
+        assert_eq!(watcher.watched_paths().len(), 1);
+        assert_eq!(watcher.watched_paths()[0], path);
+        assert!(watcher.exclude_patterns().is_empty());
     }
 
     #[test]
     fn test_file_watcher_add_path() {
-        let mut watcher = FileWatcher::new(WatcherConfig::default());
+        let mut watcher = FileWatcher::new(vec![], vec![], DEFAULT_DEBOUNCE_MS, true);
 
         watcher.add_path(PathBuf::from("C:\\Path1"));
         assert_eq!(watcher.watched_paths.len(), 1);
@@ -940,7 +901,7 @@ mod tests {
 
     #[test]
     fn test_file_watcher_add_exclude_pattern() {
-        let mut watcher = FileWatcher::new(WatcherConfig::default());
+        let mut watcher = FileWatcher::new(vec![], vec![], DEFAULT_DEBOUNCE_MS, true);
 
         watcher.add_exclude_pattern("*.tmp".to_string());
         assert_eq!(watcher.exclude_patterns.len(), 1);
@@ -955,12 +916,12 @@ mod tests {
 
     #[test]
     fn test_file_watcher_watched_paths() {
-        let config = WatcherConfig {
-            paths: vec![PathBuf::from("C:\\A"), PathBuf::from("D:\\B")],
-            ..Default::default()
-        };
-
-        let watcher = FileWatcher::new(config);
+        let watcher = FileWatcher::new(
+            vec![PathBuf::from("C:\\A"), PathBuf::from("D:\\B")],
+            vec![],
+            DEFAULT_DEBOUNCE_MS,
+            true,
+        );
         let paths = watcher.watched_paths();
 
         assert_eq!(paths.len(), 2);
@@ -970,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_file_watcher_stop() {
-        let watcher = FileWatcher::new(WatcherConfig::default());
+        let watcher = FileWatcher::new(vec![], vec![], DEFAULT_DEBOUNCE_MS, true);
 
         assert!(!watcher.shutdown.load(Ordering::Relaxed));
 
@@ -1019,6 +980,8 @@ mod tests {
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec!["*.TMP".to_string(), "README.md".to_string()],
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 

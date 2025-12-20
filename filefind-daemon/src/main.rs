@@ -16,11 +16,10 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use filefind::{Config, get_log_directory};
+use filefind::{Config, LogLevel, get_log_directory};
 
 /// Background file indexing daemon for filefind
 #[derive(Parser)]
@@ -33,6 +32,10 @@ struct Args {
     /// Generate shell completion
     #[arg(short = 'C', long, value_name = "SHELL")]
     completion: Option<Shell>,
+
+    /// Set the log level
+    #[arg(short = 'l', long = "log", value_enum, global = true)]
+    log_level: Option<LogLevel>,
 
     /// Print verbose output
     #[arg(short, long, global = true)]
@@ -90,6 +93,16 @@ enum Command {
     },
 }
 
+/// Apply CLI arguments to the config, with CLI args taking precedence.
+const fn apply_cli_args(config: &mut Config, log_level: Option<LogLevel>, verbose: bool) {
+    if let Some(level) = log_level {
+        config.daemon.log_level = level;
+    }
+    if verbose {
+        config.daemon.verbose = true;
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -107,13 +120,16 @@ fn main() -> Result<()> {
     let foreground = matches!(args.command, Some(Command::Start { foreground: true, .. }) | None)
         || !matches!(args.command, Some(Command::Start { .. }));
 
+    // Load config and apply CLI args (CLI takes precedence)
+    let mut config = Config::load();
+    apply_cli_args(&mut config, args.log_level, args.verbose);
+
     // Initialize logging based on mode
-    init_logging(args.verbose, foreground)?;
+    init_logging(config.daemon.log_level, foreground)?;
 
-    let config = Config::load();
     tracing::debug!("Loaded configuration");
+    tracing::trace!("{config:#?}");
 
-    // Execute the requested command.
     match args.command {
         Some(Command::Start { foreground, rescan }) => daemon::start_daemon(foreground, rescan, &config),
         Some(Command::Stop) => {
@@ -122,7 +138,6 @@ fn main() -> Result<()> {
         }
         Some(Command::Status) => daemon::show_status(&config),
         Some(Command::Scan { path, force }) => {
-            // Use tokio runtime for async scan
             tokio::runtime::Runtime::new()?.block_on(scanner::run_scan(path, force, &config))
         }
         Some(Command::Stats) => daemon::show_stats(&config),
@@ -139,16 +154,12 @@ fn main() -> Result<()> {
     }
 }
 
-/// Initialize logging based on verbosity and foreground mode.
+/// Initialize logging based on log level and foreground mode.
 ///
 /// In foreground mode, logs go to stdout.
 /// In background mode, logs go to a file in ~/logs/filefind/.
-fn init_logging(verbose: bool, foreground: bool) -> Result<()> {
-    let filter = if verbose {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::new("info")
-    };
+fn init_logging(log_level: LogLevel, foreground: bool) -> Result<()> {
+    let filter = EnvFilter::new(log_level.as_filter_str());
 
     if foreground {
         // Foreground mode: log to stdout
@@ -167,19 +178,14 @@ fn init_logging(verbose: bool, foreground: bool) -> Result<()> {
             .build(&log_dir)
             .context("Failed to create log file appender")?;
 
-        // Also log errors to stderr
-        let stderr = std::io::stderr.with_max_level(tracing::Level::WARN);
-
         tracing_subscriber::registry()
             .with(filter)
             .with(
                 tracing_subscriber::fmt::layer()
-                    .with_writer(file_appender.and(stderr))
+                    .with_writer(file_appender)
                     .with_ansi(false),
             )
             .init();
-
-        tracing::info!("Logging to {}", log_dir.display());
     }
 
     Ok(())
@@ -190,7 +196,7 @@ fn reset_database(force: bool, config: &Config) -> Result<()> {
     let database_path = config.database_path();
 
     if !database_path.exists() {
-        println!("Database does not exist at: {}", database_path.display());
+        tracing::debug!("Database does not exist at: {}", database_path.display());
         return Ok(());
     }
 
