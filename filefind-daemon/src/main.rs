@@ -14,12 +14,13 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use filefind::{Config, get_log_directory};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+
+use filefind::{Config, get_log_directory};
 
 /// Background file indexing daemon for filefind
 #[derive(Parser)]

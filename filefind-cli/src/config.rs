@@ -23,7 +23,6 @@ pub struct CliConfig {
     pub regex: bool,
 
     /// Case-sensitive search
-    #[allow(dead_code)]
     pub case_sensitive: bool,
 
     /// Filter results to specific drives

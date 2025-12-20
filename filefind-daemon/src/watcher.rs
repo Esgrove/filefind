@@ -6,20 +6,21 @@
 //!
 //! On Windows, this uses `ReadDirectoryChangesW`.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use filefind::types::FileChangeEvent;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use filefind::types::FileChangeEvent;
+
 /// Default debounce duration to coalesce rapid file changes.
-const DEFAULT_DEBOUNCE_MS: u64 = 100;
+const DEFAULT_DEBOUNCE_MS: u64 = 1000;
 
 /// File system watcher for monitoring directories.
 pub struct FileWatcher {
@@ -43,7 +44,7 @@ pub struct WatcherConfig {
     pub exclude_patterns: Vec<String>,
 
     /// Debounce duration in milliseconds.
-    #[allow(dead_code)]
+    /// Events for the same path within this window are coalesced.
     pub debounce_ms: u64,
 
     /// Whether to watch recursively.
@@ -100,6 +101,7 @@ impl FileWatcher {
     }
 
     /// Check if a path should be excluded based on the exclusion patterns.
+    #[cfg(test)]
     fn should_exclude(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
 
@@ -133,35 +135,18 @@ impl FileWatcher {
         false
     }
 
-    /// Convert a notify event to our `FileChangeEvent` type.
-    #[expect(dead_code, reason = "public API for event conversion")]
-    fn convert_event(&self, event: Event) -> Vec<FileChangeEvent> {
-        let mut changes = Vec::new();
-
-        for path in event.paths {
-            if self.should_exclude(&path) {
-                continue;
-            }
-
-            let change = match event.kind {
-                EventKind::Create(_) => Some(FileChangeEvent::Created(path)),
-                EventKind::Modify(_) => Some(FileChangeEvent::Modified(path)),
-                EventKind::Remove(_) => Some(FileChangeEvent::Deleted(path)),
-                EventKind::Access(_) | EventKind::Other | EventKind::Any => None,
-            };
-
-            if let Some(change) = change {
-                changes.push(change);
-            }
-        }
-
-        changes
-    }
-
-    /// Start watching for file changes.
+    /// Start watching for file changes with debouncing.
     ///
     /// Returns a channel receiver for change events and a shutdown handle.
-    pub fn start(self, recursive: bool) -> Result<(mpsc::Receiver<FileChangeEvent>, Arc<AtomicBool>)> {
+    ///
+    /// Events for the same path within `debounce_ms` milliseconds are coalesced
+    /// to avoid processing rapid duplicate events.
+    #[allow(clippy::too_many_lines)]
+    pub fn start(
+        self,
+        recursive: bool,
+        debounce_ms: u64,
+    ) -> Result<(mpsc::Receiver<FileChangeEvent>, Arc<AtomicBool>)> {
         let (event_tx, event_rx) = mpsc::channel(1000);
         let shutdown = self.shutdown.clone();
         let watched_paths = self.watched_paths.clone();
@@ -211,42 +196,36 @@ impl FileWatcher {
             }
         }
 
-        // Spawn async task to process events
+        // Spawn async task to process events with debouncing
         let process_shutdown = shutdown.clone();
+        let debounce_duration = Duration::from_millis(debounce_ms);
         tokio::spawn(async move {
             // Keep watcher alive
             let _watcher = watcher;
 
-            info!("File watcher started");
+            info!("File watcher started (debounce: {}ms)", debounce_ms);
 
-            // Track recently seen paths to deduplicate rapid events
-            let mut recent_paths: HashSet<PathBuf> = HashSet::new();
-            let mut last_cleanup = std::time::Instant::now();
+            // Track pending events with their timestamps for debouncing
+            // Key: path, Value: (event_kind, first_seen_time)
+            let mut pending_events: HashMap<PathBuf, (FileChangeEvent, std::time::Instant)> = HashMap::new();
+            let mut last_flush = std::time::Instant::now();
 
             while !process_shutdown.load(Ordering::Relaxed) {
-                // Clean up recent paths periodically
-                if last_cleanup.elapsed() > Duration::from_secs(5) {
-                    recent_paths.clear();
-                    last_cleanup = std::time::Instant::now();
-                }
-
-                // Wait for events with a timeout
-                match tokio::time::timeout(Duration::from_millis(500), notify_rx.recv()).await {
+                // Wait for events with a timeout proportional to debounce duration
+                // Use half the debounce time (clamped) for responsive flushing
+                let poll_interval = Duration::from_millis((debounce_ms / 2).clamp(50, 1000));
+                match tokio::time::timeout(poll_interval, notify_rx.recv()).await {
                     Ok(Some(event)) => {
+                        let now = std::time::Instant::now();
+
                         // Convert and filter events
-                        for path in &event.paths {
+                        for path in event.paths {
                             if exclude_patterns.iter().any(|p| {
                                 let path_str = path.to_string_lossy();
                                 path_str.contains(p.as_str())
                             }) {
                                 continue;
                             }
-
-                            // Simple deduplication
-                            if recent_paths.contains(path) {
-                                continue;
-                            }
-                            recent_paths.insert(path.clone());
 
                             let change = match event.kind {
                                 EventKind::Create(_) => Some(FileChangeEvent::Created(path.clone())),
@@ -256,11 +235,23 @@ impl FileWatcher {
                             };
 
                             if let Some(change) = change {
-                                debug!("File change detected: {}", change);
-                                if event_tx.send(change).await.is_err() {
-                                    // Receiver dropped
-                                    break;
-                                }
+                                // Update or insert the pending event
+                                // If an event already exists for this path, keep the original timestamp
+                                // but update to the latest event type (e.g., Create -> Modify -> Delete)
+                                pending_events
+                                    .entry(path)
+                                    .and_modify(|(existing_change, _timestamp)| {
+                                        // Keep Created if file was created then modified
+                                        // (a new file being modified is still "created")
+                                        // Otherwise, update to the latest event type
+                                        if !matches!(
+                                            (&existing_change, &change),
+                                            (FileChangeEvent::Created(_), FileChangeEvent::Modified(_))
+                                        ) {
+                                            *existing_change = change.clone();
+                                        }
+                                    })
+                                    .or_insert((change, now));
                             }
                         }
                     }
@@ -269,9 +260,39 @@ impl FileWatcher {
                         break;
                     }
                     Err(_) => {
-                        // Timeout, continue loop
+                        // Timeout - check for events to flush
                     }
                 }
+
+                // Flush events that have been pending longer than debounce_duration
+                let now = std::time::Instant::now();
+                if now.duration_since(last_flush) >= debounce_duration {
+                    let mut to_send = Vec::new();
+
+                    pending_events.retain(|_path, (change, timestamp)| {
+                        if now.duration_since(*timestamp) >= debounce_duration {
+                            to_send.push(change.clone());
+                            false // Remove from pending
+                        } else {
+                            true // Keep in pending
+                        }
+                    });
+
+                    for change in to_send {
+                        debug!("File change detected (debounced): {}", change);
+                        if event_tx.send(change).await.is_err() {
+                            // Receiver dropped
+                            break;
+                        }
+                    }
+
+                    last_flush = now;
+                }
+            }
+
+            // Flush any remaining pending events on shutdown
+            for (change, _) in pending_events.into_values() {
+                let _ = event_tx.send(change).await;
             }
 
             info!("File watcher stopped");
@@ -866,6 +887,30 @@ mod tests {
         assert_eq!(watcher.watched_paths.len(), 2);
         assert_eq!(watcher.exclude_patterns.len(), 1);
         assert!(!watcher.shutdown.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_watcher_config_debounce_range() {
+        // Test minimum debounce
+        let config = WatcherConfig {
+            debounce_ms: 0,
+            ..Default::default()
+        };
+        assert_eq!(config.debounce_ms, 0);
+
+        // Test typical debounce
+        let config = WatcherConfig {
+            debounce_ms: 100,
+            ..Default::default()
+        };
+        assert_eq!(config.debounce_ms, 100);
+
+        // Test large debounce
+        let config = WatcherConfig {
+            debounce_ms: 5000,
+            ..Default::default()
+        };
+        assert_eq!(config.debounce_ms, 5000);
     }
 
     #[test]

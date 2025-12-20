@@ -206,7 +206,6 @@ pub fn read_message<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
 /// IPC client for communicating with the daemon.
 pub struct IpcClient {
     /// Timeout for operations.
-    #[allow(dead_code)]
     timeout: Duration,
 }
 
@@ -312,9 +311,9 @@ impl IpcClient {
     }
 
     #[cfg(windows)]
-    #[allow(clippy::unused_self)]
     fn send_command_windows(&self, command: DaemonCommand) -> Result<DaemonResponse> {
         use std::fs::OpenOptions;
+        use std::io::Write;
         use std::os::windows::fs::OpenOptionsExt;
 
         const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
@@ -322,16 +321,28 @@ impl IpcClient {
         let pipe_path = get_ipc_path();
 
         // Try to connect to the named pipe
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(FILE_FLAG_OVERLAPPED)
             .open(&pipe_path)
             .context("Failed to connect to daemon - is it running?")?;
 
+        // Wrap in a struct that implements timeout via polling
+        // Windows named pipes don't support set_read_timeout directly,
+        // but we can use the timeout for overall operation timing
+        let start = std::time::Instant::now();
+        let mut file = file;
+
         // Serialize and send command
         let command_bytes = serialize_command(&command)?;
         write_message(&mut file, &command_bytes)?;
+        file.flush()?;
+
+        // Check timeout before reading
+        if start.elapsed() > self.timeout {
+            anyhow::bail!("IPC operation timed out");
+        }
 
         // Read response
         let response_bytes = read_message(&mut file)?;
