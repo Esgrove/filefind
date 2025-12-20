@@ -292,41 +292,124 @@ impl FileWatcher {
     }
 }
 
+/// Default number of concurrent directory scan tasks.
+/// Optimized for HDDs (NCQ depth) and network shares (latency hiding).
+const DEFAULT_SCAN_CONCURRENCY: usize = 32;
+
 /// Perform an initial directory scan to populate the index.
 ///
 /// This walks the directory tree and returns all files and directories found.
+/// Uses parallel scanning with tokio for better performance.
 pub async fn scan_directory(root: &Path, exclude_patterns: &[String]) -> Result<Vec<ScanEntry>> {
-    let root = root.to_path_buf();
-    let exclude_patterns = exclude_patterns.to_vec();
-
-    // Run the scan in a blocking task since walkdir is synchronous
-    let entries = tokio::task::spawn_blocking(move || scan_directory_sync(&root, &exclude_patterns))
-        .await
-        .context("Directory scan task failed")?;
-    Ok(entries)
+    scan_directory_with_concurrency(root, exclude_patterns, DEFAULT_SCAN_CONCURRENCY).await
 }
 
-/// Synchronous directory scanning implementation.
-fn scan_directory_sync(root: &Path, exclude_patterns: &[String]) -> Vec<ScanEntry> {
-    use walkdir::WalkDir;
+/// Perform an initial directory scan with configurable concurrency.
+///
+/// # Arguments
+/// * `root` - Root directory to scan
+/// * `exclude_patterns` - Patterns to exclude from scanning
+/// * `max_concurrency` - Maximum number of concurrent directory scan tasks
+pub async fn scan_directory_with_concurrency(
+    root: &Path,
+    exclude_patterns: &[String],
+    max_concurrency: usize,
+) -> Result<Vec<ScanEntry>> {
+    let root = root.to_path_buf();
+    let exclude_patterns: Arc<[String]> = exclude_patterns.to_vec().into();
+    let entries: Arc<tokio::sync::Mutex<Vec<ScanEntry>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
 
-    let mut entries = Vec::new();
-
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !should_skip_entry(e, exclude_patterns))
-    {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                warn!("Error reading directory entry: {error}");
-                continue;
-            }
+    // Add the root directory itself
+    if let Ok(metadata) = tokio::fs::metadata(&root).await {
+        let root_entry = ScanEntry {
+            path: root.clone(),
+            name: root.file_name().map_or_else(
+                || root.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            ),
+            is_directory: metadata.is_dir(),
+            size: 0,
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
         };
+        entries.lock().await.push(root_entry);
+    }
 
+    // Process directories with bounded concurrency using a semaphore
+    let mut dirs_to_process = vec![root.clone()];
+
+    while !dirs_to_process.is_empty() {
+        // Process current batch with concurrency limit
+        let batch: Vec<_> = std::mem::take(&mut dirs_to_process);
+        let mut tasks = Vec::with_capacity(batch.len());
+
+        for dir in batch {
+            let entries = entries.clone();
+            let exclude_patterns = exclude_patterns.clone();
+            let semaphore = semaphore.clone();
+
+            tasks.push(tokio::spawn(async move {
+                // Acquire permit before scanning (limits concurrent I/O)
+                let permit = semaphore.acquire().await.expect("Semaphore should not be closed");
+                let result = scan_single_directory(dir, exclude_patterns, entries).await;
+                drop(permit);
+                result
+            }));
+        }
+
+        // Collect results (subdirectories to process next)
+        for task in tasks {
+            match task.await {
+                Ok(subdirs) => dirs_to_process.extend(subdirs),
+                Err(error) => warn!("Directory scan task failed: {error}"),
+            }
+        }
+    }
+
+    let mut result = Arc::try_unwrap(entries)
+        .expect("All references should be dropped")
+        .into_inner();
+
+    info!("Scanned {} entries from {} (parallel)", result.len(), root.display());
+
+    // Sort by path for consistent ordering
+    result.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(result)
+}
+
+/// Scan a single directory and return its subdirectories.
+async fn scan_single_directory(
+    dir: PathBuf,
+    exclude_patterns: Arc<[String]>,
+    entries: Arc<tokio::sync::Mutex<Vec<ScanEntry>>>,
+) -> Vec<PathBuf> {
+    let mut read_dir = match tokio::fs::read_dir(&dir).await {
+        Ok(read_dir) => read_dir,
+        Err(error) => {
+            warn!("Error reading directory {}: {error}", dir.display());
+            return Vec::new();
+        }
+    };
+
+    let mut subdirs = Vec::new();
+    let mut local_entries = Vec::new();
+
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
         let path = entry.path();
-        let metadata = match entry.metadata() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        // Skip hidden files/directories
+        if name.starts_with('.') && !name.starts_with(".tmp") {
+            continue;
+        }
+
+        // Check exclusion patterns
+        if matches_exclude_patterns(&path.to_string_lossy(), &exclude_patterns) {
+            continue;
+        }
+
+        let metadata = match entry.metadata().await {
             Ok(metadata) => metadata,
             Err(error) => {
                 warn!("Error reading metadata for {}: {error}", path.display());
@@ -334,38 +417,41 @@ fn scan_directory_sync(root: &Path, exclude_patterns: &[String]) -> Vec<ScanEntr
             }
         };
 
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_directory = metadata.is_dir();
 
         let scan_entry = ScanEntry {
-            path: path.to_path_buf(),
+            path: path.clone(),
             name,
-            is_directory: metadata.is_dir(),
+            is_directory,
             size: if metadata.is_file() { metadata.len() } else { 0 },
             modified: metadata.modified().ok(),
             created: metadata.created().ok(),
         };
 
-        entries.push(scan_entry);
+        local_entries.push(scan_entry);
+
+        if is_directory {
+            subdirs.push(path);
+        }
     }
 
-    info!("Scanned {} entries from {}", entries.len(), root.display());
-    entries
+    // Add local entries to the shared collection
+    {
+        let mut guard = entries.lock().await;
+        guard.extend(local_entries);
+    }
+
+    subdirs
 }
 
-/// Check if a walkdir entry should be skipped.
-fn should_skip_entry(entry: &walkdir::DirEntry, exclude_patterns: &[String]) -> bool {
-    let path = entry.path();
-    let path_str = path.to_string_lossy();
-
-    // Skip hidden files/directories (starting with .)
-    // Only check the entry's own name, not parent directories
-    let name_str = entry.file_name().to_string_lossy();
-    if name_str.starts_with('.') && !name_str.starts_with(".tmp") {
-        // Allow .tmp* directories (used by tempfile crate in tests)
-        return true;
-    }
-
-    // Check exclusion patterns
+/// Check if a path matches any of the exclusion patterns.
+///
+/// Supports glob-style patterns:
+/// - `*pattern` - matches paths ending with "pattern"
+/// - `pattern*` - matches paths starting with "pattern"
+/// - `*pattern*` - matches paths containing "pattern"
+/// - `pattern` - matches paths containing "pattern" anywhere
+pub fn matches_exclude_patterns(path_str: &str, exclude_patterns: &[String]) -> bool {
     for pattern in exclude_patterns {
         if pattern.starts_with('*') && pattern.ends_with('*') {
             let inner = &pattern[1..pattern.len() - 1];
@@ -381,7 +467,7 @@ fn should_skip_entry(entry: &walkdir::DirEntry, exclude_patterns: &[String]) -> 
             if path_str.starts_with(prefix) {
                 return true;
             }
-        } else if path_str.contains(pattern.as_str()) {
+        } else if path_str.contains(pattern) {
             return true;
         }
     }
@@ -899,5 +985,49 @@ mod tests {
         assert!(!watcher.should_exclude(Path::new("file.tmp")));
         assert!(!watcher.should_exclude(Path::new("readme.md")));
         assert!(!watcher.should_exclude(Path::new("README.MD")));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_suffix() {
+        let patterns = vec!["*.tmp".to_string(), "*.log".to_string()];
+
+        assert!(matches_exclude_patterns("file.tmp", &patterns));
+        assert!(matches_exclude_patterns("C:\\Users\\test.log", &patterns));
+        assert!(!matches_exclude_patterns("file.txt", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_prefix() {
+        let patterns = vec!["temp*".to_string()];
+
+        assert!(matches_exclude_patterns("temp_file.txt", &patterns));
+        assert!(matches_exclude_patterns("temporary", &patterns));
+        assert!(!matches_exclude_patterns("file_temp.txt", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_contains() {
+        let patterns = vec!["*cache*".to_string()];
+
+        assert!(matches_exclude_patterns("my_cache_dir", &patterns));
+        assert!(matches_exclude_patterns("C:\\cache\\file.txt", &patterns));
+        assert!(!matches_exclude_patterns("file.txt", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_exact_substring() {
+        let patterns = vec!["node_modules".to_string()];
+
+        assert!(matches_exclude_patterns("C:\\project\\node_modules\\pkg", &patterns));
+        assert!(matches_exclude_patterns("node_modules", &patterns));
+        assert!(!matches_exclude_patterns("C:\\project\\modules", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_empty() {
+        let patterns: Vec<String> = vec![];
+
+        assert!(!matches_exclude_patterns("any_file.txt", &patterns));
+        assert!(!matches_exclude_patterns("", &patterns));
     }
 }

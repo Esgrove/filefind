@@ -1,7 +1,7 @@
 //! System tray application for filefind daemon.
 //!
-//! This provides a minimal system tray interface for controlling the filefind
-//! daemon, including start/stop controls and status display.
+//! This provides a minimal system tray interface for controlling the filefind daemon,
+//! including start/stop controls and status display.
 
 // Hide console window on Windows release builds
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
@@ -13,13 +13,12 @@ use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-/// Filefind system tray application
 #[derive(Parser)]
 #[command(
     author,
     version,
     name = env!("CARGO_BIN_NAME"),
-    about = "Filefind system tray application"
+    about
 )]
 pub struct Args {}
 
@@ -32,6 +31,5 @@ fn main() -> Result<()> {
 
     tracing::info!("Starting filefind tray application");
 
-    // Run the tray application
     app::run()
 }

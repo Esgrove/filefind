@@ -1,7 +1,7 @@
 //! Main application logic for the system tray.
 //!
-//! This module handles the tray icon, menu creation, and event loop
-//! for the filefind tray application.
+//! This module handles the tray icon, menu creation,
+//! and event loop for the filefind tray application.
 
 use std::process::Command;
 use std::sync::Arc;
@@ -25,6 +25,8 @@ mod menu_ids {
     pub const OPEN_CLI: &str = "open_cli";
     pub const QUIT: &str = "quit";
 }
+
+const UPDATE_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Run the tray application.
 ///
@@ -50,13 +52,12 @@ pub fn run() -> Result<()> {
     let status_quit = should_quit;
     std::thread::spawn(move || {
         while !status_quit.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(UPDATE_INTERVAL);
         }
     });
 
     // Track last status update time
     let mut last_update = std::time::Instant::now();
-    let update_interval = Duration::from_secs(5);
 
     // Run the Windows message loop
     #[cfg(windows)]
@@ -74,7 +75,7 @@ pub fn run() -> Result<()> {
             }
 
             // Periodically update status
-            if last_update.elapsed() >= update_interval {
+            if last_update.elapsed() >= UPDATE_INTERVAL {
                 update_tray_status(&tray_icon, &ipc_client);
                 last_update = std::time::Instant::now();
             }
@@ -206,9 +207,9 @@ fn create_menu() -> Result<Menu> {
     let status_item = MenuItem::with_id(menu_ids::STATUS, "Status: Unknown", false, None);
 
     // Control items
-    let start_item = MenuItem::with_id(menu_ids::START, "Start Daemon", true, None);
-    let stop_item = MenuItem::with_id(menu_ids::STOP, "Stop Daemon", true, None);
-    let rescan_item = MenuItem::with_id(menu_ids::RESCAN, "Rescan Now", true, None);
+    let start_item = MenuItem::with_id(menu_ids::START, "Start daemon", true, None);
+    let stop_item = MenuItem::with_id(menu_ids::STOP, "Stop daemon", true, None);
+    let rescan_item = MenuItem::with_id(menu_ids::RESCAN, "Rescan", true, None);
 
     // Utility items
     let open_cli_item = MenuItem::with_id(menu_ids::OPEN_CLI, "Open Search CLI", true, None);
@@ -340,18 +341,6 @@ fn open_cli() -> Result<()> {
             .context("Failed to open CLI")?;
     }
 
-    #[cfg(not(windows))]
-    {
-        let terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"];
-        for terminal in terminals {
-            if Command::new(terminal).args(["-e", "filefind"]).spawn().is_ok() {
-                return Ok(());
-            }
-        }
-        anyhow::bail!("Could not find a terminal emulator");
-    }
-
-    #[cfg(windows)]
     Ok(())
 }
 

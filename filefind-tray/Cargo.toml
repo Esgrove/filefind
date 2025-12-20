@@ -1,6 +1,6 @@
 [package]
 name = "filefind-tray"
-description = "System tray application for filefind daemon"
+description = "Filefind system tray application"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

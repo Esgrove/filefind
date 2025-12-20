@@ -355,27 +355,66 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
             }
         }
 
-        // Scan UNC paths using directory walking (no drive letter for MFT)
-        for scan_path in &unc_paths {
-            let path_start = Instant::now();
+        // Scan UNC paths in parallel using directory walking (no drive letter for MFT)
+        if !unc_paths.is_empty() {
+            print_info!("Scanning {} UNC path(s) in parallel...", unc_paths.len());
+            let unc_start = Instant::now();
 
-            print_info!("Scanning {} (UNC path)...", scan_path.display());
+            // Scan all UNC paths in parallel
+            let exclude_patterns = config.daemon.exclude.clone();
+            let scan_tasks: Vec<_> = unc_paths
+                .iter()
+                .map(|scan_path| {
+                    let path = scan_path.clone();
+                    let exclude = exclude_patterns.clone();
+                    async move {
+                        let start = Instant::now();
+                        let result = scan_directory(&path, &exclude).await;
+                        (path, result, start.elapsed())
+                    }
+                })
+                .collect();
 
-            match scan_directory_to_db(database, scan_path, &config.daemon.exclude).await {
-                Ok(count) => {
-                    let elapsed = path_start.elapsed();
-                    print_success!(
-                        "  {} - {} entries in {:.2}s",
-                        scan_path.display(),
-                        format_number(count as u64),
-                        elapsed.as_secs_f64()
-                    );
-                    total_entries += count;
-                }
-                Err(error) => {
-                    print_error!("  {} - Failed: {}", scan_path.display(), error);
+            let results = futures::future::join_all(scan_tasks).await;
+
+            // Write results to database sequentially
+            for (scan_path, scan_result, elapsed) in results {
+                match scan_result {
+                    Ok(scan_entries) => {
+                        // Determine volume type and create volume entry
+                        let volume_type = filefind::types::VolumeType::Network;
+                        let volume_info = filefind::types::IndexedVolume::new(
+                            format!("path:{}", scan_path.display()),
+                            scan_path.to_string_lossy().into_owned(),
+                            volume_type,
+                        );
+                        let volume_id = database.upsert_volume(&volume_info)?;
+
+                        // Convert and insert entries
+                        let file_entries: Vec<_> = scan_entries
+                            .iter()
+                            .map(|entry| entry.to_file_entry(volume_id))
+                            .collect();
+
+                        let count = file_entries.len();
+                        database.insert_files_batch(&file_entries)?;
+
+                        print_success!(
+                            "  {} - {} entries in {:.2}s",
+                            scan_path.display(),
+                            format_number(count as u64),
+                            elapsed.as_secs_f64()
+                        );
+                        total_entries += count;
+                    }
+                    Err(error) => {
+                        print_error!("  {} - Failed: {}", scan_path.display(), error);
+                    }
                 }
             }
+
+            let unc_elapsed = unc_start.elapsed();
+            print_info!("  UNC paths completed in {:.2}s total", unc_elapsed.as_secs_f64());
         }
     }
 
