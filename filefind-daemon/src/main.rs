@@ -80,6 +80,13 @@ enum Command {
 
     /// Detect available drives and their types
     Detect,
+
+    /// Delete the database and start fresh
+    Reset {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -123,6 +130,7 @@ fn main() -> Result<()> {
             daemon::detect_drives();
             Ok(())
         }
+        Some(Command::Reset { force }) => reset_database(force, &config),
         None => {
             // Default: show status.
             daemon::show_status(&config)
@@ -166,6 +174,35 @@ fn init_logging(verbose: bool, foreground: bool) -> Result<()> {
 
         tracing::info!("Logging to {}", log_dir.display());
     }
+
+    Ok(())
+}
+
+/// Delete the database file.
+fn reset_database(force: bool, config: &Config) -> Result<()> {
+    let database_path = config.database_path();
+
+    if !database_path.exists() {
+        println!("Database does not exist at: {}", database_path.display());
+        return Ok(());
+    }
+
+    if !force {
+        println!("This will delete the database at: {}", database_path.display());
+        print!("Are you sure? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted");
+            return Ok(());
+        }
+    }
+
+    std::fs::remove_file(&database_path).context("Failed to delete database")?;
+    println!("Database deleted: {}", database_path.display());
 
     Ok(())
 }
