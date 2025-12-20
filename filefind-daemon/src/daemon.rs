@@ -798,8 +798,7 @@ pub fn stop_daemon() {
 
 /// Show daemon status.
 pub fn show_status(config: &Config) -> Result<()> {
-    println!("{}", "Filefind Daemon Status".bold());
-    println!();
+    println!("{}", "Filefind daemon status".bold());
 
     let client = IpcClient::new();
 
@@ -807,7 +806,7 @@ pub fn show_status(config: &Config) -> Result<()> {
     if let Ok(status) = client.get_status() {
         let state_str = match status.state {
             DaemonStateInfo::Running => "running".green(),
-            DaemonStateInfo::Scanning => "scanning".yellow(),
+            DaemonStateInfo::Scanning => "scanning".cyan(),
             DaemonStateInfo::Starting => "starting".yellow(),
             DaemonStateInfo::Stopping => "stopping".yellow(),
             DaemonStateInfo::Stopped => "stopped".red(),

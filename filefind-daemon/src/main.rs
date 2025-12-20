@@ -21,72 +21,70 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Background file indexing daemon for filefind.
+/// Background file indexing daemon for filefind
 #[derive(Parser)]
-#[command(author, version, name = env!("CARGO_BIN_NAME"), about = "Background file indexing daemon")]
+#[command(about, author, version, name = env!("CARGO_BIN_NAME"))]
 struct Args {
-    /// Subcommand to execute.
+    /// Subcommand to execute
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Generate shell completion.
-    #[arg(long, value_name = "SHELL")]
+    /// Generate shell completion
+    #[arg(short = 'C', long, value_name = "SHELL")]
     completion: Option<Shell>,
 
-    /// Print verbose output.
+    /// Print verbose output
     #[arg(short, long, global = true)]
     verbose: bool,
 }
 
-/// Daemon subcommands.
 #[derive(Subcommand)]
 enum Command {
-    /// Start the daemon and begin indexing.
+    /// Start the daemon and begin indexing
     Start {
-        /// Run in foreground instead of daemonizing.
+        /// Run in foreground instead of daemonizing
         #[arg(short, long)]
         foreground: bool,
 
-        /// Force a full rescan of all volumes.
+        /// Force a full rescan of all volumes
         #[arg(short, long)]
         rescan: bool,
     },
 
-    /// Stop the running daemon.
+    /// Stop the running daemon
     Stop,
 
-    /// Check daemon status.
+    /// Check daemon status
     Status,
 
-    /// Perform a one-time scan without starting the daemon.
+    /// Perform a one-time scan without starting the daemon
     Scan {
         /// Specific path to scan (defaults to all configured drives).
         #[arg(value_hint = clap::ValueHint::DirPath)]
         path: Option<PathBuf>,
 
-        /// Force a full rescan even if already indexed.
+        /// Force a full rescan even if already indexed
         #[arg(short, long)]
         force: bool,
     },
 
-    /// Show index statistics.
+    /// Show index statistics
     Stats,
 
-    /// List indexed volumes.
+    /// List indexed volumes
     Volumes {
-        /// Show detailed information.
+        /// Show detailed information
         #[arg(short, long)]
         detailed: bool,
     },
 
-    /// Detect available drives and their types.
+    /// Detect available drives and their types
     Detect,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Handle shell completion generation.
     if let Some(shell) = args.completion {
         clap_complete::generate(
             shell,
