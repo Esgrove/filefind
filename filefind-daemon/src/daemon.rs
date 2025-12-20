@@ -710,24 +710,62 @@ pub fn start_daemon(foreground: bool, rescan: bool, config: &Config) -> Result<(
             daemon.run().await
         })
     } else {
-        // TODO: Implement proper daemonization on Windows
-        // For now, just run in foreground
-        print_warning!("Background daemon mode not yet implemented. Running in foreground.");
-        print_info!("Use 'filefindd start -f' for foreground mode.");
-
-        tokio::runtime::Runtime::new()?.block_on(async {
-            let shutdown = daemon.shutdown_handle();
-            tokio::spawn(async move {
-                if let Err(error) = tokio::signal::ctrl_c().await {
-                    error!("Failed to listen for Ctrl+C: {}", error);
-                }
-                info!("Received Ctrl+C, shutting down...");
-                shutdown.store(true, Ordering::Relaxed);
-            });
-
-            daemon.run().await
-        })
+        // Spawn a detached background process
+        spawn_background_daemon(rescan)?;
+        Ok(())
     }
+}
+
+/// Spawn the daemon as a detached background process.
+///
+/// This function spawns a new instance of the daemon executable with the `-f` (foreground)
+/// flag, but detached from the current console. The spawned process runs independently
+/// and survives after this process exits.
+///
+/// # Platform Support
+///
+/// - **Windows**: Uses `DETACHED_PROCESS` and `CREATE_NO_WINDOW` creation flags
+/// - **Unix**: Uses `setsid` to create a new session (not yet implemented)
+#[cfg(windows)]
+fn spawn_background_daemon(rescan: bool) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    // Windows process creation flags
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
+
+    let mut command = Command::new(&exe_path);
+    command.arg("start").arg("-f"); // Run in foreground mode in the detached process
+
+    if rescan {
+        command.arg("--rescan");
+    }
+
+    // Detach from console and create without a window
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+
+    let child = command.spawn().context("Failed to spawn background daemon process")?;
+
+    print_success!("Daemon started in background (PID: {})", child.id());
+    print_info!("Use 'filefindd status' to check daemon status");
+    print_info!("Use 'filefindd stop' to stop the daemon");
+
+    Ok(())
+}
+
+/// Spawn the daemon as a detached background process (non-Windows stub).
+#[cfg(not(windows))]
+fn spawn_background_daemon(_rescan: bool) -> Result<()> {
+    // On Unix, we would use fork() or nohup-style daemonization
+    // For now, just print a message suggesting foreground mode
+    print_warning!("Background daemon mode not implemented on this platform.");
+    print_info!("Use 'filefindd start -f' for foreground mode.");
+    print_info!("Or use 'nohup filefindd start -f &' to run in background.");
+    Ok(())
 }
 
 /// Stop the running daemon.

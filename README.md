@@ -40,8 +40,11 @@ This project is organized as a Cargo workspace with multiple crates:
 ### Start the daemon
 
 ```shell
-# Start indexing and monitoring
+# Start in background (spawns detached process)
 filefindd start
+
+# Start in foreground (stays attached to terminal)
+filefindd start -f
 
 # Check daemon status
 filefindd status
@@ -49,6 +52,32 @@ filefindd status
 # Stop the daemon
 filefindd stop
 ```
+
+### Auto-start on login (Windows Scheduled Task)
+
+To have filefind start automatically when you log in, create a scheduled task:
+
+1. Open Task Scheduler (`taskschd.msc`)
+2. Click "Create Basic Task..."
+3. Name: `filefind daemon`
+4. Trigger: "When I log on"
+5. Action: "Start a program"
+6. Program: `C:\Users\<username>\.cargo\bin\filefindd.exe`
+7. Arguments: `start -f`
+8. Finish and optionally check "Open Properties" to:
+    - Enable "Run with highest privileges" (required for MFT/USN access)
+    - Under Conditions, uncheck "Start only if on AC power"
+
+Or via PowerShell (run as Administrator):
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.cargo\bin\filefindd.exe" -Argument "start -f"
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "filefind daemon" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
+```
+
+The daemon can still be stopped anytime using `filefindd stop` or the tray application.
 
 ### Search for files
 
