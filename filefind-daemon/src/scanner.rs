@@ -320,15 +320,13 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
 
             match scan_ntfs_volume_filtered(database, *drive_letter, paths, force) {
                 Ok(count) => {
-                    if verbose {
-                        let elapsed = path_start.elapsed();
-                        print_success!(
-                            "  {}:\\ (filtered) - {} entries in {:.2}s",
-                            drive_letter,
-                            format_number(count as u64),
-                            elapsed.as_secs_f64()
-                        );
-                    }
+                    let elapsed = path_start.elapsed();
+                    info!(
+                        "{}: Scanned {} entries in {:.2}s",
+                        drive_letter,
+                        format_number(count as u64),
+                        elapsed.as_secs_f64()
+                    );
                     total_entries += count;
                 }
                 Err(error) => {
