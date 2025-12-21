@@ -335,6 +335,8 @@ pub async fn scan_directory_with_concurrency(
     exclude_patterns: &[String],
     max_concurrency: usize,
 ) -> Result<Vec<ScanEntry>> {
+    info!("{} Starting file scan", root.display());
+
     let root = root.to_path_buf();
     let exclude_patterns: Arc<[String]> = exclude_patterns.to_vec().into();
     let entries: Arc<tokio::sync::Mutex<Vec<ScanEntry>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -390,8 +392,6 @@ pub async fn scan_directory_with_concurrency(
     let mut result = Arc::try_unwrap(entries)
         .expect("All references should be dropped")
         .into_inner();
-
-    info!("Scanned {} entries from {} (parallel)", result.len(), root.display());
 
     // Sort by path for consistent ordering
     result.sort_by(|a, b| a.path.cmp(&b.path));

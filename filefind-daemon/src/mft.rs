@@ -121,7 +121,7 @@ impl MftScanner {
             .context("Failed to open volume for MFT access")?
         };
 
-        info!("Opened volume {}:\\ for MFT scanning", drive_letter);
+        debug!("Opened volume {drive_letter}: for MFT scanning");
 
         Ok(Self {
             drive_letter,
@@ -205,12 +205,12 @@ impl MftScanner {
     /// Returns an error if the MFT cannot be read.
     #[cfg(windows)]
     pub fn scan_filtered(&self, path_filters: &[String]) -> Result<Vec<FileEntry>> {
-        info!("Starting MFT scan for {}:\\", self.drive_letter);
+        info!("{}: Starting MFT scan", self.drive_letter);
 
         if path_filters.is_empty() {
-            info!("No path filters, returning all entries");
+            debug!("No path filters, returning all entries");
         } else {
-            info!("Filtering to {} path(s): {:?}", path_filters.len(), path_filters);
+            debug!("Filtering to {} path(s): {:?}", path_filters.len(), path_filters);
         }
 
         // Get NTFS volume data
@@ -218,15 +218,15 @@ impl MftScanner {
         let total_mft_records =
             volume_data.MftValidDataLength as u64 / u64::from(volume_data.BytesPerFileRecordSegment);
 
-        info!("MFT contains approximately {} records", total_mft_records);
+        debug!("MFT contains approximately {} records", total_mft_records);
 
         // Read all MFT entries
         let mft_entries = self.enumerate_mft_entries();
-        info!("Read {} MFT entries", mft_entries.len());
+        debug!("Read {} MFT entries", mft_entries.len());
 
         // Build directory tree and resolve full paths
         let file_entries = self.resolve_paths(&mft_entries);
-        info!("Resolved {} file entries with full paths", file_entries.len());
+        debug!("Resolved {} file entries with paths", file_entries.len());
 
         // Filter out system directories that should never be indexed
         let file_entries: Vec<FileEntry> = file_entries
@@ -240,6 +240,7 @@ impl MftScanner {
 
         // Filter entries if path filters are specified
         if path_filters.is_empty() {
+            info!("{}: Found {} file entries", self.drive_letter, file_entries.len());
             Ok(file_entries)
         } else {
             let filtered: Vec<FileEntry> = file_entries
@@ -252,7 +253,7 @@ impl MftScanner {
                 })
                 .collect();
 
-            info!("Filtered to {} entries matching path filters", filtered.len());
+            info!("{}: Filtered to {} file entries", self.drive_letter, filtered.len());
             Ok(filtered)
         }
     }
@@ -627,7 +628,7 @@ pub fn detect_ntfs_volumes() -> Vec<char> {
                 .to_uppercase();
 
             if fs_name == "NTFS" {
-                info!("Detected local NTFS volume: {letter}:\\");
+                debug!("Detected local NTFS volume: {letter}:");
                 volumes.push(letter);
             }
         }

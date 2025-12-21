@@ -168,18 +168,15 @@ impl Daemon {
     /// This initializes the database, performs an initial scan if needed,
     /// and starts monitoring for file changes.
     pub async fn start(&mut self) -> Result<()> {
+        info!("Starting filefind daemon");
         if self.state != DaemonState::Stopped {
-            print_warning!("Daemon is already {}", self.state);
+            warn!("Daemon is already {}", self.state);
             return Ok(());
         }
 
         self.state = DaemonState::Starting;
         self.ipc_state.state.store(DaemonStateInfo::Starting);
         self.shutdown.store(false, Ordering::Relaxed);
-
-        if self.verbose() {
-            print_info!("Starting filefind daemon...");
-        }
 
         // Start IPC server
         let ipc_receiver = spawn_ipc_server(Arc::clone(&self.ipc_state), Arc::clone(&self.shutdown));
@@ -191,10 +188,8 @@ impl Daemon {
             std::fs::create_dir_all(parent).context("Failed to create database directory")?;
         }
 
+        debug!("Opening database: {}", database_path.display());
         let database = Database::open(&database_path).context("Failed to open database")?;
-        if self.verbose() {
-            print_info!("Database: {}", database_path.display());
-        }
 
         self.database = Some(database);
 
@@ -205,10 +200,9 @@ impl Daemon {
 
         // Perform initial scan if requested or if database is empty
         if self.options.rescan || self.should_perform_initial_scan()? {
+            info!("Performing scan");
             self.ipc_state.state.store(DaemonStateInfo::Scanning);
-            if self.verbose() {
-                print_info!("Performing initial scan...");
-            }
+
             run_scan(None, self.options.rescan, &self.config).await?;
 
             // Update stats after scan
@@ -239,18 +233,15 @@ impl Daemon {
 
     /// Stop the daemon.
     pub fn stop(&mut self) {
+        info!("Stopping daemon");
         if self.state == DaemonState::Stopped {
-            print_warning!("Daemon is already stopped");
+            warn!("Daemon is already stopped");
             return;
         }
 
         self.state = DaemonState::Stopping;
         self.ipc_state.state.store(DaemonStateInfo::Stopping);
         self.shutdown.store(true, Ordering::Relaxed);
-
-        if self.verbose() {
-            print_info!("Stopping daemon...");
-        }
 
         // Stop all USN monitors
         for (drive_letter, monitor) in &self.volume_monitors {
@@ -264,6 +255,9 @@ impl Daemon {
         // Stop file watcher
         if let Some(ref watcher) = self.file_watcher {
             info!("Stopping file watcher for {} paths", watcher.watched_paths().len());
+            for path in watcher.watched_paths() {
+                info!("Stopping file watcher for {}", path.display());
+            }
             watcher.stop();
         }
 

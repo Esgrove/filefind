@@ -167,7 +167,7 @@ impl IpcServer {
     ///
     /// This runs in a separate task and handles incoming client connections.
     pub fn run_blocking(&self) {
-        info!("Starting IPC server...");
+        info!("Starting IPC server");
 
         #[cfg(windows)]
         {

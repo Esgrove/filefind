@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
-use colored::Colorize;
 use filefind::{
     Config, Database, FileEntry, PathType, classify_path, format_number, is_network_path, print_error, print_info,
     print_success, print_warning,
 };
+use tracing::{error, info};
 
 use crate::mft::{MftScanner, detect_ntfs_volumes};
 use crate::watcher::scan_directory;
@@ -195,7 +195,7 @@ pub async fn scan_single_path(database: &mut Database, scan_path: &Path, force: 
     };
 
     let elapsed = start_time.elapsed();
-    print_success!(
+    info!(
         "Indexed {} entries in {:.2}s",
         format_number(count as u64),
         elapsed.as_secs_f64()
@@ -296,7 +296,7 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
             local_paths_by_drive.remove(&drive_letter);
 
             if verbose {
-                print_info!("Scanning {}:\\ (full drive)...", drive_letter);
+                print_info!("Scanning {}: (full drive)...", drive_letter);
             }
             let count = scan_ntfs_drive(database, drive_letter, force);
             total_entries += count;
@@ -308,7 +308,7 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
 
             if verbose {
                 print_info!(
-                    "Scanning {} path(s) on {}:\\ using MFT with filtering...",
+                    "Scanning {} path(s) on {}: using MFT with filtering...",
                     paths.len(),
                     drive_letter
                 );
@@ -333,7 +333,7 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
                 }
                 Err(error) => {
                     if verbose {
-                        print_error!("  MFT scan failed for {}:\\: {}", drive_letter, error);
+                        print_error!("  MFT scan failed for {}: - {}", drive_letter, error);
                         print_info!("  Falling back to directory scan...");
                     }
 
@@ -369,8 +369,8 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
                 Ok(count) => {
                     if verbose {
                         let elapsed = path_start.elapsed();
-                        print_success!(
-                            "  {} - {} entries in {:.2}s (MFT)",
+                        info!(
+                            "{} - {} entries in {:.2}s (MFT)",
                             scan_path.display(),
                             format_number(count as u64),
                             elapsed.as_secs_f64()
@@ -388,8 +388,8 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
                         Ok(count) => {
                             if verbose {
                                 let elapsed = path_start.elapsed();
-                                print_success!(
-                                    "  {} - {} entries in {:.2}s",
+                                info!(
+                                    "{} - {} entries in {:.2}s",
                                     scan_path.display(),
                                     format_number(count as u64),
                                     elapsed.as_secs_f64()
@@ -450,9 +450,9 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
 
                         database.insert_files_batch(&file_entries)?;
 
-                        print_success!(
-                            "  {} {} entries in {:.2}s",
-                            scan_path.display().to_string().bold().magenta(),
+                        info!(
+                            "{} - {} entries in {:.2}s",
+                            scan_path.display(),
                             format_number(scan_entries.len() as u64),
                             elapsed.as_secs_f64()
                         );
@@ -460,19 +460,18 @@ pub async fn scan_configured_paths(database: &mut Database, force: bool, config:
                         total_entries += scan_entries.len();
                     }
                     Err(error) => {
-                        print_error!("  {} - Failed: {}", scan_path.display(), error);
+                        print_error!("{} - Failed: {}", scan_path.display(), error);
                     }
                 }
             }
 
             let unc_elapsed = unc_start.elapsed();
-            print_info!("  UNC paths completed in {:.2}s total", unc_elapsed.as_secs_f64());
+            info!("UNC paths completed in {:.2}s total", unc_elapsed.as_secs_f64());
         }
     }
 
     let total_elapsed = total_start.elapsed();
-    println!();
-    print_success!(
+    info!(
         "Total: {} entries indexed in {:.2}s",
         format_number(total_entries as u64),
         total_elapsed.as_secs_f64()
@@ -488,16 +487,16 @@ fn scan_ntfs_drive(database: &mut Database, drive_letter: char, force: bool) -> 
     match scan_ntfs_volume(database, drive_letter, force) {
         Ok(count) => {
             let elapsed = drive_start.elapsed();
-            print_success!(
-                "{}: {} entries in {:.2}s",
-                drive_letter.to_string().bold().magenta(),
+            info!(
+                "{}: Scanned {} entries in {:.2}s",
+                drive_letter,
                 format_number(count as u64),
                 elapsed.as_secs_f64()
             );
             count
         }
         Err(error) => {
-            print_error!("  {}:\\ - Failed: {}", drive_letter, error);
+            error!("{}: - Failed: {}", drive_letter, error);
             0
         }
     }

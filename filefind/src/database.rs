@@ -306,7 +306,6 @@ impl Database {
     /// Returns an error if the database operation fails.
     pub fn insert_files_batch(&mut self, files: &[FileEntry]) -> Result<usize> {
         let transaction = self.connection.transaction()?;
-
         {
             let mut statement = transaction.prepare(
                 r"
@@ -340,7 +339,7 @@ impl Database {
         }
 
         transaction.commit()?;
-        info!("Inserted {} files in batch", files.len());
+        info!("Inserted {} files to database", files.len());
         Ok(files.len())
     }
 

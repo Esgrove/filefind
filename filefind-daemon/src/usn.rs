@@ -456,7 +456,7 @@ impl UsnMonitor {
         let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
-            info!("Started USN Journal monitoring for {}:\\", self.drive_letter);
+            info!("Started USN Journal monitoring for {}:", self.drive_letter);
 
             while !self.shutdown.load(Ordering::Relaxed) {
                 match self.read_changes() {
@@ -477,7 +477,7 @@ impl UsnMonitor {
                 tokio::time::sleep(poll_interval).await;
             }
 
-            info!("Stopped USN Journal monitoring for {}:\\", self.drive_letter);
+            info!("Stopped USN Journal monitoring for {}:", self.drive_letter);
         });
 
         (receiver, shutdown)
