@@ -29,10 +29,6 @@ struct Args {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Generate shell completion
-    #[arg(short = 'C', long, value_name = "SHELL")]
-    completion: Option<Shell>,
-
     /// Set the log level
     #[arg(short = 'l', long = "log", value_enum, global = true)]
     log_level: Option<LogLevel>,
@@ -91,6 +87,17 @@ enum Command {
         #[arg(short, long)]
         force: bool,
     },
+
+    /// Generate shell completion scripts
+    Completion {
+        /// Shell to generate completion for
+        #[arg(value_enum)]
+        shell: Shell,
+
+        /// Install the completion script to the appropriate location
+        #[arg(short = 'I', long)]
+        install: bool,
+    },
 }
 
 /// Apply CLI arguments to the config, with CLI args taking precedence.
@@ -106,14 +113,8 @@ const fn apply_cli_args(config: &mut Config, log_level: Option<LogLevel>, verbos
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    if let Some(shell) = args.completion {
-        clap_complete::generate(
-            shell,
-            &mut Args::command(),
-            env!("CARGO_BIN_NAME"),
-            &mut std::io::stdout(),
-        );
-        return Ok(());
+    if let Some(Command::Completion { shell, install }) = &args.command {
+        return filefind::generate_shell_completion(*shell, Args::command(), *install, env!("CARGO_BIN_NAME"));
     }
 
     // Determine if we're running in foreground mode
@@ -147,6 +148,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Reset { force }) => reset_database(force, &config),
+        Some(Command::Completion { .. }) => unreachable!("Handled above"),
         None => {
             // Default: show status.
             daemon::show_status(&config)

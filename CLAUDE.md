@@ -103,7 +103,7 @@ Remember to update the example config file when adding new config options.
 - `paths` - Drives, directories, or network paths to index
 - `exclude` - Directories to exclude from indexing
 - `exclude_patterns` - Glob patterns for files to exclude
-- `scan_interval` - Rescan interval for non-NTFS drives (seconds)
+- `scan_interval_seconds` - Rescan interval for non-NTFS drives in seconds
 - `log_level` - Log level: error, warn, info, debug, trace
 - `verbose` - Enable verbose output
 - `database_path` - Custom database file location
@@ -178,5 +178,5 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
 
 - Minimal UI for daemon control
 - Shows daemon status via icon color (green=running, gray=stopped, orange=scanning)
-- Menu items: Start, Stop, Rescan, Open CLI, Quit
+- Menu items: Start, Stop, Rescan, About, Quit
 - Tooltip shows indexed file/directory counts

@@ -60,9 +60,9 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
 
-    /// Rescan interval for non-NTFS/network drives (seconds).
-    #[serde(default = "default_scan_interval")]
-    pub scan_interval: u64,
+    /// Rescan interval for non-NTFS/network drives in seconds.
+    #[serde(default = "default_scan_interval_seconds", alias = "scan_interval")]
+    pub scan_interval_seconds: u64,
 
     /// Log level.
     #[serde(default)]
@@ -174,7 +174,7 @@ impl Default for DaemonConfig {
                 "C:\\System Volume Information".to_string(),
             ],
             exclude_patterns: Vec::new(),
-            scan_interval: default_scan_interval(),
+            scan_interval_seconds: default_scan_interval_seconds(),
             log_level: LogLevel::default(),
             verbose: false,
             database_path: None,
@@ -260,7 +260,7 @@ impl std::str::FromStr for OutputFormat {
     }
 }
 
-const fn default_scan_interval() -> u64 {
+const fn default_scan_interval_seconds() -> u64 {
     3600
 }
 
@@ -286,7 +286,7 @@ mod tests {
     fn test_default_config() {
         let config = UserConfig::default();
         assert!(config.daemon.paths.is_empty());
-        assert_eq!(config.daemon.scan_interval, 3600);
+        assert_eq!(config.daemon.scan_interval_seconds, 3600);
         assert_eq!(config.cli.max_results, 100);
         assert!(config.cli.color);
         assert_eq!(config.cli.format, OutputFormat::Grouped);
@@ -299,7 +299,7 @@ mod tests {
         assert!(config.paths.is_empty());
         assert!(!config.exclude.is_empty()); // Has default exclusions
         assert!(config.exclude_patterns.is_empty());
-        assert_eq!(config.scan_interval, 3600);
+        assert_eq!(config.scan_interval_seconds, 3600);
         assert_eq!(config.log_level, LogLevel::Info);
         assert!(!config.verbose);
         assert!(config.database_path.is_none());
@@ -333,7 +333,7 @@ mod tests {
 
         // Should return default config
         assert!(config.daemon.paths.is_empty());
-        assert_eq!(config.daemon.scan_interval, 3600);
+        assert_eq!(config.daemon.scan_interval_seconds, 3600);
         assert_eq!(config.cli.max_results, 100);
     }
 
@@ -393,7 +393,7 @@ mod tests {
 [daemon]
 paths = ["C:\\", "D:\\"]
 exclude = ["C:\\Windows", "C:\\Temp"]
-scan_interval = 7200
+scan_interval_seconds = 7200
 log_level = "debug"
 
 [cli]
@@ -410,7 +410,7 @@ show_hidden = true
 
         assert_eq!(config.daemon.paths, vec!["C:\\", "D:\\"]);
         assert_eq!(config.daemon.exclude, vec!["C:\\Windows", "C:\\Temp"]);
-        assert_eq!(config.daemon.scan_interval, 7200);
+        assert_eq!(config.daemon.scan_interval_seconds, 7200);
         assert_eq!(config.daemon.log_level, LogLevel::Debug);
         assert_eq!(config.cli.format, OutputFormat::Grouped);
         assert_eq!(config.cli.max_results, 50);
@@ -441,7 +441,7 @@ max_results = 200
         assert_eq!(config.cli.max_results, 200);
 
         // Default values
-        assert_eq!(config.daemon.scan_interval, 3600);
+        assert_eq!(config.daemon.scan_interval_seconds, 3600);
         assert_eq!(config.cli.format, OutputFormat::Grouped);
         assert!(config.cli.color);
     }
@@ -469,7 +469,7 @@ max_results = 200
 
         // Should use defaults
         assert!(config.daemon.paths.is_empty());
-        assert_eq!(config.daemon.scan_interval, 3600);
+        assert_eq!(config.daemon.scan_interval_seconds, 3600);
     }
 
     #[test]
@@ -524,8 +524,8 @@ exclude_patterns = ["*.tmp", "*.bak", "~*"]
     }
 
     #[test]
-    fn test_default_scan_interval_value() {
-        assert_eq!(default_scan_interval(), 3600);
+    fn test_default_scan_interval_seconds_value() {
+        assert_eq!(default_scan_interval_seconds(), 3600);
     }
 
     #[test]
@@ -563,7 +563,7 @@ exclude_patterns = ["*.tmp", "*.bak", "~*"]
         let original = DaemonConfig::default();
         let cloned = original.clone();
 
-        assert_eq!(original.scan_interval, cloned.scan_interval);
+        assert_eq!(original.scan_interval_seconds, cloned.scan_interval_seconds);
         assert_eq!(original.log_level, cloned.log_level);
     }
 
@@ -581,7 +581,10 @@ exclude_patterns = ["*.tmp", "*.bak", "~*"]
         let original = UserConfig::default();
         let cloned = original.clone();
 
-        assert_eq!(original.daemon.scan_interval, cloned.daemon.scan_interval);
+        assert_eq!(
+            original.daemon.scan_interval_seconds,
+            cloned.daemon.scan_interval_seconds
+        );
         assert_eq!(original.cli.max_results, cloned.cli.max_results);
     }
 

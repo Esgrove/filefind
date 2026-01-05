@@ -9,13 +9,16 @@ use anyhow::{Context, Result};
 use filefind::config::{OutputFormat, UserConfig};
 use regex::Regex;
 
-use crate::{Args, OutputFormatArg};
+use crate::{Args, Command, OutputFormatArg};
 
 /// Combined configuration from user config and CLI arguments.
 ///
 /// CLI arguments take precedence over user config.
 #[allow(clippy::struct_excessive_bools)]
 pub struct CliConfig {
+    /// Subcommand to execute
+    pub command: Option<Command>,
+
     /// Search patterns
     pub patterns: Vec<String>,
 
@@ -39,12 +42,6 @@ pub struct CliConfig {
 
     /// Output format
     pub output_format: OutputFormat,
-
-    /// Show index statistics
-    pub show_stats: bool,
-
-    /// List all indexed volumes
-    pub list_volumes: bool,
 
     /// Print verbose output
     pub verbose: bool,
@@ -104,6 +101,7 @@ impl CliConfig {
         let case_sensitive = args.case || user_config.cli.case_sensitive;
 
         Ok(Self {
+            command: args.command,
             patterns,
             regex: args.regex,
             case_sensitive,
@@ -112,8 +110,6 @@ impl CliConfig {
             dirs_only: args.dirs,
             files_per_dir: args.limit,
             output_format,
-            show_stats: args.stats,
-            list_volumes: args.list,
             verbose: args.verbose,
             database_path: user_config.database_path(),
         })
@@ -165,6 +161,7 @@ mod tests {
     /// Helper to create Args with patterns for testing.
     fn args_with_patterns(patterns: Vec<&str>) -> Args {
         Args {
+            command: None,
             patterns: patterns.into_iter().map(String::from).collect(),
             regex: false,
             case: false,
@@ -173,9 +170,6 @@ mod tests {
             dirs: false,
             limit: 20,
             output: None,
-            stats: false,
-            list: false,
-            completion: None,
             verbose: false,
             exact: false,
         }

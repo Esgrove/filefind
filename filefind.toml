@@ -33,8 +33,8 @@ exclude = [
 # File patterns to exclude (glob syntax)
 # exclude_patterns = ["*.tmp", "~$*", "Thumbs.db"]
 
-# Rescan interval for non-NTFS/network drives (seconds)
-# scan_interval = 3600
+# Rescan interval for non-NTFS/network drives in seconds
+# scan_interval_seconds = 3600
 
 # Log level: "error", "warn", "info", "debug", "trace"
 # log_level = "info"

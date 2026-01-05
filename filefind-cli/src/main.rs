@@ -8,13 +8,13 @@ use std::time::Instant;
 
 use anyhow::Result;
 use anyhow::bail;
-use clap::{CommandFactory, Parser, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use colored::Colorize;
 
 use filefind::config::OutputFormat;
 use filefind::database::Database;
-use filefind::{format_size, print_bold_magenta, print_error};
+use filefind::{format_size, generate_shell_completion, print_bold_magenta, print_error};
 
 use crate::config::{CliConfig, DisplayOptions};
 
@@ -28,6 +28,10 @@ use crate::config::{CliConfig, DisplayOptions};
     about = "Fast file search using the filefind index"
 )]
 pub struct Args {
+    /// Subcommand to execute
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Search patterns (supports glob patterns like *.txt).
     pub patterns: Vec<String>,
 
@@ -59,18 +63,6 @@ pub struct Args {
     #[arg(short = 'o', long, value_enum)]
     pub output: Option<OutputFormatArg>,
 
-    /// Show index statistics
-    #[arg(short = 's', long)]
-    pub stats: bool,
-
-    /// List all indexed volumes
-    #[arg(short = 'l', long)]
-    pub list: bool,
-
-    /// Generate shell completion
-    #[arg(short = 'C', long, name = "SHELL")]
-    pub completion: Option<Shell>,
-
     /// Print verbose output.
     #[arg(short = 'v', long)]
     pub verbose: bool,
@@ -78,6 +70,27 @@ pub struct Args {
     /// Exact pattern matches only
     #[arg(short = 'e', long)]
     pub exact: bool,
+}
+
+/// Subcommands for the CLI.
+#[derive(Subcommand)]
+pub enum Command {
+    /// Show index statistics
+    Stats,
+
+    /// List all indexed volumes
+    Volumes,
+
+    /// Generate shell completion scripts
+    Completion {
+        /// Shell to generate completion for
+        #[arg(value_enum)]
+        shell: Shell,
+
+        /// Install the completion script to the appropriate location
+        #[arg(short = 'I', long)]
+        install: bool,
+    },
 }
 
 /// Output format argument for CLI.
@@ -92,25 +105,15 @@ pub enum OutputFormatArg {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Handle shell completion generation
-    if let Some(shell) = args.completion {
-        clap_complete::generate(
-            shell,
-            &mut Args::command(),
-            env!("CARGO_BIN_NAME"),
-            &mut std::io::stdout(),
-        );
-        return Ok(());
+    // Handle completion subcommand early (no config needed)
+    if let Some(Command::Completion { shell, install }) = &args.command {
+        return generate_shell_completion(*shell, Args::command(), *install, env!("CARGO_BIN_NAME"));
     }
 
     // Build the final config from user config and CLI args
     let config = CliConfig::from_args(args)?;
 
-    run(&config)
-}
-
-/// Run the CLI with the given configuration.
-fn run(config: &CliConfig) -> Result<()> {
+    // Check database exists for all commands that need it
     if !config.database_path.exists() {
         print_error!("Database not found at: {}", config.database_path.display());
         bail!("Run the filefind daemon first to build the index");
@@ -118,17 +121,20 @@ fn run(config: &CliConfig) -> Result<()> {
 
     let database = Database::open(&config.database_path)?;
 
-    if config.show_stats {
-        return show_stats(&database);
+    // Handle subcommands
+    match &config.command {
+        Some(Command::Stats) => show_stats(&database),
+        Some(Command::Volumes) => list_volumes(&database),
+        Some(Command::Completion { .. }) => unreachable!("Handled above"),
+        None => run_search(&config, &database),
     }
+}
 
-    if config.list_volumes {
-        return list_volumes(&database);
-    }
-
+/// Run the search with the given configuration.
+fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     if config.patterns.is_empty() {
         print_error!("No search pattern provided");
-        bail!("Usage: filefind <pattern> [patterns...]\n       filefind --stats\n       filefind --list");
+        bail!("Usage: filefind <pattern> [patterns...]\n       filefind stats\n       filefind volumes");
     }
 
     let start_time = Instant::now();

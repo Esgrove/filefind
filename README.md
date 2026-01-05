@@ -116,7 +116,7 @@ Features:
 
 - **Status indicator**: Icon color shows daemon state (green=running, gray=stopped, orange=scanning)
 - **Tooltip**: Shows indexed file and directory counts
-- **Menu options**: Start, Stop, Rescan, Open CLI, Quit
+- **Menu options**: Start, Stop, Rescan, About, Quit
 
 The tray application can be added to Windows startup the same way as the daemon.
 
@@ -157,13 +157,18 @@ filefind -o grouped "*.mp4"
 filefind -n 10 "*.txt"
 
 # Show index statistics
-filefind -s
+filefind stats
 
 # List all indexed volumes
-filefind -l
+filefind volumes
 
 # Generate shell completion (bash, zsh, fish, powershell)
-filefind -C powershell > _filefind.ps1
+filefind completion powershell
+filefind completion bash
+
+# Install shell completion to standard location
+filefind completion powershell --install
+filefind completion bash --install
 ```
 
 ## Configuration
@@ -198,8 +203,8 @@ exclude = [
 # File patterns to exclude (glob syntax)
 exclude_patterns = ["*.tmp", "~$*", "Thumbs.db"]
 
-# Rescan interval for non-NTFS/network drives (seconds)
-scan_interval = 3600
+# Rescan interval for non-NTFS/network drives in seconds
+scan_interval_seconds = 3600
 
 # Log level: "error", "warn", "info", "debug", "trace"
 log_level = "info"

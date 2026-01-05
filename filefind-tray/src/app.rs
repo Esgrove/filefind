@@ -22,7 +22,6 @@ mod menu_ids {
     pub const START: &str = "start";
     pub const STOP: &str = "stop";
     pub const RESCAN: &str = "rescan";
-    pub const OPEN_CLI: &str = "open_cli";
     pub const QUIT: &str = "quit";
 }
 
@@ -174,12 +173,6 @@ fn handle_menu_event(
                 Err(error) => tracing::error!("Failed to trigger rescan: {}", error),
             }
         }
-        menu_ids::OPEN_CLI => {
-            tracing::info!("Opening CLI...");
-            if let Err(error) = open_cli() {
-                tracing::error!("Failed to open CLI: {}", error);
-            }
-        }
         menu_ids::QUIT => {
             tracing::info!("Quitting tray application");
             quit_flag.store(true, Ordering::Relaxed);
@@ -227,9 +220,6 @@ fn create_menu() -> Result<(Menu, MenuItem)> {
     let stop_item = MenuItem::with_id(menu_ids::STOP, "Stop daemon", true, None);
     let rescan_item = MenuItem::with_id(menu_ids::RESCAN, "Rescan", true, None);
 
-    // Utility items
-    let open_cli_item = MenuItem::with_id(menu_ids::OPEN_CLI, "Open Search CLI", true, None);
-
     // Quit item
     let quit_item = MenuItem::with_id(menu_ids::QUIT, "Quit", true, None);
 
@@ -255,8 +245,6 @@ fn create_menu() -> Result<(Menu, MenuItem)> {
     menu.append(&start_item)?;
     menu.append(&stop_item)?;
     menu.append(&rescan_item)?;
-    menu.append(&PredefinedMenuItem::separator())?;
-    menu.append(&open_cli_item)?;
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&about_item)?;
     menu.append(&quit_item)?;
@@ -391,19 +379,6 @@ fn start_daemon() -> Result<()> {
             .args(["start", "-f"])
             .spawn()
             .context("Failed to start daemon process")?;
-    }
-
-    Ok(())
-}
-
-/// Open the CLI search tool.
-fn open_cli() -> Result<()> {
-    #[cfg(windows)]
-    {
-        Command::new("cmd")
-            .args(["/C", "start", "", "cmd", "/K", "filefind"])
-            .spawn()
-            .context("Failed to open CLI")?;
     }
 
     Ok(())
