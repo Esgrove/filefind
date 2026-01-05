@@ -42,21 +42,22 @@ cargo test -p filefind
 ## Project Structure
 
 - `filefind/` - Shared library code
-    - `src/lib.rs` - Library root, re-exports
+    - `src/lib.rs` - Library root, re-exports, path utilities
     - `src/config.rs` - User configuration file handling
     - `src/database.rs` - SQLite database operations
     - `src/ipc.rs` - Inter-process communication for daemon control
     - `src/types.rs` - Common types and structures
 - `filefind-daemon/` - Background file monitoring service
-    - `src/main.rs` - Daemon entry point
+    - `src/main.rs` - Daemon entry point, CLI argument handling
     - `src/daemon.rs` - Core daemon logic and lifecycle
     - `src/ipc_server.rs` - IPC server for handling client commands
     - `src/mft.rs` - NTFS MFT reading
-    - `src/scanner.rs` - File scanning logic
+    - `src/scanner.rs` - File scanning logic (MFT and directory walking)
     - `src/usn.rs` - USN Journal monitoring
     - `src/watcher.rs` - File system watcher for non-NTFS drives
 - `filefind-cli/` - Command-line search interface
-    - `src/main.rs` - CLI entry point
+    - `src/main.rs` - CLI entry point and search logic
+    - `src/config.rs` - CLI configuration merging (user config + CLI args)
 - `filefind-tray/` - System tray application
     - `src/main.rs` - Tray app entry point
     - `src/app.rs` - Main application logic and event loop
@@ -97,6 +98,24 @@ User configuration is read from `~/.config/filefind.toml`.
 See `filefind.toml` in the repo root for an example.
 Remember to update the example config file when adding new config options.
 
+### Daemon Configuration Options
+
+- `paths` - Drives, directories, or network paths to index
+- `exclude` - Directories to exclude from indexing
+- `exclude_patterns` - Glob patterns for files to exclude
+- `scan_interval` - Rescan interval for non-NTFS drives (seconds)
+- `log_level` - Log level: error, warn, info, debug, trace
+- `verbose` - Enable verbose output
+- `database_path` - Custom database file location
+
+### CLI Configuration Options
+
+- `format` - Output format: "simple" or "grouped"
+- `max_results` - Maximum results to show
+- `color` - Enable colored output
+- `case_sensitive` - Case-sensitive search by default
+- `show_hidden` - Show hidden files in results
+
 ## Architecture Notes
 
 ### MFT Reading (NTFS drives)
@@ -104,6 +123,7 @@ Remember to update the example config file when adding new config options.
 - Requires administrator privileges
 - Reads Master File Table directly for fast initial indexing
 - Can index millions of files in seconds
+- Works with both full drives and specific directories
 
 ### USN Journal (NTFS drives)
 
@@ -116,6 +136,15 @@ Remember to update the example config file when adding new config options.
 - Falls back to `notify` crate (ReadDirectoryChangesW on Windows)
 - Traditional directory walking for initial scan
 - Real-time change notifications
+
+### Path Types
+
+The daemon supports multiple path types:
+
+- **Drive roots** (e.g., "C:", "D:") - Fast MFT scanning for entire drive
+- **Local directories** (e.g., "C:\\Users\\Documents") - MFT scanning filtered to path
+- **Mapped network drives** (e.g., "Z:") - MFT attempted first, falls back to walking
+- **UNC paths** (e.g., "\\\\server\\share") - Directory walking (no drive letter)
 
 ### Database
 
@@ -137,6 +166,13 @@ The IPC system has two parts:
 
 The server runs in a dedicated thread and communicates with the main daemon loop via tokio channels.
 Shared state (`IpcServerState`) uses atomic types to safely share status information between threads.
+
+### CLI Search Features
+
+- **Pattern expansion**: Dot-separated patterns like "some.name" automatically expand to also search "some name" and "somename"
+- **Glob patterns**: Supports `*` and `?` wildcards
+- **Regex search**: Full regex support with `-r` flag
+- **Exact matching**: Disable pattern expansion with `-e` flag
 
 ### System Tray Application
 

@@ -13,6 +13,7 @@ Indexes millions of files in seconds and keeps the database updated in real-time
 - **Network drive support**: Falls back to traditional scanning for non-NTFS drives
 - **Instant search**: Query millions of indexed files instantly
 - **Flexible search**: Supports glob patterns, regex, and fuzzy matching
+- **Smart pattern expansion**: Automatically searches for "some.name", "some name", and "somename"
 - **Background daemon**: Runs quietly, keeping the index up-to-date
 
 ## Components
@@ -47,11 +48,33 @@ filefindd start
 # Start in foreground (stays attached to terminal)
 filefindd start -f
 
+# Start with forced full rescan
+filefindd start -r
+
 # Check daemon status
 filefindd status
 
 # Stop the daemon
 filefindd stop
+
+# Trigger a rescan of all volumes
+filefindd scan
+
+# Scan a specific path
+filefindd scan "D:\Projects"
+
+# Show index statistics
+filefindd stats
+
+# List indexed volumes
+filefindd volumes
+filefindd volumes --detailed
+
+# Detect available drives and their types
+filefindd detect
+
+# Reset (delete) the database
+filefindd reset
 ```
 
 ### Auto-start on login (Windows Scheduled Task)
@@ -100,7 +123,7 @@ The tray application can be added to Windows startup the same way as the daemon.
 ### Search for files
 
 ```shell
-# Basic search
+# Basic search (auto-expands patterns: "some.name" also searches "some name" and "somename")
 filefind "document.pdf"
 
 # Glob pattern search
@@ -108,6 +131,12 @@ filefind "*.mp4"
 
 # Regex search
 filefind -r "IMG_\d{4}\.jpg"
+
+# Exact pattern matching (disable auto-expansion)
+filefind -e "some.name"
+
+# Case-sensitive search
+filefind -c "README"
 
 # Search in specific drives
 filefind -d C -d D "project"
@@ -118,8 +147,23 @@ filefind -f "config.toml"
 # Show only directories
 filefind -D "projects"
 
-# Detailed output with file sizes
-filefind -o detailed "*.mp4"
+# Simple output (just paths)
+filefind -o simple "*.mp4"
+
+# Grouped output (files grouped by directory, default)
+filefind -o grouped "*.mp4"
+
+# Limit files shown per directory
+filefind -n 10 "*.txt"
+
+# Show index statistics
+filefind -s
+
+# List all indexed volumes
+filefind -l
+
+# Generate shell completion (bash, zsh, fish, powershell)
+filefind -C powershell > _filefind.ps1
 ```
 
 ## Configuration
@@ -130,27 +174,51 @@ See `filefind.toml` in the repository root for an example configuration file.
 
 ```toml
 [daemon]
-# Drives to index (empty = all available NTFS drives)
-drives = ["C:", "D:", "E:"]
+# Paths to index (drives, directories, or network locations).
+#
+# Can include:
+# - Drive letters (e.g., "C:", "D:") - indexes entire drive using fast NTFS MFT scanning
+# - Specific directories (e.g., "C:\\Users", "D:\\Projects") - uses MFT scanning but
+#   only stores entries under the specified paths (fast AND selective)
+# - Mapped network drives (e.g., "Z:") - MFT scanning is attempted first; if not
+#   available (most NAS devices), falls back to directory walking automatically
+# - UNC paths (e.g., "\\\\server\\share") - uses directory walking (no drive letter)
+#
+# If empty or not specified, all available local NTFS drives will be auto-detected.
+# Network drives are NOT auto-detected - add them explicitly if needed.
+paths = ["C:", "D:", "E:"]
 
 # Directories to exclude from indexing
 exclude = [
     "C:\\Windows",
     "C:\\$Recycle.Bin",
+    "C:\\System Volume Information",
 ]
 
-# Update interval for non-NTFS drives (seconds)
+# File patterns to exclude (glob syntax)
+exclude_patterns = ["*.tmp", "~$*", "Thumbs.db"]
+
+# Rescan interval for non-NTFS/network drives (seconds)
 scan_interval = 3600
 
-[cli]
-# Default output format: "simple" or "detailed"
-format = "simple"
+# Log level: "error", "warn", "info", "debug", "trace"
+log_level = "info"
 
-# Maximum number of results to show
+[cli]
+# Default output format: "simple" (list of paths) or "grouped" (files grouped by directory)
+format = "grouped"
+
+# Maximum number of results to show (0 = unlimited)
 max_results = 100
 
 # Enable colored output
 color = true
+
+# Case-sensitive search by default
+case_sensitive = false
+
+# Show hidden files in results
+show_hidden = false
 ```
 
 ## How it works
@@ -172,6 +240,12 @@ efficiently detect new, modified, renamed, and deleted files.
 
 For network drives and non-NTFS file systems,
 filefind falls back to traditional directory scanning with file system watchers for real-time updates.
+
+### Pattern Expansion
+
+When searching without glob or regex mode, filefind automatically expands dot-separated patterns.
+For example, searching for "some.name" will also find "some name" and "somename".
+This helps match files regardless of naming convention. Use `-e` (exact) mode to disable this.
 
 ## Requirements
 
