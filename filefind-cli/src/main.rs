@@ -32,8 +32,12 @@ pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Search patterns (supports glob patterns like *.txt).
+    /// Search patterns (supports glob patterns like *.txt)
     pub patterns: Vec<String>,
+
+    /// Match all patterns (logical AND)
+    #[arg(short = 'a', long)]
+    pub all: bool,
 
     /// Use regex pattern for search
     #[arg(short = 'r', long)]
@@ -140,25 +144,13 @@ fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     let start_time = Instant::now();
 
     // Search with all patterns and combine results
-    let mut seen_paths: HashSet<String> = HashSet::new();
-    let mut results = Vec::new();
-
-    for pattern in &config.patterns {
-        let pattern_results = if config.regex {
-            database.search_by_regex(pattern, config.case_sensitive, usize::MAX)?
-        } else if pattern.contains('*') || pattern.contains('?') {
-            database.search_by_glob(pattern, usize::MAX)?
-        } else {
-            database.search_by_name(pattern, usize::MAX)?
-        };
-
-        // Deduplicate results across patterns
-        for entry in pattern_results {
-            if seen_paths.insert(entry.full_path.clone()) {
-                results.push(entry);
-            }
-        }
-    }
+    let results = if config.match_all {
+        // AND mode: find results that match ALL patterns
+        search_all_patterns(config, database)?
+    } else {
+        // OR mode (default): find results that match ANY pattern
+        search_any_pattern(config, database)?
+    };
 
     let search_duration = start_time.elapsed();
 
@@ -226,6 +218,92 @@ fn filter_by_drives(results: Vec<filefind::types::FileEntry>, drives: &[String])
             })
         })
         .collect()
+}
+
+/// Search for results matching ANY pattern (OR mode).
+fn search_any_pattern(config: &CliConfig, database: &Database) -> Result<Vec<filefind::types::FileEntry>> {
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut results = Vec::new();
+
+    for pattern in &config.patterns {
+        let pattern_results = if config.regex {
+            database.search_by_regex(pattern, config.case_sensitive, usize::MAX)?
+        } else if pattern.contains('*') || pattern.contains('?') {
+            database.search_by_glob(pattern, usize::MAX)?
+        } else {
+            database.search_by_name(pattern, usize::MAX)?
+        };
+
+        // Deduplicate results across patterns
+        for entry in pattern_results {
+            if seen_paths.insert(entry.full_path.clone()) {
+                results.push(entry);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Search for results matching ALL patterns (AND mode).
+///
+/// Uses SQL-level AND for efficient single-query search.
+fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<filefind::types::FileEntry>> {
+    if config.patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Check if all patterns are the same type (all glob or all plain)
+    let all_glob = config.patterns.iter().all(|p| p.contains('*') || p.contains('?'));
+    let any_glob = config.patterns.iter().any(|p| p.contains('*') || p.contains('?'));
+
+    if config.regex {
+        // All regex patterns - use SQL-level AND
+        database.search_by_regexes_all(&config.patterns, config.case_sensitive, usize::MAX)
+    } else if all_glob {
+        // All glob patterns - use SQL-level AND
+        database.search_by_globs_all(&config.patterns, usize::MAX)
+    } else if !any_glob {
+        // All plain name patterns - use SQL-level AND
+        database.search_by_names_all(&config.patterns, usize::MAX)
+    } else {
+        // Mixed glob and plain patterns - fall back to multiple queries with intersection
+        search_all_patterns_mixed(config, database)
+    }
+}
+
+/// Search for results matching ALL patterns when patterns are mixed (some glob, some plain).
+///
+/// Falls back to multiple queries with intersection.
+fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<Vec<filefind::types::FileEntry>> {
+    let first_pattern = &config.patterns[0];
+    let mut results: Vec<filefind::types::FileEntry> = if first_pattern.contains('*') || first_pattern.contains('?') {
+        database.search_by_glob(first_pattern, usize::MAX)?
+    } else {
+        database.search_by_name(first_pattern, usize::MAX)?
+    };
+
+    // For each additional pattern, filter results to only those that also match
+    for pattern in config.patterns.iter().skip(1) {
+        let pattern_results: HashSet<String> = if pattern.contains('*') || pattern.contains('?') {
+            database.search_by_glob(pattern, usize::MAX)?
+        } else {
+            database.search_by_name(pattern, usize::MAX)?
+        }
+        .into_iter()
+        .map(|entry| entry.full_path)
+        .collect();
+
+        // Keep only results that also match this pattern
+        results.retain(|entry| pattern_results.contains(&entry.full_path));
+
+        // Early exit if no results remain
+        if results.is_empty() {
+            break;
+        }
+    }
+
+    Ok(results)
 }
 
 /// Highlight multiple patterns within text (case-insensitive).

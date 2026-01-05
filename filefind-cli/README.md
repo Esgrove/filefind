@@ -11,6 +11,8 @@ This is the main user-facing tool for searching files indexed by the filefind da
 - **Glob patterns**: Support for `*` and `?` wildcards
 - **Regex search**: Full regular expression support
 - **Pattern expansion**: Automatically expands "some.name" to also search "some name" and "somename"
+- **Multiple patterns**: Search with multiple patterns.
+  Defaults to logical OR search to match any single pattern with option to match all patterns (logical AND)
 
 ## Usage
 
