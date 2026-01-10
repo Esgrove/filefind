@@ -6,8 +6,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use filefind::config::{OutputFormat, UserConfig};
 use regex::Regex;
+
+use filefind::config::{OutputFormat, UserConfig};
 
 use crate::{Args, Command, OutputFormatArg};
 
