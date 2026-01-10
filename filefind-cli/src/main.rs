@@ -76,6 +76,18 @@ pub struct Args {
     pub exact: bool,
 }
 
+/// Sort order for volumes listing.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum VolumeSortBy {
+    /// Sort alphabetically by name (default).
+    #[default]
+    Name,
+    /// Sort by total size.
+    Size,
+    /// Sort by number of files.
+    Files,
+}
+
 /// Subcommands for the CLI.
 #[derive(Subcommand)]
 pub enum Command {
@@ -83,7 +95,11 @@ pub enum Command {
     Stats,
 
     /// List all indexed volumes
-    Volumes,
+    Volumes {
+        /// Sort volumes by this field (defaults to size when flag is present without value)
+        #[arg(short, long, value_enum, default_missing_value = "size")]
+        sort: Option<VolumeSortBy>,
+    },
 
     /// Generate shell completion scripts
     Completion {
@@ -128,7 +144,7 @@ fn main() -> Result<()> {
     // Handle subcommands
     match &config.command {
         Some(Command::Stats) => show_stats(&database),
-        Some(Command::Volumes) => list_volumes(&database),
+        Some(Command::Volumes { sort }) => list_volumes(&database, sort.unwrap_or(VolumeSortBy::Name)),
         Some(Command::Completion { .. }) => unreachable!("Handled above"),
         None => run_search(&config, &database),
     }
@@ -505,42 +521,89 @@ fn show_stats(database: &Database) -> Result<()> {
 }
 
 /// List all indexed volumes.
-fn list_volumes(database: &Database) -> Result<()> {
+fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
     let volumes = database.get_all_volumes()?;
 
     if volumes.is_empty() {
-        println!("No volumes indexed yet.");
+        println!("No volumes indexed yet");
         return Ok(());
     }
 
-    for volume in volumes {
-        let status = if volume.is_online {
-            "online".green()
+    // Collect volume data with stats for alignment calculations
+    // (mount_and_label, volume_type, status_str, is_online, file_count, size_str, total_size_bytes)
+    let mut volume_data: Vec<(String, String, String, bool, u64, String, u64)> = Vec::new();
+
+    for volume in &volumes {
+        let label = volume.label.as_deref().unwrap_or("");
+        let mount_and_label = if label.is_empty() {
+            volume.mount_point.clone()
         } else {
-            "offline".red()
+            format!("{} {}", volume.mount_point, label)
         };
 
-        let label = volume.label.as_deref().unwrap_or("");
-
-        // Get stats for this volume
-        let stats_str = if let Some(volume_id) = volume.id {
+        let (file_count, size_str, total_size) = if let Some(volume_id) = volume.id {
             let volume_stats = database.get_volume_stats(volume_id)?;
-            format!(
-                "{} files, {}",
+            (
                 volume_stats.file_count,
-                format_size(volume_stats.total_size)
+                format_size(volume_stats.total_size),
+                volume_stats.total_size,
             )
         } else {
-            String::from("no stats available")
+            (0, String::from("N/A"), 0)
         };
 
+        volume_data.push((
+            mount_and_label,
+            volume.volume_type.to_string(),
+            if volume.is_online { "online" } else { "offline" }.to_string(),
+            volume.is_online,
+            file_count,
+            size_str,
+            total_size,
+        ));
+    }
+
+    // Sort by the specified field
+    match sort_by {
+        VolumeSortBy::Name => volume_data.sort_by(|a, b| a.0.cmp(&b.0)),
+        VolumeSortBy::Size => volume_data.sort_by(|a, b| b.6.cmp(&a.6)),
+        VolumeSortBy::Files => volume_data.sort_by(|a, b| b.4.cmp(&a.4)),
+    }
+
+    // Calculate maximum widths for alignment in a single pass
+    let (max_mount_label_width, max_type_width, max_status_width, max_file_count_width, max_size_width) =
+        volume_data.iter().fold(
+            (0, 0, 0, 0, 0),
+            |(mount, vtype, status, files, size),
+             (mount_label, volume_type, status_str, _, file_count, size_str, _)| {
+                (
+                    mount.max(mount_label.len()),
+                    vtype.max(volume_type.len() + 2), // +2 for brackets
+                    status.max(status_str.len() + 2), // +2 for parentheses
+                    files.max(file_count.to_string().len()),
+                    size.max(size_str.len()),
+                )
+            },
+        );
+
+    // Print aligned output
+    for (mount_label, volume_type, _status_str, is_online, file_count, size_str, _) in volume_data {
+        let status_colored = if is_online { "online".green() } else { "offline".red() };
+
+        let type_bracketed = format!("[{volume_type}]");
+
         println!(
-            "{} {} [{}] ({}) - {}",
-            volume.mount_point.bold(),
-            label,
-            volume.volume_type,
-            status,
-            stats_str
+            "{:<mount_width$}  {:<type_width$} {:<status_width$}  {:>file_width$} files, {:>size_width$}",
+            mount_label.bold(),
+            type_bracketed,
+            format!("({})", status_colored),
+            file_count,
+            size_str,
+            mount_width = max_mount_label_width,
+            type_width = max_type_width,
+            status_width = max_status_width,
+            file_width = max_file_count_width,
+            size_width = max_size_width,
         );
     }
 
