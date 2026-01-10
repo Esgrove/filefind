@@ -84,7 +84,7 @@ pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
         let type_bracketed = format!("[{volume_type}]");
 
         println!(
-            "{:<mount_width$}  {:<type_width$} {:<status_width$}  {:>file_width$} files, {:>size_width$}",
+            "{:<mount_width$}   {:<type_width$} {:<status_width$}   {:>file_width$} files   {:>size_width$}",
             mount_label.bold(),
             type_bracketed,
             format!("({})", status_colored),

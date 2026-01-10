@@ -80,7 +80,7 @@ pub enum Command {
     /// List all indexed volumes
     Volumes {
         /// Sort volumes by this field
-        #[arg(short, long, value_enum, default_missing_value = "size")]
+        #[arg(short, long, value_enum, num_args = 0..=1, default_missing_value = "size")]
         sort: Option<VolumeSortBy>,
     },
 
