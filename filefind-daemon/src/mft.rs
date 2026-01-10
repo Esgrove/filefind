@@ -14,14 +14,14 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use filefind::types::{FileEntry, IndexedVolume};
-use tracing::{debug, info};
+use tracing::debug;
 
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    GetVolumeInformationW, OPEN_EXISTING,
+    GetFileAttributesExW, GetFileExInfoStandard, GetVolumeInformationW, OPEN_EXISTING, WIN32_FILE_ATTRIBUTE_DATA,
 };
 #[cfg(windows)]
 use windows::Win32::System::IO::DeviceIoControl;
@@ -205,12 +205,15 @@ impl MftScanner {
     /// Returns an error if the MFT cannot be read.
     #[cfg(windows)]
     pub fn scan_filtered(&self, path_filters: &[String]) -> Result<Vec<FileEntry>> {
-        info!("{}: Starting MFT scan", self.drive_letter);
-
         if path_filters.is_empty() {
-            debug!("No path filters, returning all entries");
+            debug!("{}: Scanning full drive", self.drive_letter);
         } else {
-            debug!("Filtering to {} path(s): {:?}", path_filters.len(), path_filters);
+            debug!(
+                "{}: Filtering to {} path(s): {:?}",
+                self.drive_letter,
+                path_filters.len(),
+                path_filters
+            );
         }
 
         // Get NTFS volume data
@@ -240,7 +243,7 @@ impl MftScanner {
 
         // Filter entries if path filters are specified
         if path_filters.is_empty() {
-            info!("{}: Found {} file entries", self.drive_letter, file_entries.len());
+            debug!("{}: Found {} file entries", self.drive_letter, file_entries.len());
             Ok(file_entries)
         } else {
             let filtered: Vec<FileEntry> = file_entries
@@ -253,7 +256,7 @@ impl MftScanner {
                 })
                 .collect();
 
-            info!("{}: Filtered to {} file entries", self.drive_letter, filtered.len());
+            debug!("{}: Filtered to {} file entries", self.drive_letter, filtered.len());
             Ok(filtered)
         }
     }
@@ -471,6 +474,32 @@ impl MftScanner {
         })
     }
 
+    /// Get file size using Windows API.
+    ///
+    /// Returns 0 if the file size cannot be determined.
+    #[cfg(windows)]
+    fn get_file_size(path: &str) -> u64 {
+        let wide_path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+
+        let mut file_data: WIN32_FILE_ATTRIBUTE_DATA = unsafe { std::mem::zeroed() };
+
+        let success = unsafe {
+            GetFileAttributesExW(
+                PCWSTR(wide_path.as_ptr()),
+                GetFileExInfoStandard,
+                (&raw mut file_data).cast(),
+            )
+            .is_ok()
+        };
+
+        if success {
+            // Combine high and low parts into a 64-bit size
+            (u64::from(file_data.nFileSizeHigh) << 32) | u64::from(file_data.nFileSizeLow)
+        } else {
+            0
+        }
+    }
+
     /// Resolve full paths for all MFT entries.
     #[cfg(windows)]
     fn resolve_paths(&self, mft_entries: &[MftEntry]) -> Vec<FileEntry> {
@@ -484,7 +513,7 @@ impl MftScanner {
         }
 
         let mut file_entries = Vec::with_capacity(mft_entries.len());
-        let volume_id = 0i64; // Will be set by caller
+        let volume_id = 0i64;
 
         for entry in mft_entries {
             // Skip entries without names
@@ -495,6 +524,13 @@ impl MftScanner {
             // Build full path by walking up the directory tree
             let full_path = self.build_full_path(entry, &ref_to_entry, ROOT_REF);
 
+            // Get actual file size for non-directories
+            let size = if entry.is_directory {
+                0
+            } else {
+                Self::get_file_size(&full_path)
+            };
+
             let file_entry = FileEntry {
                 id: None,
                 volume_id,
@@ -502,7 +538,7 @@ impl MftScanner {
                 name: entry.name.clone(),
                 full_path,
                 is_directory: entry.is_directory,
-                size: entry.size,
+                size,
                 created_time: None,
                 modified_time: None,
                 mft_reference: Some(entry.file_reference),

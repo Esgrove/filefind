@@ -62,10 +62,6 @@ enum Command {
         /// Specific path to scan (defaults to all configured drives).
         #[arg(value_hint = clap::ValueHint::DirPath)]
         path: Option<PathBuf>,
-
-        /// Force a full rescan even if already indexed
-        #[arg(short, long)]
-        force: bool,
     },
 
     /// Show index statistics
@@ -138,9 +134,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Status) => daemon::show_status(&config),
-        Some(Command::Scan { path, force }) => {
-            tokio::runtime::Runtime::new()?.block_on(scanner::run_scan(path, force, &config))
-        }
+        Some(Command::Scan { path }) => tokio::runtime::Runtime::new()?.block_on(scanner::run_scan(path, &config)),
         Some(Command::Stats) => daemon::show_stats(&config),
         Some(Command::Volumes { detailed }) => daemon::list_volumes(detailed, &config),
         Some(Command::Detect) => {

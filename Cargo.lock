@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "filefind"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "filefind-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "filefind-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "filefind-tray"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",

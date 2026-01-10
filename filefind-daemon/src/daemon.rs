@@ -203,7 +203,7 @@ impl Daemon {
             info!("Performing scan");
             self.ipc_state.state.store(DaemonStateInfo::Scanning);
 
-            run_scan(None, self.options.rescan, &self.config).await?;
+            run_scan(None, &self.config).await?;
 
             // Update stats after scan
             if let Some(ref database) = self.database {
@@ -315,7 +315,7 @@ impl Daemon {
                 IpcToDaemon::Rescan => {
                     info!("Received rescan command via IPC");
                     self.ipc_state.state.store(DaemonStateInfo::Scanning);
-                    if let Err(error) = run_scan(None, true, &self.config).await {
+                    if let Err(error) = run_scan(None, &self.config).await {
                         error!("Rescan failed: {}", error);
                     }
                     // Update stats after rescan
