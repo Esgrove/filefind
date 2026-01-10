@@ -32,6 +32,17 @@ pub struct DatabaseStats {
     pub total_size: u64,
 }
 
+/// Statistics about a single volume.
+#[derive(Debug, Default, Clone)]
+pub struct VolumeStats {
+    /// Total number of indexed files on this volume.
+    pub file_count: u64,
+    /// Total number of indexed directories on this volume.
+    pub directory_count: u64,
+    /// Total size of all indexed files on this volume in bytes.
+    pub total_size: u64,
+}
+
 impl Database {
     /// Open or create a database at the specified path.
     ///
@@ -707,6 +718,36 @@ impl Database {
         })
     }
 
+    /// Get statistics for a specific volume.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn get_volume_stats(&self, volume_id: i64) -> Result<VolumeStats> {
+        let file_count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM files WHERE volume_id = ?1 AND is_directory = 0",
+            params![volume_id],
+            |row| row.get(0),
+        )?;
+
+        let directory_count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM files WHERE volume_id = ?1 AND is_directory = 1",
+            params![volume_id],
+            |row| row.get(0),
+        )?;
+
+        let total_size: i64 = self.connection.query_row(
+            "SELECT COALESCE(SUM(size), 0) FROM files WHERE volume_id = ?1 AND is_directory = 0",
+            params![volume_id],
+            |row| row.get(0),
+        )?;
+
+        Ok(VolumeStats {
+            file_count: u64::try_from(file_count).unwrap_or(0),
+            directory_count: u64::try_from(directory_count).unwrap_or(0),
+            total_size: u64::try_from(total_size).unwrap_or(0),
+        })
+    }
+
     /// Update the last USN value for a volume.
     ///
     /// # Errors
@@ -1196,6 +1237,58 @@ mod tests {
         assert_eq!(stats.total_files, 3);
         assert_eq!(stats.volume_count, 2);
         assert_eq!(stats.total_size, 1000);
+    }
+
+    #[test]
+    fn test_get_volume_stats() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Create two volumes
+        let volume1 = create_test_volume("VOL1", "C:");
+        let volume2 = create_test_volume("VOL2", "D:");
+        let volume_id1 = database.upsert_volume(&volume1).unwrap();
+        let volume_id2 = database.upsert_volume(&volume2).unwrap();
+
+        // Add files and directories to volume 1
+        database
+            .insert_file(&create_test_file(volume_id1, "file1.txt", "C:\\file1.txt", 500))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id1, "file2.txt", "C:\\file2.txt", 300))
+            .unwrap();
+        database
+            .insert_file(&create_test_directory(volume_id1, "folder", "C:\\folder"))
+            .unwrap();
+
+        // Add files to volume 2
+        database
+            .insert_file(&create_test_file(volume_id2, "file3.txt", "D:\\file3.txt", 1000))
+            .unwrap();
+
+        // Check stats for volume 1
+        let stats1 = database.get_volume_stats(volume_id1).unwrap();
+        assert_eq!(stats1.file_count, 2);
+        assert_eq!(stats1.directory_count, 1);
+        assert_eq!(stats1.total_size, 800);
+
+        // Check stats for volume 2
+        let stats2 = database.get_volume_stats(volume_id2).unwrap();
+        assert_eq!(stats2.file_count, 1);
+        assert_eq!(stats2.directory_count, 0);
+        assert_eq!(stats2.total_size, 1000);
+    }
+
+    #[test]
+    fn test_get_volume_stats_empty_volume() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("EMPTY", "E:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let stats = database.get_volume_stats(volume_id).unwrap();
+        assert_eq!(stats.file_count, 0);
+        assert_eq!(stats.directory_count, 0);
+        assert_eq!(stats.total_size, 0);
     }
 
     #[test]

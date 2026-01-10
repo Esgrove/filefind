@@ -496,12 +496,10 @@ fn display_simple(
 fn show_stats(database: &Database) -> Result<()> {
     let stats = database.get_stats()?;
 
-    println!("{}", "Index Statistics".bold().underline());
-    println!();
-    println!("  Volumes:     {}", stats.volume_count);
-    println!("  Files:       {}", stats.total_files);
-    println!("  Directories: {}", stats.total_directories);
-    println!("  Total size:  {}", format_size(stats.total_size));
+    println!("Volumes:     {}", stats.volume_count);
+    println!("Files:       {}", stats.total_files);
+    println!("Directories: {}", stats.total_directories);
+    println!("Total size:  {}", format_size(stats.total_size));
 
     Ok(())
 }
@@ -515,9 +513,6 @@ fn list_volumes(database: &Database) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", "Indexed Volumes".bold().underline());
-    println!();
-
     for volume in volumes {
         let status = if volume.is_online {
             "online".green()
@@ -525,14 +520,27 @@ fn list_volumes(database: &Database) -> Result<()> {
             "offline".red()
         };
 
-        let label = volume.label.as_deref().unwrap_or("-");
+        let label = volume.label.as_deref().unwrap_or("");
+
+        // Get stats for this volume
+        let stats_str = if let Some(volume_id) = volume.id {
+            let volume_stats = database.get_volume_stats(volume_id)?;
+            format!(
+                "{} files, {}",
+                volume_stats.file_count,
+                format_size(volume_stats.total_size)
+            )
+        } else {
+            String::from("no stats available")
+        };
 
         println!(
-            "  {} [{}] {} ({})",
+            "{} {} [{}] ({}) - {}",
             volume.mount_point.bold(),
-            volume.volume_type,
             label,
-            status
+            volume.volume_type,
+            status,
+            stats_str
         );
     }
 
