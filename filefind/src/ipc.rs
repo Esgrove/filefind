@@ -37,6 +37,8 @@ pub enum DaemonCommand {
     Resume,
     /// Ping to check if daemon is alive.
     Ping,
+    /// Prune database entries for files/directories that no longer exist.
+    Prune,
 }
 
 /// Response from the daemon.
@@ -306,6 +308,19 @@ impl IpcClient {
         match self.send_command(DaemonCommand::Resume)? {
             DaemonResponse::Ok => Ok(()),
             DaemonResponse::Error(error) => anyhow::bail!("Failed to resume: {error}"),
+            other => anyhow::bail!("Unexpected response: {other:?}"),
+        }
+    }
+
+    /// Prune database entries for files/directories that no longer exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prune cannot be triggered.
+    pub fn prune(&self) -> Result<()> {
+        match self.send_command(DaemonCommand::Prune)? {
+            DaemonResponse::Ok => Ok(()),
+            DaemonResponse::Error(error) => anyhow::bail!("Failed to trigger prune: {error}"),
             other => anyhow::bail!("Unexpected response: {other:?}"),
         }
     }

@@ -5,6 +5,7 @@
 mod daemon;
 mod ipc_server;
 mod mft;
+mod pruner;
 mod scanner;
 mod usn;
 mod watcher;
@@ -19,7 +20,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use filefind::{Config, LogLevel, get_log_directory};
+use filefind::{Config, LogLevel, format_number, get_log_directory, print_info, print_success};
 
 /// Background file indexing daemon for filefind
 #[derive(Parser)]
@@ -84,6 +85,9 @@ enum Command {
         force: bool,
     },
 
+    /// Remove database entries for files/directories that no longer exist
+    Prune,
+
     /// Generate shell completion scripts
     Completion {
         /// Shell to generate completion for
@@ -142,6 +146,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Reset { force }) => reset_database(force, &config),
+        Some(Command::Prune) => run_prune(&config),
         Some(Command::Completion { .. }) => unreachable!("Handled above"),
         None => {
             // Default: show status.
@@ -212,6 +217,32 @@ fn reset_database(force: bool, config: &Config) -> Result<()> {
 
     std::fs::remove_file(&database_path).context("Failed to delete database")?;
     println!("Database deleted: {}", database_path.display());
+
+    Ok(())
+}
+
+/// Prune database entries for files/directories that no longer exist.
+fn run_prune(config: &Config) -> Result<()> {
+    let database_path = config.database_path();
+
+    if !database_path.exists() {
+        print_info!("Database does not exist at: {}", database_path.display());
+        return Ok(());
+    }
+
+    let database = filefind::Database::open(&database_path)?;
+
+    print_info!("Pruning database entries for missing files and directories...");
+
+    let stats = pruner::prune_missing_entries(&database, config.daemon.verbose)?;
+
+    print_success!(
+        "Prune complete: removed {} files and {} directories ({} entries checked, {} checks skipped)",
+        format_number(stats.files_removed),
+        format_number(stats.directories_removed),
+        format_number(stats.entries_checked),
+        format_number(stats.checks_skipped)
+    );
 
     Ok(())
 }

@@ -91,6 +91,7 @@ Within implementation blocks:
 - Prefer full names over abbreviations. For example: `directories` instead of `dirs`.
 - Create docstrings for structs and functions.
 - Avoid trailing comments.
+- All `use` imports must be at the top of the file. Never import inside functions.
 
 ## Configuration
 

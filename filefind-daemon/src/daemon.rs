@@ -22,6 +22,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc_server::{IpcServerState, IpcToDaemon, spawn_ipc_server};
 use crate::mft::detect_ntfs_volumes;
+use crate::pruner::prune_missing_entries;
 use crate::scanner::run_scan;
 use crate::usn::UsnMonitor;
 use crate::watcher::FileWatcher;
@@ -301,6 +302,9 @@ impl Daemon {
 
     /// Process incoming IPC commands.
     async fn process_ipc_commands(&mut self) -> Result<()> {
+        // Capture verbose flag before borrowing receiver to avoid borrow conflicts
+        let verbose = self.verbose();
+
         let Some(ref mut receiver) = self.ipc_receiver else {
             return Ok(());
         };
@@ -333,6 +337,26 @@ impl Daemon {
                     info!("Received resume command via IPC");
                     self.is_paused = false;
                     self.ipc_state.is_paused.store(false, Ordering::Relaxed);
+                }
+                IpcToDaemon::Prune => {
+                    info!("Received prune command via IPC");
+                    self.ipc_state.state.store(DaemonStateInfo::Scanning);
+                    if let Some(ref database) = self.database {
+                        match prune_missing_entries(database, verbose) {
+                            Ok(stats) => {
+                                info!(
+                                    "Prune completed: removed {} files and {} directories",
+                                    stats.files_removed, stats.directories_removed
+                                );
+                            }
+                            Err(error) => {
+                                error!("Prune failed: {}", error);
+                            }
+                        }
+                        // Update stats after prune
+                        self.ipc_state.update_from_database(database);
+                    }
+                    self.ipc_state.state.store(DaemonStateInfo::Running);
                 }
             }
         }

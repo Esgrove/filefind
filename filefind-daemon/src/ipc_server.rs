@@ -28,6 +28,8 @@ pub enum IpcToDaemon {
     Pause,
     /// Request to resume indexing.
     Resume,
+    /// Request to prune missing entries from the database.
+    Prune,
 }
 
 /// Shared state that the IPC server uses to report daemon status.
@@ -460,6 +462,14 @@ impl IpcServer {
                     DaemonResponse::Ok
                 } else {
                     DaemonResponse::Error("Failed to send resume command".to_string())
+                }
+            }
+            DaemonCommand::Prune => {
+                info!("Received prune command");
+                if self.command_sender.blocking_send(IpcToDaemon::Prune).is_ok() {
+                    DaemonResponse::Ok
+                } else {
+                    DaemonResponse::Error("Failed to send prune command".to_string())
                 }
             }
         }
