@@ -518,15 +518,19 @@ pub struct ScanEntry {
 }
 
 impl ScanEntry {
-    /// Convert to a `FileEntry` for database storage.
+    /// Convert to a `FileEntry` for database storage, consuming self.
     #[must_use]
-    pub fn to_file_entry(&self, volume_id: i64) -> filefind::types::FileEntry {
+    pub fn into_file_entry(self, volume_id: i64) -> filefind::types::FileEntry {
         filefind::types::FileEntry {
             id: None,
             volume_id,
             parent_id: None,
-            name: self.name.clone(),
-            full_path: self.path.to_string_lossy().into_owned(),
+            name: self.name,
+            full_path: self
+                .path
+                .into_os_string()
+                .into_string()
+                .unwrap_or_else(|os_string| os_string.to_string_lossy().into_owned()),
             is_directory: self.is_directory,
             size: self.size,
             created_time: self.created,
@@ -674,7 +678,7 @@ mod tests {
             created: None,
         };
 
-        let file_entry = entry.to_file_entry(1);
+        let file_entry = entry.into_file_entry(1);
         assert_eq!(file_entry.name, "document.pdf");
         assert_eq!(file_entry.volume_id, 1);
         assert!(!file_entry.is_directory);
@@ -696,7 +700,7 @@ mod tests {
             created: Some(created),
         };
 
-        let file_entry = entry.to_file_entry(42);
+        let file_entry = entry.into_file_entry(42);
         assert_eq!(file_entry.volume_id, 42);
         assert!(file_entry.created_time.is_some());
         assert!(file_entry.modified_time.is_some());
@@ -714,7 +718,7 @@ mod tests {
             created: None,
         };
 
-        let file_entry = entry.to_file_entry(1);
+        let file_entry = entry.into_file_entry(1);
         assert!(file_entry.is_directory);
         assert_eq!(file_entry.size, 0);
         assert_eq!(file_entry.full_path, "C:\\folder");
@@ -951,7 +955,7 @@ mod tests {
             created: None,
         };
 
-        let file_entry = entry.to_file_entry(1);
+        let file_entry = entry.into_file_entry(1);
         assert_eq!(file_entry.name, "文件.txt");
         assert!(file_entry.full_path.contains("文档"));
     }
@@ -970,7 +974,7 @@ mod tests {
             created: None,
         };
 
-        let file_entry = entry.to_file_entry(1);
+        let file_entry = entry.into_file_entry(1);
         assert_eq!(file_entry.name.len(), 200);
         assert_eq!(file_entry.full_path, long_path);
     }

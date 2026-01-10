@@ -350,7 +350,7 @@ impl Database {
         }
 
         transaction.commit()?;
-        info!("Inserted {} files to database", files.len());
+        debug!("Inserted {} files to database", files.len());
         Ok(files.len())
     }
 
