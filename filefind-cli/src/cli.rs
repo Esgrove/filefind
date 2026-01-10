@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use colored::Colorize;
@@ -10,6 +13,8 @@ use filefind::{Database, format_size, print_bold_magenta, print_error};
 
 use crate::VolumeSortBy;
 use crate::config::{CliConfig, DisplayOptions};
+
+const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// List all indexed volumes.
 pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
@@ -43,11 +48,14 @@ pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
             (0, String::from("N/A"), 0)
         };
 
+        // Check if the volume is actually accessible
+        let is_online = check_path_accessible(&volume.mount_point);
+
         volume_data.push((
             mount_and_label,
             volume.volume_type.to_string(),
-            if volume.is_online { "online" } else { "offline" }.to_string(),
-            volume.is_online,
+            if is_online { "online" } else { "offline" }.to_string(),
+            is_online,
             file_count,
             size_str,
             total_size,
@@ -78,21 +86,27 @@ pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
         );
 
     // Print aligned output
-    for (mount_label, volume_type, _status_str, is_online, file_count, size_str, _) in volume_data {
-        let status_colored = if is_online { "online".green() } else { "offline".red() };
+    for (mount_label, volume_type, status_str, is_online, file_count, size_str, _) in volume_data {
+        // Pad status string first, then colorize to avoid ANSI codes affecting width calculation
+        let status_padded = format!("({status_str})");
+        let status_padded = format!("{status_padded:<max_status_width$}");
+        let status_colored = if is_online {
+            status_padded.green()
+        } else {
+            status_padded.red()
+        };
 
         let type_bracketed = format!("[{volume_type}]");
 
         println!(
-            "{:<mount_width$}   {:<type_width$} {:<status_width$}   {:>file_width$} files   {:>size_width$}",
+            "{:<mount_width$}   {:<type_width$} {}   {:>file_width$} files   {:>size_width$}",
             mount_label.bold(),
             type_bracketed,
-            format!("({})", status_colored),
+            status_colored,
             file_count,
             size_str,
             mount_width = max_mount_label_width,
             type_width = max_type_width,
-            status_width = max_status_width,
             file_width = max_file_count_width,
             size_width = max_size_width,
         );
@@ -469,4 +483,18 @@ fn display_simple(
             }
         }
     }
+}
+
+/// Check if a path is accessible with a timeout.
+/// Returns false if the path doesn't exist or if the check takes longer than the timeout time.
+fn check_path_accessible(path: &str) -> bool {
+    let path = path.to_string();
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        let exists = Path::new(&path).exists();
+        let _ = sender.send(exists);
+    });
+
+    receiver.recv_timeout(CHECK_TIMEOUT).unwrap_or(false)
 }
