@@ -13,6 +13,8 @@ use std::time::Instant;
 use anyhow::Result;
 use filefind::types::{IndexedVolume, VolumeType};
 use filefind::{Config, Database, FileEntry, PathType, classify_path, format_number, is_network_path};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use tracing::{debug, error, info, warn};
 
 use crate::mft::{MftScanner, detect_ntfs_volumes};
@@ -205,21 +207,20 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
         }));
     }
 
-    // Wait for all tasks to complete
-    let results: Vec<ScanResult> = futures::future::join_all(tasks)
-        .await
-        .into_iter()
-        .filter_map(|result| match result {
-            Ok(scan_result) => Some(scan_result),
+    // Process results as they complete using FuturesUnordered
+    let mut futures: FuturesUnordered<_> = tasks.into_iter().collect();
+    let mut total_entries = 0usize;
+
+    while let Some(result) = futures.next().await {
+        match result {
+            Ok(scan_result) => {
+                total_entries += process_scan_result(database, scan_result)?;
+            }
             Err(error) => {
                 error!("Scan task panicked: {}", error);
-                None
             }
-        })
-        .collect();
-
-    // Write all results to database
-    let total_entries = process_scan_results(database, results)?;
+        }
+    }
 
     let total_elapsed = total_start.elapsed();
 
@@ -565,39 +566,34 @@ async fn scan_mapped_drive(drive_letter: char, scan_path: PathBuf, exclude: Arc<
     }
 }
 
-/// Process scan results and write them to the database.
-fn process_scan_results(database: &mut Database, results: Vec<ScanResult>) -> Result<usize> {
-    let mut total_entries = 0usize;
-
-    for result in results {
-        match result {
-            ScanResult::Success {
+/// Process a single scan result and write it to the database.
+fn process_scan_result(database: &mut Database, result: ScanResult) -> Result<usize> {
+    match result {
+        ScanResult::Success {
+            label,
+            volume_info,
+            mut entries,
+            elapsed,
+        } => {
+            let volume_id = database.upsert_volume(&volume_info)?;
+            for entry in &mut entries {
+                entry.volume_id = volume_id;
+            }
+            let count = entries.len();
+            database.insert_files_batch(&entries)?;
+            info!(
+                "{} - {} entries in {:.2}s",
                 label,
-                volume_info,
-                mut entries,
-                elapsed,
-            } => {
-                let volume_id = database.upsert_volume(&volume_info)?;
-                for entry in &mut entries {
-                    entry.volume_id = volume_id;
-                }
-                let count = entries.len();
-                database.insert_files_batch(&entries)?;
-                total_entries += count;
-                info!(
-                    "{} - {} entries in {:.2}s",
-                    label,
-                    format_number(count as u64),
-                    elapsed.as_secs_f64()
-                );
-            }
-            ScanResult::Failed { label, error } => {
-                error!("{} - Failed: {}", label, error);
-            }
+                format_number(count as u64),
+                elapsed.as_secs_f64()
+            );
+            Ok(count)
+        }
+        ScanResult::Failed { label, error } => {
+            error!("{} - Failed: {}", label, error);
+            Ok(0)
         }
     }
-
-    Ok(total_entries)
 }
 
 /// Synchronous NTFS volume scan that returns volume info and entries.

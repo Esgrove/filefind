@@ -335,7 +335,7 @@ pub async fn scan_directory_with_concurrency(
     exclude_patterns: &[String],
     max_concurrency: usize,
 ) -> Result<Vec<ScanEntry>> {
-    info!("{} Starting file scan", root.display());
+    debug!("{} Starting file scan", root.display());
 
     let root = root.to_path_buf();
     let exclude_patterns: Arc<[String]> = exclude_patterns.to_vec().into();
