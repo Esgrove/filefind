@@ -60,9 +60,13 @@ enum Command {
 
     /// Perform a one-time scan without starting the daemon
     Scan {
-        /// Specific path to scan (defaults to all configured drives).
+        /// Specific path to scan (defaults to all configured drives)
         #[arg(value_hint = clap::ValueHint::DirPath)]
         path: Option<PathBuf>,
+
+        /// Force a clean scan (delete existing entries before inserting new ones)
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// Show index statistics
@@ -101,12 +105,22 @@ enum Command {
 }
 
 /// Apply CLI arguments to the config, with CLI args taking precedence.
-const fn apply_cli_args(config: &mut Config, log_level: Option<LogLevel>, verbose: bool) {
+const fn apply_cli_args(
+    config: &mut Config,
+    log_level: Option<LogLevel>,
+    verbose: bool,
+    force_clean_scan: Option<bool>,
+) {
     if let Some(level) = log_level {
         config.daemon.log_level = level;
     }
     if verbose {
         config.daemon.verbose = true;
+    }
+    if let Some(force) = force_clean_scan
+        && force
+    {
+        config.daemon.force_clean_scan = true;
     }
 }
 
@@ -121,9 +135,15 @@ fn main() -> Result<()> {
     let foreground = matches!(args.command, Some(Command::Start { foreground: true, .. }) | None)
         || !matches!(args.command, Some(Command::Start { .. }));
 
+    // Extract force flag from Scan command if present
+    let force_clean_scan = match &args.command {
+        Some(Command::Scan { force, .. }) => Some(*force),
+        _ => None,
+    };
+
     // Load config and apply CLI args (CLI takes precedence)
     let mut config = Config::load();
-    apply_cli_args(&mut config, args.log_level, args.verbose);
+    apply_cli_args(&mut config, args.log_level, args.verbose, force_clean_scan);
 
     // Initialize logging based on mode
     init_logging(config.daemon.log_level, foreground)?;
@@ -138,7 +158,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Status) => daemon::show_status(&config),
-        Some(Command::Scan { path }) => tokio::runtime::Runtime::new()?.block_on(scanner::run_scan(path, &config)),
+        Some(Command::Scan { path, .. }) => tokio::runtime::Runtime::new()?.block_on(scanner::run_scan(path, &config)),
         Some(Command::Stats) => daemon::show_stats(&config),
         Some(Command::Volumes { detailed }) => daemon::list_volumes(detailed, &config),
         Some(Command::Detect) => {

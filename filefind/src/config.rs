@@ -75,6 +75,13 @@ pub struct DaemonConfig {
     /// Database file path.
     #[serde(default)]
     pub database_path: Option<PathBuf>,
+
+    /// Force clean scan (delete existing entries before inserting new ones).
+    /// When false (default), uses incremental UPSERT which is faster but may
+    /// leave stale entries for moved/deleted files.
+    /// Clean scan is always performed automatically if the database is empty.
+    #[serde(default)]
+    pub force_clean_scan: bool,
 }
 
 /// Configuration for the CLI tool.
@@ -181,6 +188,7 @@ impl Default for DaemonConfig {
             log_level: LogLevel::default(),
             verbose: false,
             database_path: None,
+            force_clean_scan: false,
         }
     }
 }
@@ -308,6 +316,7 @@ mod tests {
         assert_eq!(config.log_level, LogLevel::Info);
         assert!(!config.verbose);
         assert!(config.database_path.is_none());
+        assert!(!config.force_clean_scan);
 
         // Verify default exclusions
         assert!(config.exclude.contains(&"C:\\Windows".to_string()));

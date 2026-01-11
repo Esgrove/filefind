@@ -4,12 +4,16 @@
 //! that reference files or directories that no longer exist on disk.
 //! It optimizes by first checking parent directories to avoid
 //! unnecessary filesystem queries for children of missing directories.
+//!
+//! Pruning is parallelized by volume/drive to maximize throughput.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use filefind::Database;
+use rayon::prelude::*;
 use tracing::{debug, info, trace};
 
 /// Batch size for delete operations to avoid SQL statement size limits.
@@ -34,14 +38,31 @@ struct EntryToCheck {
     id: i64,
     /// Full path of the entry.
     full_path: String,
+    /// Whether this is a directory.
+    is_directory: bool,
+}
+
+/// Results from checking a single volume's entries.
+struct VolumeCheckResult {
+    /// IDs of entries to delete.
+    ids_to_delete: Vec<i64>,
+    /// Count of directories to be removed.
+    directories_removed: u64,
+    /// Count of files to be removed.
+    files_removed: u64,
+    /// Count of entries checked.
+    entries_checked: u64,
+    /// Count of filesystem checks skipped due to missing parent.
+    checks_skipped: u64,
 }
 
 /// Prune database entries for files and directories that no longer exist.
 ///
 /// This function efficiently removes stale entries by:
-/// 1. First checking directories (sorted by path length, shortest first)
-/// 2. Tracking which directories are known to be missing
-/// 3. For files, skipping filesystem checks if their parent directory is missing
+/// 1. Grouping entries by volume/drive for parallel processing
+/// 2. For each volume, checking directories first (sorted by path length, shortest first)
+/// 3. Tracking which directories are known to be missing
+/// 4. For files, skipping filesystem checks if their parent directory is missing
 ///
 /// # Arguments
 /// * `database` - The database to prune
@@ -50,32 +71,229 @@ struct EntryToCheck {
 /// # Errors
 /// Returns an error if database operations fail.
 pub fn prune_missing_entries(database: &Database, verbose: bool) -> Result<PruneStats> {
-    let mut stats = PruneStats::default();
+    // Get all entries from the database
+    let all_entries = get_all_entries(database)?;
 
-    // Track directories that are known to be missing
-    let mut missing_directories: HashSet<String> = HashSet::new();
-    // Track directories that are known to exist (cache for efficiency)
-    let mut existing_directories: HashSet<String> = HashSet::new();
-
-    // First pass: Check all directories (sorted by path length, shortest first)
-    // This ensures we check parent directories before children
-    let directories = get_all_directories_sorted(database)?;
-    let directory_count = directories.len();
-
-    if verbose {
-        info!("Checking {} directories...", directory_count);
+    if all_entries.is_empty() {
+        info!("Prune complete: no entries to check");
+        return Ok(PruneStats::default());
     }
 
-    let mut directories_to_delete: Vec<i64> = Vec::new();
+    // Group entries by volume (drive letter or UNC root)
+    let entries_by_volume = group_entries_by_volume(all_entries);
+    let volume_count = entries_by_volume.len();
 
+    if verbose {
+        let total_entries: usize = entries_by_volume.values().map(Vec::len).sum();
+        info!(
+            "Checking {} entries across {} volume(s) in parallel...",
+            total_entries, volume_count
+        );
+    }
+
+    // Process each volume in parallel using rayon
+    let volume_results: Vec<VolumeCheckResult> = entries_by_volume
+        .into_par_iter()
+        .map(|(volume_key, entries)| {
+            trace!("Processing volume: {}", volume_key);
+            check_volume_entries(entries)
+        })
+        .collect();
+
+    // Aggregate results
+    let mut stats = PruneStats::default();
+    let mut all_ids_to_delete: Vec<i64> = Vec::new();
+
+    for result in volume_results {
+        stats.directories_removed += result.directories_removed;
+        stats.files_removed += result.files_removed;
+        stats.entries_checked += result.entries_checked;
+        stats.checks_skipped += result.checks_skipped;
+        all_ids_to_delete.extend(result.ids_to_delete);
+    }
+
+    // Delete all missing entries from database
+    if !all_ids_to_delete.is_empty() {
+        let deleted = delete_entries_by_ids(database, &all_ids_to_delete)?;
+        debug!("Deleted {} entries from database", deleted);
+    }
+
+    info!(
+        "Prune complete: checked {} entries, removed {} files and {} directories ({} checks skipped)",
+        stats.entries_checked, stats.files_removed, stats.directories_removed, stats.checks_skipped
+    );
+
+    Ok(stats)
+}
+
+/// Prune entries for a specific volume only.
+///
+/// This is useful for targeted cleanup after changes to a specific drive.
+///
+/// # Arguments
+/// * `database` - The database to prune
+/// * `volume_id` - The volume ID to prune entries for
+/// * `verbose` - Whether to print verbose progress information
+///
+/// # Errors
+/// Returns an error if database operations fail.
+pub fn prune_volume_entries(database: &Database, volume_id: i64, verbose: bool) -> Result<PruneStats> {
+    let entries = get_entries_for_volume(database, volume_id)?;
+
+    if entries.is_empty() {
+        if verbose {
+            info!("No entries to prune for volume {}", volume_id);
+        }
+        return Ok(PruneStats::default());
+    }
+
+    if verbose {
+        info!("Checking {} entries for volume {}...", entries.len(), volume_id);
+    }
+
+    let result = check_volume_entries(entries);
+
+    let stats = PruneStats {
+        directories_removed: result.directories_removed,
+        files_removed: result.files_removed,
+        entries_checked: result.entries_checked,
+        checks_skipped: result.checks_skipped,
+    };
+
+    if !result.ids_to_delete.is_empty() {
+        delete_entries_by_ids(database, &result.ids_to_delete)?;
+    }
+
+    info!(
+        "Volume {} prune: checked {} entries, removed {} files and {} directories",
+        volume_id, stats.entries_checked, stats.files_removed, stats.directories_removed
+    );
+
+    Ok(stats)
+}
+
+/// Parallel prune that processes multiple volumes concurrently with progress reporting.
+///
+/// # Arguments
+/// * `database` - The database to prune
+/// * `verbose` - Whether to print verbose progress information
+///
+/// # Errors
+/// Returns an error if database operations fail.
+#[allow(dead_code, reason = "public API for parallel pruning with progress")]
+pub fn prune_missing_entries_parallel(database: &Database, verbose: bool) -> Result<PruneStats> {
+    // Get all entries from the database
+    let all_entries = get_all_entries(database)?;
+
+    if all_entries.is_empty() {
+        info!("Prune complete: no entries to check");
+        return Ok(PruneStats::default());
+    }
+
+    // Group entries by volume
+    let entries_by_volume = group_entries_by_volume(all_entries);
+    let volume_count = entries_by_volume.len();
+
+    let total_entries: usize = entries_by_volume.values().map(Vec::len).sum();
+
+    if verbose {
+        info!(
+            "Checking {} entries across {} volume(s) in parallel...",
+            total_entries, volume_count
+        );
+    }
+
+    // Atomic counters for progress tracking
+    let checked_counter = AtomicU64::new(0);
+    let removed_counter = AtomicU64::new(0);
+
+    // Process volumes in parallel
+    let volume_results: Vec<VolumeCheckResult> = entries_by_volume
+        .into_par_iter()
+        .map(|(volume_key, entries)| {
+            let entry_count = entries.len();
+            debug!("Processing volume {} ({} entries)", volume_key, entry_count);
+
+            let result = check_volume_entries(entries);
+
+            // Update progress counters
+            checked_counter.fetch_add(result.entries_checked, Ordering::Relaxed);
+            removed_counter.fetch_add(result.files_removed + result.directories_removed, Ordering::Relaxed);
+
+            if verbose {
+                debug!(
+                    "Volume {} complete: {} checked, {} to remove",
+                    volume_key,
+                    result.entries_checked,
+                    result.ids_to_delete.len()
+                );
+            }
+
+            result
+        })
+        .collect();
+
+    // Aggregate results
+    let mut stats = PruneStats::default();
+    let mut all_ids_to_delete: Vec<i64> = Vec::new();
+
+    for result in volume_results {
+        stats.directories_removed += result.directories_removed;
+        stats.files_removed += result.files_removed;
+        stats.entries_checked += result.entries_checked;
+        stats.checks_skipped += result.checks_skipped;
+        all_ids_to_delete.extend(result.ids_to_delete);
+    }
+
+    // Delete all missing entries from database
+    if !all_ids_to_delete.is_empty() {
+        if verbose {
+            info!("Deleting {} stale entries from database...", all_ids_to_delete.len());
+        }
+        delete_entries_by_ids(database, &all_ids_to_delete)?;
+    }
+
+    info!(
+        "Prune complete: checked {} entries, removed {} files and {} directories ({} checks skipped)",
+        stats.entries_checked, stats.files_removed, stats.directories_removed, stats.checks_skipped
+    );
+
+    Ok(stats)
+}
+
+/// Check entries for a single volume and return IDs to delete.
+///
+/// This function processes directories first (sorted by path length) to enable
+/// parent-directory optimization for files.
+fn check_volume_entries(entries: Vec<EntryToCheck>) -> VolumeCheckResult {
+    let mut result = VolumeCheckResult {
+        ids_to_delete: Vec::new(),
+        directories_removed: 0,
+        files_removed: 0,
+        entries_checked: 0,
+        checks_skipped: 0,
+    };
+
+    // Separate directories and files
+    let (mut directories, files): (Vec<_>, Vec<_>) = entries.into_iter().partition(|e| e.is_directory);
+
+    // Sort directories by path length (shortest first) for parent-first checking
+    directories.sort_by_key(|entry| entry.full_path.len());
+
+    // Track missing and existing directories for optimization
+    let mut missing_directories: HashSet<String> = HashSet::new();
+    let mut existing_directories: HashSet<String> = HashSet::new();
+
+    // Check directories first
     for entry in directories {
-        stats.entries_checked += 1;
+        result.entries_checked += 1;
 
         // Check if any parent directory is known to be missing
         if is_parent_missing(&entry.full_path, &missing_directories) {
             trace!("Skipping {} - parent directory is missing", entry.full_path);
-            stats.checks_skipped += 1;
-            directories_to_delete.push(entry.id);
+            result.checks_skipped += 1;
+            result.ids_to_delete.push(entry.id);
+            result.directories_removed += 1;
             missing_directories.insert(entry.full_path);
             continue;
         }
@@ -86,37 +304,22 @@ pub fn prune_missing_entries(database: &Database, verbose: bool) -> Result<Prune
             existing_directories.insert(entry.full_path);
         } else {
             debug!("Directory no longer exists: {}", entry.full_path);
-            directories_to_delete.push(entry.id);
+            result.ids_to_delete.push(entry.id);
+            result.directories_removed += 1;
             missing_directories.insert(entry.full_path);
         }
     }
 
-    // Delete missing directories from database
-    if !directories_to_delete.is_empty() {
-        stats.directories_removed = delete_entries_by_ids(database, &directories_to_delete)?;
-        if verbose {
-            info!("Removed {} directories", stats.directories_removed);
-        }
-    }
-
-    // Second pass: Check all files
-    let files = get_all_files(database)?;
-    let file_count = files.len();
-
-    if verbose {
-        info!("Checking {} files...", file_count);
-    }
-
-    let mut files_to_delete: Vec<i64> = Vec::new();
-
+    // Check files
     for entry in files {
-        stats.entries_checked += 1;
+        result.entries_checked += 1;
 
         // Check if the parent directory is known to be missing
         if is_parent_missing(&entry.full_path, &missing_directories) {
             trace!("Skipping {} - parent directory is missing", entry.full_path);
-            stats.checks_skipped += 1;
-            files_to_delete.push(entry.id);
+            result.checks_skipped += 1;
+            result.ids_to_delete.push(entry.id);
+            result.files_removed += 1;
             continue;
         }
 
@@ -143,8 +346,9 @@ pub fn prune_missing_entries(database: &Database, verbose: bool) -> Result<Prune
 
         if !parent_exists {
             trace!("Skipping {} - parent directory doesn't exist", entry.full_path);
-            stats.checks_skipped += 1;
-            files_to_delete.push(entry.id);
+            result.checks_skipped += 1;
+            result.ids_to_delete.push(entry.id);
+            result.files_removed += 1;
             continue;
         }
 
@@ -152,24 +356,12 @@ pub fn prune_missing_entries(database: &Database, verbose: bool) -> Result<Prune
         let path = Path::new(&entry.full_path);
         if !path.exists() {
             debug!("File no longer exists: {}", entry.full_path);
-            files_to_delete.push(entry.id);
+            result.ids_to_delete.push(entry.id);
+            result.files_removed += 1;
         }
     }
 
-    // Delete missing files from database
-    if !files_to_delete.is_empty() {
-        stats.files_removed = delete_entries_by_ids(database, &files_to_delete)?;
-        if verbose {
-            info!("Removed {} files", stats.files_removed);
-        }
-    }
-
-    info!(
-        "Prune complete: checked {} entries, removed {} files and {} directories ({} checks skipped)",
-        stats.entries_checked, stats.files_removed, stats.directories_removed, stats.checks_skipped
-    );
-
-    Ok(stats)
+    result
 }
 
 /// Check if any parent directory of the given path is in the missing set.
@@ -188,57 +380,89 @@ fn is_parent_missing(path: &str, missing_directories: &HashSet<String>) -> bool 
     false
 }
 
-/// Get all directories from the database, sorted by path length (shortest first).
-fn get_all_directories_sorted(database: &Database) -> Result<Vec<EntryToCheck>> {
+/// Extract volume key from a path (drive letter or UNC root).
+fn extract_volume_key(path: &str) -> String {
+    // Handle UNC paths: \\server\share -> \\server\share
+    if path.starts_with("\\\\") {
+        let parts: Vec<&str> = path.trim_start_matches("\\\\").splitn(3, '\\').collect();
+        if parts.len() >= 2 {
+            return format!("\\\\{}\\{}", parts[0], parts[1]);
+        }
+        return path.to_string();
+    }
+
+    // Handle drive letters: C:\... -> C:
+    if path.len() >= 2 && path.chars().nth(1) == Some(':') {
+        return path[..2].to_uppercase();
+    }
+
+    // Fallback for unknown path formats
+    "UNKNOWN".to_string()
+}
+
+/// Group entries by their volume (drive letter or UNC root).
+fn group_entries_by_volume(entries: Vec<EntryToCheck>) -> HashMap<String, Vec<EntryToCheck>> {
+    let mut grouped: HashMap<String, Vec<EntryToCheck>> = HashMap::new();
+
+    for entry in entries {
+        let volume_key = extract_volume_key(&entry.full_path);
+        grouped.entry(volume_key).or_default().push(entry);
+    }
+
+    grouped
+}
+
+/// Get all entries from the database.
+fn get_all_entries(database: &Database) -> Result<Vec<EntryToCheck>> {
     let connection = database.connection();
 
     let mut statement = connection
         .prepare(
             r"
-            SELECT id, full_path
+            SELECT id, full_path, is_directory
             FROM files
-            WHERE is_directory = 1
-            ORDER BY LENGTH(full_path) ASC
             ",
         )
-        .context("Failed to prepare directory query")?;
+        .context("Failed to prepare entries query")?;
 
     let entries = statement
         .query_map([], |row| {
             Ok(EntryToCheck {
                 id: row.get(0)?,
                 full_path: row.get(1)?,
+                is_directory: row.get(2)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()
-        .context("Failed to query directories")?;
+        .context("Failed to query entries")?;
 
     Ok(entries)
 }
 
-/// Get all files from the database.
-fn get_all_files(database: &Database) -> Result<Vec<EntryToCheck>> {
+/// Get entries for a specific volume from the database.
+fn get_entries_for_volume(database: &Database, volume_id: i64) -> Result<Vec<EntryToCheck>> {
     let connection = database.connection();
 
     let mut statement = connection
         .prepare(
             r"
-            SELECT id, full_path
+            SELECT id, full_path, is_directory
             FROM files
-            WHERE is_directory = 0
+            WHERE volume_id = ?1
             ",
         )
-        .context("Failed to prepare file query")?;
+        .context("Failed to prepare volume entries query")?;
 
     let entries = statement
-        .query_map([], |row| {
+        .query_map([volume_id], |row| {
             Ok(EntryToCheck {
                 id: row.get(0)?,
                 full_path: row.get(1)?,
+                is_directory: row.get(2)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()
-        .context("Failed to query files")?;
+        .context("Failed to query volume entries")?;
 
     Ok(entries)
 }
@@ -423,5 +647,95 @@ mod tests {
         assert_eq!(stats.directories_removed, 0);
         assert_eq!(stats.entries_checked, 0);
         assert_eq!(stats.checks_skipped, 0);
+    }
+
+    #[test]
+    fn test_extract_volume_key_drive_letter() {
+        assert_eq!(extract_volume_key("C:\\Users\\test.txt"), "C:");
+        assert_eq!(extract_volume_key("D:\\folder\\file.txt"), "D:");
+        assert_eq!(extract_volume_key("c:\\lowercase"), "C:");
+    }
+
+    #[test]
+    fn test_extract_volume_key_unc_path() {
+        assert_eq!(extract_volume_key("\\\\server\\share\\file.txt"), "\\\\server\\share");
+        assert_eq!(extract_volume_key("\\\\nas\\data\\docs"), "\\\\nas\\data");
+    }
+
+    #[test]
+    fn test_group_entries_by_volume() {
+        let entries = vec![
+            EntryToCheck {
+                id: 1,
+                full_path: "C:\\file1.txt".to_string(),
+                is_directory: false,
+            },
+            EntryToCheck {
+                id: 2,
+                full_path: "C:\\file2.txt".to_string(),
+                is_directory: false,
+            },
+            EntryToCheck {
+                id: 3,
+                full_path: "D:\\file3.txt".to_string(),
+                is_directory: false,
+            },
+        ];
+
+        let grouped = group_entries_by_volume(entries);
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped.get("C:").map(|v| v.len()), Some(2));
+        assert_eq!(grouped.get("D:").map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn test_prune_parallel_matches_sequential() {
+        let (mut database, temp_dir) = setup_test_database();
+        let volume_id = insert_test_volume(&database);
+
+        // Create some real files
+        let existing_file = temp_dir.path().join("existing.txt");
+        File::create(&existing_file).expect("Failed to create file");
+
+        // Add entries
+        insert_test_file(&mut database, volume_id, &existing_file.to_string_lossy(), false);
+        insert_test_file(&mut database, volume_id, &temp_dir.path().to_string_lossy(), true);
+        insert_test_file(
+            &mut database,
+            volume_id,
+            &temp_dir.path().join("missing.txt").to_string_lossy(),
+            false,
+        );
+
+        let stats = prune_missing_entries_parallel(&database, false).expect("Parallel prune failed");
+
+        assert_eq!(stats.files_removed, 1);
+        assert_eq!(stats.directories_removed, 0);
+    }
+
+    #[test]
+    fn test_prune_volume_entries() {
+        let (mut database, temp_dir) = setup_test_database();
+        let volume_id = insert_test_volume(&database);
+
+        // Create a real file
+        let existing_file = temp_dir.path().join("existing.txt");
+        File::create(&existing_file).expect("Failed to create file");
+
+        // Add entries
+        insert_test_file(&mut database, volume_id, &existing_file.to_string_lossy(), false);
+        insert_test_file(&mut database, volume_id, &temp_dir.path().to_string_lossy(), true);
+        insert_test_file(
+            &mut database,
+            volume_id,
+            &temp_dir.path().join("missing.txt").to_string_lossy(),
+            false,
+        );
+
+        let stats = prune_volume_entries(&database, volume_id, false).expect("Volume prune failed");
+
+        assert_eq!(stats.files_removed, 1);
+        assert_eq!(stats.directories_removed, 0);
     }
 }

@@ -4,6 +4,15 @@
 //! files into the database. It supports multiple scanning strategies:
 //! - MFT scanning for NTFS volumes (fast)
 //! - Directory walking for non-NTFS volumes (fallback)
+//!
+//! Scans support two modes:
+//! - **Normal/Incremental** (default): Scans drives and UPSERTs entries, then
+//!   cleans up stale entries. For NTFS volumes, uses USN journal to efficiently
+//!   identify deleted/renamed files. For non-NTFS, runs pruning after scan.
+//! - **Clean/Force** (with `--force` flag): Deletes all existing entries for a
+//!   volume before inserting new ones. Use when you want a complete rebuild.
+//!
+//! Clean scan is automatically used when the database is new or empty.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,6 +27,8 @@ use futures::stream::FuturesUnordered;
 use tracing::{debug, error, info, warn};
 
 use crate::mft::{MftScanner, detect_ntfs_volumes};
+use crate::pruner::prune_volume_entries;
+use crate::usn::UsnMonitor;
 use crate::watcher::scan_directory;
 
 /// Categorized paths for scanning.
@@ -36,6 +47,8 @@ enum ScanResult {
         volume_info: IndexedVolume,
         entries: Vec<FileEntry>,
         elapsed: std::time::Duration,
+        /// Current USN for NTFS volumes (to store after scan).
+        current_usn: Option<i64>,
     },
     /// Scan failed.
     Failed { label: String, error: String },
@@ -55,6 +68,15 @@ impl CategorizedPaths {
 ///
 /// If a path is provided, scans that specific path.
 /// Otherwise, scans all configured paths or auto-detects NTFS volumes.
+///
+/// ## Scan Modes
+///
+/// - **Normal mode** (default): Scans and UPSERTs entries, then cleans up stale
+///   entries using USN journal (NTFS) or pruning (non-NTFS).
+/// - **Clean mode** (`force_clean_scan`): Deletes all existing entries before
+///   inserting. Used for complete rebuilds.
+///
+/// Clean scan is automatically used when the database is new or empty.
 pub async fn run_scan(path: Option<PathBuf>, config: &Config) -> Result<()> {
     let database_path = config.database_path();
 
@@ -66,19 +88,47 @@ pub async fn run_scan(path: Option<PathBuf>, config: &Config) -> Result<()> {
     let mut database = Database::open(&database_path)?;
     debug!("Database: {}", database_path.display());
 
+    // Determine if we should do a clean scan:
+    // - Always if force_clean_scan is set in config
+    // - Automatically if database is new/empty
+    let stats = database.get_stats()?;
+    let is_empty_db = stats.total_files == 0 && stats.total_directories == 0;
+    let clean_scan = config.daemon.force_clean_scan || is_empty_db;
+
+    if clean_scan {
+        if config.daemon.force_clean_scan {
+            info!("Performing clean scan (--force flag set)");
+        } else {
+            debug!("Performing clean scan (database is empty)");
+        }
+    } else {
+        debug!("Performing incremental scan with stale entry cleanup");
+    }
+
     if let Some(ref scan_path) = path {
         // Scan a specific path provided via command line
-        scan_single_path(&mut database, scan_path, config).await?;
+        scan_single_path(&mut database, scan_path, config, clean_scan).await?;
     } else {
         // Scan all configured paths or auto-detect NTFS volumes
-        scan_configured_paths(&mut database, config).await?;
+        scan_configured_paths(&mut database, config, clean_scan).await?;
     }
 
     Ok(())
 }
 
 /// Scan a single path, automatically detecting the appropriate scanning strategy.
-pub async fn scan_single_path(database: &mut Database, scan_path: &Path, config: &Config) -> Result<()> {
+///
+/// # Arguments
+/// * `database` - Database to store entries in
+/// * `scan_path` - Path to scan
+/// * `config` - Configuration settings
+/// * `clean_scan` - If true, deletes existing entries before inserting new ones
+pub async fn scan_single_path(
+    database: &mut Database,
+    scan_path: &Path,
+    config: &Config,
+    clean_scan: bool,
+) -> Result<()> {
     debug!("Scanning: {}", scan_path.display());
 
     if !is_path_accessible(scan_path) {
@@ -105,7 +155,7 @@ pub async fn scan_single_path(database: &mut Database, scan_path: &Path, config:
             let drive_letter = extract_drive_letter(scan_path).expect("NtfsDriveRoot should have a drive letter");
 
             debug!("Using MFT scanner for NTFS drive root");
-            try_mft_with_fallback(database, drive_letter, &[], scan_path, exclude_patterns).await?
+            try_mft_with_fallback(database, drive_letter, &[], scan_path, exclude_patterns, clean_scan).await?
         }
         PathType::LocalDirectory => {
             // Use MFT scanner with path filter for local directories
@@ -113,19 +163,27 @@ pub async fn scan_single_path(database: &mut Database, scan_path: &Path, config:
 
             let path_filter = scan_path.to_string_lossy().into_owned();
             debug!("Using MFT scanner with path filter: {}", path_filter);
-            try_mft_with_fallback(database, drive_letter, &[path_filter], scan_path, exclude_patterns).await?
+            try_mft_with_fallback(
+                database,
+                drive_letter,
+                &[path_filter],
+                scan_path,
+                exclude_patterns,
+                clean_scan,
+            )
+            .await?
         }
         PathType::MappedNetworkDrive => {
             // Try MFT scanner for mapped network drives - some NAS devices support it
             let drive_letter = extract_drive_letter(scan_path).expect("MappedNetworkDrive should have a drive letter");
 
             debug!("Attempting MFT scanner for mapped network drive");
-            try_mft_with_fallback(database, drive_letter, &[], scan_path, exclude_patterns).await?
+            try_mft_with_fallback(database, drive_letter, &[], scan_path, exclude_patterns, clean_scan).await?
         }
         PathType::UncPath => {
             // Use directory scanner for UNC paths (no drive letter for MFT)
             debug!("Using directory scanner for UNC path");
-            scan_directory_to_db(database, scan_path, exclude_patterns).await?
+            scan_directory_to_db(database, scan_path, exclude_patterns, clean_scan).await?
         }
     };
 
@@ -140,7 +198,13 @@ pub async fn scan_single_path(database: &mut Database, scan_path: &Path, config:
 }
 
 /// Scan all configured paths, or auto-detect NTFS volumes if none are configured.
-pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> Result<()> {
+///
+/// # Arguments
+/// * `database` - Database to store entries in
+/// * `config` - Configuration settings
+/// * `clean_scan` - If true, deletes existing entries before inserting new ones.
+///   If false, performs incremental update with stale entry cleanup.
+pub async fn scan_configured_paths(database: &mut Database, config: &Config, clean_scan: bool) -> Result<()> {
     let total_start = Instant::now();
 
     // Collect all paths to scan
@@ -173,6 +237,9 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
     }
 
     let exclude_patterns: Arc<[String]> = config.daemon.exclude.clone().into();
+
+    // Track which volumes need pruning (non-NTFS volumes in incremental mode)
+    let mut non_ntfs_volume_ids: Vec<i64> = Vec::new();
 
     // Build all scan tasks - each task fully handles its path
     let mut tasks: Vec<tokio::task::JoinHandle<ScanResult>> = Vec::with_capacity(total_tasks);
@@ -207,6 +274,12 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
         }));
     }
 
+    if clean_scan {
+        debug!("Clean scan mode: will delete existing entries before inserting");
+    } else {
+        debug!("Incremental scan mode: will clean up stale entries after scanning");
+    }
+
     // Process results as they complete using FuturesUnordered
     let mut futures: FuturesUnordered<_> = tasks.into_iter().collect();
     let mut total_entries = 0usize;
@@ -214,12 +287,33 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
     while let Some(result) = futures.next().await {
         match result {
             Ok(scan_result) => {
-                total_entries += process_scan_result(database, scan_result)?;
+                // Track non-NTFS volumes for pruning in incremental mode
+                if !clean_scan
+                    && let ScanResult::Success {
+                        ref volume_info,
+                        current_usn: None,
+                        ..
+                    } = scan_result
+                {
+                    // No USN means non-NTFS - will need pruning
+                    if let Some(existing_volume) = database.get_volume_by_serial(&volume_info.serial_number)?
+                        && let Some(vol_id) = existing_volume.id
+                    {
+                        non_ntfs_volume_ids.push(vol_id);
+                    }
+                }
+                total_entries += process_scan_result(database, scan_result, clean_scan)?;
             }
             Err(error) => {
                 error!("Scan task panicked: {}", error);
             }
         }
+    }
+
+    // For incremental scan, prune non-NTFS volumes that don't have USN support
+    if !clean_scan && !non_ntfs_volume_ids.is_empty() {
+        info!("Pruning {} non-NTFS volume(s)...", non_ntfs_volume_ids.len());
+        prune_non_ntfs_volumes(database, &non_ntfs_volume_ids, config.daemon.verbose);
     }
 
     let total_elapsed = total_start.elapsed();
@@ -265,13 +359,44 @@ pub fn scan_ntfs_volume_filtered(
     let count = entries.len();
     database.insert_files_batch(&entries)?;
 
+    // Get and store current USN for future incremental updates
+    if let Ok(usn_monitor) = UsnMonitor::new(drive_letter, 0)
+        && let Ok(journal_info) = usn_monitor.query_journal()
+    {
+        database.update_volume_usn(volume_id, journal_info.next_usn)?;
+        debug!("Stored USN {} for volume {}", journal_info.next_usn, drive_letter);
+    }
+
     Ok(count)
 }
 
 /// Scan a directory and insert entries into the database.
-pub async fn scan_directory_to_db(database: &mut Database, path: &Path, exclude_patterns: &[String]) -> Result<usize> {
+///
+/// # Arguments
+/// * `database` - Database to store entries in
+/// * `path` - Directory path to scan
+/// * `exclude_patterns` - Patterns to exclude from scanning
+/// * `clean_scan` - If true, deletes existing entries before inserting new ones
+pub async fn scan_directory_to_db(
+    database: &mut Database,
+    path: &Path,
+    exclude_patterns: &[String],
+    clean_scan: bool,
+) -> Result<usize> {
     let volume_info = create_directory_volume_info(path);
     let volume_id = database.upsert_volume(&volume_info)?;
+
+    // Delete existing entries for this volume if doing a clean scan
+    if clean_scan {
+        let deleted = database.delete_files_for_volume(volume_id)?;
+        if deleted > 0 {
+            debug!(
+                "Deleted {} existing entries for {} before scan",
+                deleted,
+                path.display()
+            );
+        }
+    }
 
     // Scan the directory
     let scan_entries = scan_directory(path, exclude_patterns).await?;
@@ -357,8 +482,9 @@ async fn try_mft_with_fallback(
     database: &mut Database,
     drive_letter: char,
     path_filters: &[String],
-    fallback_path: &Path,
+    scan_path: &Path,
     exclude_patterns: &[String],
+    clean_scan: bool,
 ) -> Result<usize> {
     let mft_result = if path_filters.is_empty() {
         scan_ntfs_volume(database, drive_letter)
@@ -370,7 +496,7 @@ async fn try_mft_with_fallback(
         Ok(count) => Ok(count),
         Err(err) => {
             debug!("MFT scan failed: {}, falling back to directory scan", err);
-            scan_directory_to_db(database, fallback_path, exclude_patterns).await
+            scan_directory_to_db(database, scan_path, exclude_patterns, clean_scan).await
         }
     }
 }
@@ -444,6 +570,7 @@ async fn scan_path_directory(scan_path: PathBuf, label: String, exclude: Arc<[St
                 volume_info,
                 entries,
                 elapsed: start.elapsed(),
+                current_usn: None,
             }
         }
         Err(error) => ScanResult::Failed {
@@ -458,11 +585,12 @@ fn scan_ntfs_drive(drive_letter: char) -> ScanResult {
     let label = format!("{drive_letter}:");
     let start = Instant::now();
     match scan_ntfs_volume_sync(drive_letter, &[]) {
-        Ok((volume_info, entries)) => ScanResult::Success {
+        Ok((volume_info, entries, current_usn)) => ScanResult::Success {
             label,
             volume_info,
             entries,
             elapsed: start.elapsed(),
+            current_usn,
         },
         Err(error) => ScanResult::Failed {
             label,
@@ -478,11 +606,12 @@ async fn scan_local_directories(drive_letter: char, paths: Vec<String>, exclude:
 
     // Try MFT scan first
     match scan_ntfs_volume_sync(drive_letter, &paths) {
-        Ok((volume_info, entries)) => ScanResult::Success {
+        Ok((volume_info, entries, current_usn)) => ScanResult::Success {
             label,
             volume_info,
             entries,
             elapsed: start.elapsed(),
+            current_usn,
         },
         Err(mft_error) => {
             // Fallback to directory walking for each path
@@ -515,6 +644,7 @@ async fn scan_local_directories(drive_letter: char, paths: Vec<String>, exclude:
                     volume_info: info,
                     entries: all_entries,
                     elapsed: start.elapsed(),
+                    current_usn: None,
                 },
                 None => ScanResult::Failed {
                     label,
@@ -532,11 +662,12 @@ async fn scan_mapped_drive(drive_letter: char, scan_path: PathBuf, exclude: Arc<
 
     // Try MFT scan first
     match scan_ntfs_volume_sync(drive_letter, &[]) {
-        Ok((volume_info, entries)) => ScanResult::Success {
+        Ok((volume_info, entries, current_usn)) => ScanResult::Success {
             label,
             volume_info,
             entries,
             elapsed: start.elapsed(),
+            current_usn,
         },
         Err(mft_error) => {
             // Fallback to directory walking
@@ -555,6 +686,7 @@ async fn scan_mapped_drive(drive_letter: char, scan_path: PathBuf, exclude: Arc<
                         volume_info,
                         entries,
                         elapsed: start.elapsed(),
+                        current_usn: None,
                     }
                 }
                 Err(error) => ScanResult::Failed {
@@ -567,20 +699,54 @@ async fn scan_mapped_drive(drive_letter: char, scan_path: PathBuf, exclude: Arc<
 }
 
 /// Process a single scan result and write it to the database.
-fn process_scan_result(database: &mut Database, result: ScanResult) -> Result<usize> {
+///
+/// # Arguments
+/// * `database` - Database to store entries in
+/// * `result` - Scan result to process
+/// * `clean_scan` - If true, deletes existing entries before inserting new ones.
+///   If false, performs incremental update with stale entry cleanup.
+fn process_scan_result(database: &mut Database, result: ScanResult, clean_scan: bool) -> Result<usize> {
     match result {
         ScanResult::Success {
             label,
             volume_info,
             mut entries,
             elapsed,
+            current_usn,
         } => {
+            // Get the previous USN before upserting the volume (which may update it)
+            let previous_usn = database.get_volume_last_usn(volume_info.mount_point.chars().next().unwrap_or('C'))?;
+
             let volume_id = database.upsert_volume(&volume_info)?;
+
+            if clean_scan {
+                // Clean scan: delete all existing entries first
+                let deleted = database.delete_files_for_volume(volume_id)?;
+                if deleted > 0 {
+                    debug!("{} - Clean scan: deleted {} existing entries", label, deleted);
+                }
+            } else if let (Some(prev_usn), Some(_curr_usn)) = (previous_usn, current_usn) {
+                // Incremental scan for NTFS: use USN journal to clean up stale entries
+                let drive_letter = volume_info.mount_point.chars().next().unwrap_or('C');
+                let stale_removed = cleanup_stale_entries_usn(database, volume_id, drive_letter, prev_usn)?;
+                if stale_removed > 0 {
+                    debug!("{} - Removed {} stale entries via USN journal", label, stale_removed);
+                }
+            }
+            // For non-NTFS without USN, pruning will be done after all scans complete
+
             for entry in &mut entries {
                 entry.volume_id = volume_id;
             }
             let count = entries.len();
             database.insert_files_batch(&entries)?;
+
+            // Store the current USN for future incremental updates
+            if let Some(usn) = current_usn {
+                database.update_volume_usn(volume_id, usn)?;
+                debug!("{} - Stored USN {} for future updates", label, usn);
+            }
+
             info!(
                 "{} - {} entries in {:.2}s",
                 label,
@@ -596,12 +762,98 @@ fn process_scan_result(database: &mut Database, result: ScanResult) -> Result<us
     }
 }
 
-/// Synchronous NTFS volume scan that returns volume info and entries.
-fn scan_ntfs_volume_sync(drive_letter: char, path_filters: &[String]) -> Result<(IndexedVolume, Vec<FileEntry>)> {
+/// Clean up stale database entries using USN journal changes.
+///
+/// Reads USN changes since `last_usn` and removes entries that were deleted
+/// or renamed (old name) from the database.
+fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: char, last_usn: i64) -> Result<usize> {
+    // Create USN monitor starting from the last known USN
+    let mut usn_monitor = match UsnMonitor::new(drive_letter, last_usn) {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            debug!(
+                "Could not open USN journal for {}: - skipping USN-based cleanup: {}",
+                drive_letter, error
+            );
+            return Ok(0);
+        }
+    };
+
+    // Read changes since last scan
+    let (changes, _new_usn) = usn_monitor.read_changes()?;
+
+    if changes.is_empty() {
+        return Ok(0);
+    }
+
+    // Collect MFT references for entries that were deleted or renamed (old name)
+    let stale_refs: Vec<u64> = changes
+        .iter()
+        .filter(|change| change.is_delete() || change.is_rename_old())
+        .map(|change| change.file_reference)
+        .collect();
+
+    if stale_refs.is_empty() {
+        return Ok(0);
+    }
+
+    debug!(
+        "{}: Found {} stale entries from USN journal ({} total changes)",
+        drive_letter,
+        stale_refs.len(),
+        changes.len()
+    );
+
+    // Delete stale entries from database by MFT reference
+    let deleted = database.delete_files_by_mft_references(volume_id, &stale_refs)?;
+
+    Ok(deleted)
+}
+
+/// Run volume pruning for non-NTFS volumes after incremental scan.
+///
+/// This is called after scanning to clean up stale entries for volumes
+/// that don't support USN journal.
+fn prune_non_ntfs_volumes(database: &Database, volume_ids_to_prune: &[i64], verbose: bool) {
+    if volume_ids_to_prune.is_empty() {
+        return;
+    }
+
+    debug!("Running pruning for {} non-NTFS volume(s)", volume_ids_to_prune.len());
+
+    for &volume_id in volume_ids_to_prune {
+        match prune_volume_entries(database, volume_id, verbose) {
+            Ok(stats) => {
+                if stats.files_removed > 0 || stats.directories_removed > 0 {
+                    info!(
+                        "Volume {} pruned: {} files, {} directories removed",
+                        volume_id, stats.files_removed, stats.directories_removed
+                    );
+                }
+            }
+            Err(error) => {
+                warn!("Failed to prune volume {}: {}", volume_id, error);
+            }
+        }
+    }
+}
+
+/// Synchronous NTFS volume scan that returns volume info, entries, and current USN.
+fn scan_ntfs_volume_sync(
+    drive_letter: char,
+    path_filters: &[String],
+) -> Result<(IndexedVolume, Vec<FileEntry>, Option<i64>)> {
     let scanner = MftScanner::new(drive_letter)?;
     let volume_info = scanner.get_volume_info()?;
     let entries = scanner.scan_filtered(path_filters)?;
-    Ok((volume_info, entries))
+
+    // Get current USN for future incremental updates
+    let current_usn = UsnMonitor::new(drive_letter, 0)
+        .ok()
+        .and_then(|monitor| monitor.query_journal().ok())
+        .map(|info| info.next_usn);
+
+    Ok((volume_info, entries, current_usn))
 }
 
 #[cfg(test)]
@@ -629,7 +881,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut database = Database::open(&db_path).expect("Failed to open database");
 
-        let count = scan_directory_to_db(&mut database, &scan_dir, &[])
+        let count = scan_directory_to_db(&mut database, &scan_dir, &[], true)
             .await
             .expect("Scan failed");
 
@@ -657,7 +909,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut database = Database::open(&db_path).expect("Failed to open database");
 
-        let count = scan_directory_to_db(&mut database, &scan_dir, &["*.tmp".to_string()])
+        let count = scan_directory_to_db(&mut database, &scan_dir, &["*.tmp".to_string()], true)
             .await
             .expect("Scan failed");
 
@@ -674,7 +926,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut database = Database::open(&db_path).expect("Failed to open database");
 
-        let count = scan_directory_to_db(&mut database, &scan_dir, &[])
+        let count = scan_directory_to_db(&mut database, &scan_dir, &[], true)
             .await
             .expect("Scan failed");
 
@@ -691,7 +943,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut database = Database::open(&db_path).expect("Failed to open database");
 
-        scan_directory_to_db(&mut database, &scan_dir, &[])
+        scan_directory_to_db(&mut database, &scan_dir, &[], true)
             .await
             .expect("Scan failed");
 
@@ -713,7 +965,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut database = Database::open(&db_path).expect("Failed to open database");
 
-        scan_directory_to_db(&mut database, &scan_dir, &[])
+        scan_directory_to_db(&mut database, &scan_dir, &[], true)
             .await
             .expect("Scan failed");
 
@@ -736,7 +988,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut database = Database::open(&db_path).expect("Failed to open database");
 
-        scan_directory_to_db(&mut database, &scan_dir, &[])
+        scan_directory_to_db(&mut database, &scan_dir, &[], true)
             .await
             .expect("Scan failed");
 
@@ -756,7 +1008,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut database = Database::open(&db_path).expect("Failed to open database");
 
-        scan_directory_to_db(&mut database, &scan_dir, &[])
+        scan_directory_to_db(&mut database, &scan_dir, &[], true)
             .await
             .expect("Scan failed");
 

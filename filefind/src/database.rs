@@ -381,6 +381,60 @@ impl Database {
         Ok(rows_affected)
     }
 
+    /// Batch size for MFT reference delete operations.
+    const MFT_DELETE_BATCH_SIZE: usize = 500;
+
+    /// Delete files by their MFT reference numbers for a specific volume.
+    ///
+    /// This is used for incremental cleanup based on USN journal changes.
+    /// Only deletes entries that match both the `volume_id` and one of the MFT references.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn delete_files_by_mft_references(&self, volume_id: i64, mft_references: &[u64]) -> Result<usize> {
+        if mft_references.is_empty() {
+            return Ok(0);
+        }
+
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut total_deleted = 0usize;
+
+        // Process in batches to avoid SQL statement size limits
+        for chunk in mft_references.chunks(Self::MFT_DELETE_BATCH_SIZE) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let query = format!(
+                "DELETE FROM files WHERE volume_id = ?1 AND mft_reference IN ({})",
+                placeholders.join(", ")
+            );
+
+            let mut statement = transaction.prepare(&query)?;
+
+            // Bind volume_id as first parameter
+            statement.raw_bind_parameter(1, volume_id)?;
+
+            // Bind all the MFT references
+            for (index, mft_ref) in chunk.iter().enumerate() {
+                // Convert u64 to i64 for SQLite (same conversion used in insert)
+                let mft_ref_i64 = i64::try_from(*mft_ref).unwrap_or(i64::MAX);
+                statement.raw_bind_parameter(index + 2, mft_ref_i64)?;
+            }
+
+            let rows = statement.raw_execute()?;
+            total_deleted += rows;
+        }
+
+        transaction.commit()?;
+
+        if total_deleted > 0 {
+            debug!(
+                "Deleted {} entries by MFT reference for volume {}",
+                total_deleted, volume_id
+            );
+        }
+
+        Ok(total_deleted)
+    }
+
     /// Search for files by name pattern (case-insensitive).
     ///
     /// # Errors
@@ -1497,6 +1551,94 @@ mod tests {
         // Volume 2 files should remain
         let stats = database.get_stats().unwrap();
         assert_eq!(stats.total_files, 3);
+    }
+
+    #[test]
+    fn test_delete_files_by_mft_references() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("MFT_DEL_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Create files with MFT references
+        let mut file1 = create_test_file(volume_id, "file1.txt", "C:\\file1.txt", 100);
+        file1.mft_reference = Some(1001);
+        database.insert_file(&file1).unwrap();
+
+        let mut file2 = create_test_file(volume_id, "file2.txt", "C:\\file2.txt", 200);
+        file2.mft_reference = Some(1002);
+        database.insert_file(&file2).unwrap();
+
+        let mut file3 = create_test_file(volume_id, "file3.txt", "C:\\file3.txt", 300);
+        file3.mft_reference = Some(1003);
+        database.insert_file(&file3).unwrap();
+
+        let mut file4 = create_test_file(volume_id, "file4.txt", "C:\\file4.txt", 400);
+        file4.mft_reference = None; // No MFT reference
+        database.insert_file(&file4).unwrap();
+
+        // Verify all files exist
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 4);
+
+        // Delete files by MFT references (1001 and 1003)
+        let deleted = database
+            .delete_files_by_mft_references(volume_id, &[1001, 1003])
+            .unwrap();
+        assert_eq!(deleted, 2);
+
+        // Verify correct files remain
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 2);
+
+        // file2 (mft_ref 1002) should still exist
+        let results = database.search_by_name("file2", 10).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // file4 (no mft_ref) should still exist
+        let results = database.search_by_name("file4", 10).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // file1 and file3 should be gone
+        let results = database.search_by_name("file1", 10).unwrap();
+        assert!(results.is_empty());
+        let results = database.search_by_name("file3", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_delete_files_by_mft_references_empty_list() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("MFT_EMPTY_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Should return 0 and not error with empty list
+        let deleted = database.delete_files_by_mft_references(volume_id, &[]).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn test_delete_files_by_mft_references_wrong_volume() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume1 = create_test_volume("VOL1", "C:");
+        let volume2 = create_test_volume("VOL2", "D:");
+        let volume_id1 = database.upsert_volume(&volume1).unwrap();
+        let volume_id2 = database.upsert_volume(&volume2).unwrap();
+
+        // Create file on volume 1
+        let mut file = create_test_file(volume_id1, "file.txt", "C:\\file.txt", 100);
+        file.mft_reference = Some(1001);
+        database.insert_file(&file).unwrap();
+
+        // Try to delete using volume 2's ID - should not delete anything
+        let deleted = database.delete_files_by_mft_references(volume_id2, &[1001]).unwrap();
+        assert_eq!(deleted, 0);
+
+        // File should still exist
+        let results = database.search_by_name("file", 10).unwrap();
+        assert_eq!(results.len(), 1);
     }
 
     #[test]

@@ -45,6 +45,13 @@ exclude = [
 # Database location (default: ~/.local/share/filefind/filefind.db)
 # database_path = ""
 
+# Force clean scan (delete existing entries before inserting new ones).
+# When false (default), uses incremental UPSERT which is faster but may
+# leave stale entries for moved/deleted files. Use `filefindd scan --force`
+# to do a one-time clean scan, or set this to true to always clean scan.
+# Clean scan is always performed automatically if the database is empty.
+# force_clean_scan = false
+
 [cli]
 # Default output format:
 #   "list"    - list of paths

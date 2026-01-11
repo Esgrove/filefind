@@ -560,7 +560,6 @@ impl UsnChange {
     }
 
     /// Check if this change represents a rename (old name).
-    #[expect(dead_code, reason = "public API for rename detection")]
     #[cfg(windows)]
     #[must_use]
     pub const fn is_rename_old(&self) -> bool {
