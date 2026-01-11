@@ -531,10 +531,22 @@ impl Daemon {
         // Now process the collected changes (no longer borrowing volume_monitors)
         let mut usn_events: Vec<FileChangeEvent> = Vec::new();
         let mut usn_updates: Vec<(char, i64)> = Vec::new();
+        // Collect deletions by volume for batch processing via MFT reference
+        let mut deletions_by_drive: HashMap<char, Vec<u64>> = HashMap::new();
 
         for (drive_letter, changes, new_usn) in raw_changes {
             for change in &changes {
-                // Try to resolve the path from parent reference and name
+                // Handle deletions specially - use MFT reference directly since path may not be resolvable
+                if change.is_delete() {
+                    deletions_by_drive
+                        .entry(drive_letter)
+                        .or_default()
+                        .push(change.file_reference);
+                    debug!("File deleted: {} (MFT ref {})", change.name, change.file_reference);
+                    continue;
+                }
+
+                // For non-delete events, try to resolve the path from parent reference and name
                 let full_path = self.resolve_usn_path_inner(drive_letter, change.parent_reference, &change.name);
 
                 if let Some(path) = full_path {
@@ -545,6 +557,33 @@ impl Daemon {
                 }
             }
             usn_updates.push((drive_letter, new_usn));
+        }
+
+        // Process deletions by MFT reference (more reliable than path resolution)
+        if let Some(ref db) = self.database {
+            for (drive_letter, mft_refs) in &deletions_by_drive {
+                // Get volume_id for this drive
+                if let Ok(volumes) = db.get_all_volumes()
+                    && let Some(volume) = volumes.iter().find(|v| {
+                        v.mount_point
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.eq_ignore_ascii_case(drive_letter))
+                    })
+                    && let Some(volume_id) = volume.id
+                {
+                    match db.delete_files_by_mft_references(volume_id, mft_refs) {
+                        Ok(deleted) => {
+                            if deleted > 0 {
+                                debug!("Deleted {} files from {}:", deleted, drive_letter);
+                            }
+                        }
+                        Err(error) => {
+                            debug!("Failed to delete files by MFT reference: {}", error);
+                        }
+                    }
+                }
+            }
         }
 
         // Process collected USN events
