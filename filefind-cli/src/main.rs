@@ -59,15 +59,19 @@ pub struct Args {
     pub limit: usize,
 
     /// Output format.
-    #[arg(short = 'o', long, value_enum, conflicts_with_all = ["simple", "info"])]
+    #[arg(short = 'o', long, value_enum, conflicts_with_all = ["list", "info"])]
     pub output: Option<OutputFormatArg>,
 
-    /// Simple output (shortcut for --output simple)
-    #[arg(short = 's', long, conflicts_with_all = ["output", "info"])]
-    pub simple: bool,
+    /// List output (shortcut for --output list)
+    #[arg(short = 'l', long, conflicts_with_all = ["output", "info"])]
+    pub list: bool,
+
+    /// Sort results by this field.
+    #[arg(short = 's', long, value_enum)]
+    pub sort: Option<SortBy>,
 
     /// Info output with file sizes (shortcut for --output info)
-    #[arg(short = 'i', long, conflicts_with_all = ["output", "simple"])]
+    #[arg(short = 'i', long, conflicts_with_all = ["output", "list"])]
     pub info: bool,
 
     /// Print verbose output.
@@ -107,8 +111,8 @@ pub enum Command {
 /// Output format argument for CLI.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormatArg {
-    /// Simple list of paths without type or size information.
-    Simple,
+    /// List of paths without type or size information.
+    List,
     /// Files grouped by directory.
     Grouped,
     /// Detailed info format with file size.
@@ -125,6 +129,16 @@ pub enum VolumeSortBy {
     Size,
     /// Sort by number of files.
     Files,
+}
+
+/// Sort order for search results.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum SortBy {
+    /// Sort alphabetically by name (default).
+    #[default]
+    Name,
+    /// Sort by file size (largest first).
+    Size,
 }
 
 fn main() -> Result<()> {

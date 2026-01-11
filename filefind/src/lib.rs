@@ -223,6 +223,19 @@ macro_rules! print_bold_magenta {
     };
 }
 
+/// Print a message in bold yellow.
+pub fn print_bold_yellow(message: &str) {
+    println!("{}", message.bold().yellow());
+}
+
+/// Print a message in bold yellow with formatting support.
+#[macro_export]
+macro_rules! print_bold_yellow {
+    ($($arg:tt)*) => {
+        $crate::print_bold_yellow(&format!($($arg)*))
+    };
+}
+
 /// Format a file size in bytes to a human-readable string.
 #[must_use]
 pub fn format_size(bytes: u64) -> String {

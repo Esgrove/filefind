@@ -106,7 +106,8 @@ pub struct CliConfig {
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     /// Simple list of paths without type or size information.
-    Simple,
+    #[serde(alias = "simple")]
+    List,
     /// Files grouped by directory (default).
     #[default]
     Grouped,
@@ -244,7 +245,7 @@ impl UserConfig {
 impl std::fmt::Display for OutputFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Simple => write!(f, "simple"),
+            Self::List => write!(f, "list"),
             Self::Grouped => write!(f, "grouped"),
             Self::Info => write!(f, "info"),
         }
@@ -256,7 +257,7 @@ impl std::str::FromStr for OutputFormat {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "simple" => Ok(Self::Simple),
+            "list" | "simple" => Ok(Self::List),
             "grouped" => Ok(Self::Grouped),
             "info" => Ok(Self::Info),
             _ => Err(format!("Unknown output format: {s}")),
@@ -343,27 +344,23 @@ mod tests {
 
     #[test]
     fn test_output_format_display() {
-        assert_eq!(OutputFormat::Simple.to_string(), "simple");
+        assert_eq!(OutputFormat::List.to_string(), "list");
         assert_eq!(OutputFormat::Grouped.to_string(), "grouped");
     }
 
     #[test]
     fn test_output_format_from_str() {
-        assert_eq!(
-            "simple".parse::<OutputFormat>().expect("parse simple"),
-            OutputFormat::Simple
-        );
+        assert_eq!("list".parse::<OutputFormat>().expect("parse list"), OutputFormat::List);
         assert_eq!(
             "GROUPED".parse::<OutputFormat>().expect("parse grouped"),
             OutputFormat::Grouped
         );
+        assert_eq!("List".parse::<OutputFormat>().expect("parse List"), OutputFormat::List);
+        assert_eq!("LIST".parse::<OutputFormat>().expect("parse LIST"), OutputFormat::List);
+        // "simple" is still accepted as an alias for backwards compatibility
         assert_eq!(
-            "Simple".parse::<OutputFormat>().expect("parse Simple"),
-            OutputFormat::Simple
-        );
-        assert_eq!(
-            "SIMPLE".parse::<OutputFormat>().expect("parse SIMPLE"),
-            OutputFormat::Simple
+            "simple".parse::<OutputFormat>().expect("parse simple"),
+            OutputFormat::List
         );
         assert!("invalid".parse::<OutputFormat>().is_err());
         assert!("".parse::<OutputFormat>().is_err());
@@ -377,9 +374,9 @@ mod tests {
 
     #[test]
     fn test_output_format_equality() {
-        assert_eq!(OutputFormat::Simple, OutputFormat::Simple);
+        assert_eq!(OutputFormat::List, OutputFormat::List);
         assert_eq!(OutputFormat::Grouped, OutputFormat::Grouped);
-        assert_ne!(OutputFormat::Simple, OutputFormat::Grouped);
+        assert_ne!(OutputFormat::List, OutputFormat::Grouped);
     }
 
     #[test]
@@ -594,9 +591,9 @@ exclude_patterns = ["*.tmp", "*.bak", "~*"]
 
     #[test]
     fn test_output_format_debug() {
-        let format = OutputFormat::Simple;
+        let format = OutputFormat::List;
         let debug_str = format!("{format:?}");
-        assert!(debug_str.contains("Simple"));
+        assert!(debug_str.contains("List"));
     }
 
     #[test]

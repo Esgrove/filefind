@@ -10,7 +10,7 @@ use regex::Regex;
 
 use filefind::config::{OutputFormat, UserConfig};
 
-use crate::{Args, Command, OutputFormatArg};
+use crate::{Args, Command, OutputFormatArg, SortBy};
 
 /// Combined configuration from user config and CLI arguments.
 ///
@@ -46,6 +46,9 @@ pub struct CliConfig {
 
     /// Output format
     pub output_format: OutputFormat,
+
+    /// Sort order for results
+    pub sort_by: SortBy,
 
     /// Print verbose output
     pub verbose: bool,
@@ -100,9 +103,9 @@ impl CliConfig {
         }
 
         // Determine the output format: CLI arg overrides user config
-        // --simple and --info flags are shortcuts for --output simple/info
-        let output_format = if args.simple {
-            OutputFormat::Simple
+        // --list and --info flags are shortcuts for --output list/info
+        let output_format = if args.list {
+            OutputFormat::List
         } else if args.info {
             OutputFormat::Info
         } else {
@@ -123,6 +126,7 @@ impl CliConfig {
             dirs_only: args.dirs,
             files_per_dir: args.limit,
             output_format,
+            sort_by: args.sort.unwrap_or(SortBy::Name),
             verbose: args.verbose,
             database_path: user_config.database_path(),
         })
@@ -160,7 +164,7 @@ impl CliConfig {
 impl From<OutputFormatArg> for OutputFormat {
     fn from(value: OutputFormatArg) -> Self {
         match value {
-            OutputFormatArg::Simple => Self::Simple,
+            OutputFormatArg::List => Self::List,
             OutputFormatArg::Grouped => Self::Grouped,
             OutputFormatArg::Info => Self::Info,
         }
@@ -185,7 +189,8 @@ mod tests {
             dirs: false,
             limit: 20,
             output: None,
-            simple: false,
+            list: false,
+            sort: Some(SortBy::Name),
             info: false,
             verbose: false,
             exact: false,

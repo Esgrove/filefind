@@ -47,7 +47,7 @@ exclude = [
 
 [cli]
 # Default output format:
-#   "simple"  - list of paths
+#   "list"    - list of paths
 #   "grouped" - files grouped by directory (default)
 #   "info"    - paths with file size
 # format = "grouped"
