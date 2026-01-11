@@ -27,7 +27,7 @@ use futures::stream::FuturesUnordered;
 use tracing::{debug, error, info, warn};
 
 use crate::mft::{MftScanner, detect_ntfs_volumes};
-use crate::pruner::prune_volume_entries;
+use crate::pruner::prune_multiple_volumes;
 use crate::usn::UsnMonitor;
 use crate::watcher::scan_directory;
 
@@ -813,27 +813,29 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
 /// Run volume pruning for non-NTFS volumes after incremental scan.
 ///
 /// This is called after scanning to clean up stale entries for volumes
-/// that don't support USN journal.
+/// that don't support USN journal. Uses parallel filesystem checks across
+/// all volumes for maximum I/O throughput.
 fn prune_non_ntfs_volumes(database: &Database, volume_ids_to_prune: &[i64], verbose: bool) {
     if volume_ids_to_prune.is_empty() {
         return;
     }
 
-    debug!("Running pruning for {} non-NTFS volume(s)", volume_ids_to_prune.len());
+    debug!(
+        "Running parallel pruning for {} non-NTFS volume(s)",
+        volume_ids_to_prune.len()
+    );
 
-    for &volume_id in volume_ids_to_prune {
-        match prune_volume_entries(database, volume_id, verbose) {
-            Ok(stats) => {
-                if stats.files_removed > 0 || stats.directories_removed > 0 {
-                    info!(
-                        "Volume {} pruned: {} files, {} directories removed",
-                        volume_id, stats.files_removed, stats.directories_removed
-                    );
-                }
+    match prune_multiple_volumes(database, volume_ids_to_prune, verbose) {
+        Ok(stats) => {
+            if stats.files_removed > 0 || stats.directories_removed > 0 {
+                info!(
+                    "Non-NTFS volumes pruned: {} files, {} directories removed",
+                    stats.files_removed, stats.directories_removed
+                );
             }
-            Err(error) => {
-                warn!("Failed to prune volume {}: {}", volume_id, error);
-            }
+        }
+        Err(error) => {
+            warn!("Failed to prune non-NTFS volumes: {}", error);
         }
     }
 }

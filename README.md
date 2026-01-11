@@ -63,6 +63,9 @@ filefindd scan
 # Scan a specific path
 filefindd scan "D:\Projects"
 
+# Force a clean scan (delete existing entries before inserting new ones)
+filefindd scan --force
+
 # Show index statistics
 filefindd stats
 
@@ -208,6 +211,11 @@ scan_interval_seconds = 3600
 
 # Log level: "error", "warn", "info", "debug", "trace"
 log_level = "info"
+
+# Force clean scan (delete existing entries before inserting new ones).
+# When false (default), uses incremental scan with USN-based cleanup for NTFS.
+# Clean scan is always performed automatically if the database is empty.
+# force_clean_scan = false
 
 [cli]
 # Default output format: "simple" (list of paths) or "grouped" (files grouped by directory)

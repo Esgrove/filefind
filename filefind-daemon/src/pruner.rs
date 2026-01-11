@@ -9,7 +9,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use filefind::Database;
@@ -137,6 +136,7 @@ pub fn prune_missing_entries(database: &Database, verbose: bool) -> Result<Prune
 ///
 /// # Errors
 /// Returns an error if database operations fail.
+#[allow(dead_code, reason = "public API for single-volume pruning, used in tests")]
 pub fn prune_volume_entries(database: &Database, volume_id: i64, verbose: bool) -> Result<PruneStats> {
     let entries = get_entries_for_volume(database, volume_id)?;
 
@@ -172,68 +172,65 @@ pub fn prune_volume_entries(database: &Database, volume_id: i64, verbose: bool) 
     Ok(stats)
 }
 
-/// Parallel prune that processes multiple volumes concurrently with progress reporting.
+/// Prune entries for multiple volumes efficiently in parallel.
+///
+/// This function is optimized for pruning multiple volumes by:
+/// 1. Reading entries for all volumes from the database (sequential)
+/// 2. Checking filesystem existence in parallel across all volumes using rayon
+/// 3. Deleting stale entries from the database (sequential)
+///
+/// This is more efficient than calling `prune_volume_entries` multiple times
+/// because it batches the database operations and maximizes parallel I/O.
 ///
 /// # Arguments
 /// * `database` - The database to prune
+/// * `volume_ids` - The volume IDs to prune entries for
 /// * `verbose` - Whether to print verbose progress information
 ///
 /// # Errors
 /// Returns an error if database operations fail.
-#[allow(dead_code, reason = "public API for parallel pruning with progress")]
-pub fn prune_missing_entries_parallel(database: &Database, verbose: bool) -> Result<PruneStats> {
-    // Get all entries from the database
-    let all_entries = get_all_entries(database)?;
-
-    if all_entries.is_empty() {
-        info!("Prune complete: no entries to check");
+pub fn prune_multiple_volumes(database: &Database, volume_ids: &[i64], verbose: bool) -> Result<PruneStats> {
+    if volume_ids.is_empty() {
         return Ok(PruneStats::default());
     }
 
-    // Group entries by volume
-    let entries_by_volume = group_entries_by_volume(all_entries);
-    let volume_count = entries_by_volume.len();
+    // Step 1: Read entries for all volumes from the database (sequential)
+    let mut all_entries: Vec<EntryToCheck> = Vec::new();
+    for &volume_id in volume_ids {
+        let entries = get_entries_for_volume(database, volume_id)?;
+        if verbose && !entries.is_empty() {
+            debug!("Volume {}: {} entries to check", volume_id, entries.len());
+        }
+        all_entries.extend(entries);
+    }
 
-    let total_entries: usize = entries_by_volume.values().map(Vec::len).sum();
+    if all_entries.is_empty() {
+        if verbose {
+            info!("No entries to prune across {} volume(s)", volume_ids.len());
+        }
+        return Ok(PruneStats::default());
+    }
 
     if verbose {
         info!(
             "Checking {} entries across {} volume(s) in parallel...",
-            total_entries, volume_count
+            all_entries.len(),
+            volume_ids.len()
         );
     }
 
-    // Atomic counters for progress tracking
-    let checked_counter = AtomicU64::new(0);
-    let removed_counter = AtomicU64::new(0);
+    // Step 2: Group by volume key and check filesystem in parallel
+    let entries_by_volume = group_entries_by_volume(all_entries);
 
-    // Process volumes in parallel
     let volume_results: Vec<VolumeCheckResult> = entries_by_volume
         .into_par_iter()
         .map(|(volume_key, entries)| {
-            let entry_count = entries.len();
-            debug!("Processing volume {} ({} entries)", volume_key, entry_count);
-
-            let result = check_volume_entries(entries);
-
-            // Update progress counters
-            checked_counter.fetch_add(result.entries_checked, Ordering::Relaxed);
-            removed_counter.fetch_add(result.files_removed + result.directories_removed, Ordering::Relaxed);
-
-            if verbose {
-                debug!(
-                    "Volume {} complete: {} checked, {} to remove",
-                    volume_key,
-                    result.entries_checked,
-                    result.ids_to_delete.len()
-                );
-            }
-
-            result
+            trace!("Processing volume: {}", volume_key);
+            check_volume_entries(entries)
         })
         .collect();
 
-    // Aggregate results
+    // Step 3: Aggregate results and delete from database (sequential)
     let mut stats = PruneStats::default();
     let mut all_ids_to_delete: Vec<i64> = Vec::new();
 
@@ -245,16 +242,13 @@ pub fn prune_missing_entries_parallel(database: &Database, verbose: bool) -> Res
         all_ids_to_delete.extend(result.ids_to_delete);
     }
 
-    // Delete all missing entries from database
     if !all_ids_to_delete.is_empty() {
-        if verbose {
-            info!("Deleting {} stale entries from database...", all_ids_to_delete.len());
-        }
-        delete_entries_by_ids(database, &all_ids_to_delete)?;
+        let deleted = delete_entries_by_ids(database, &all_ids_to_delete)?;
+        debug!("Deleted {} entries from database", deleted);
     }
 
     info!(
-        "Prune complete: checked {} entries, removed {} files and {} directories ({} checks skipped)",
+        "Multi-volume prune complete: checked {} entries, removed {} files and {} directories ({} checks skipped)",
         stats.entries_checked, stats.files_removed, stats.directories_removed, stats.checks_skipped
     );
 
@@ -690,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prune_parallel_matches_sequential() {
+    fn test_prune_missing_entries_removes_missing_files() {
         let (mut database, temp_dir) = setup_test_database();
         let volume_id = insert_test_volume(&database);
 
@@ -708,7 +702,7 @@ mod tests {
             false,
         );
 
-        let stats = prune_missing_entries_parallel(&database, false).expect("Parallel prune failed");
+        let stats = prune_missing_entries(&database, false).expect("Prune failed");
 
         assert_eq!(stats.files_removed, 1);
         assert_eq!(stats.directories_removed, 0);
@@ -737,5 +731,69 @@ mod tests {
 
         assert_eq!(stats.files_removed, 1);
         assert_eq!(stats.directories_removed, 0);
+    }
+
+    #[test]
+    fn test_prune_multiple_volumes() {
+        let (mut database, temp_dir) = setup_test_database();
+
+        // Create two volumes
+        let volume1 = IndexedVolume::new("VOL1".to_string(), "C:".to_string(), VolumeType::Local);
+        let volume2 = IndexedVolume::new("VOL2".to_string(), "D:".to_string(), VolumeType::Local);
+
+        let volume_id1 = database.upsert_volume(&volume1).expect("Failed to insert volume 1");
+        let volume_id2 = database.upsert_volume(&volume2).expect("Failed to insert volume 2");
+
+        // Create real files for volume 1
+        let existing_file1 = temp_dir.path().join("vol1_existing.txt");
+        File::create(&existing_file1).expect("Failed to create file");
+
+        // Create real files for volume 2
+        let existing_file2 = temp_dir.path().join("vol2_existing.txt");
+        File::create(&existing_file2).expect("Failed to create file");
+
+        // Add entries for volume 1 (1 existing, 1 missing)
+        insert_test_file(&mut database, volume_id1, &existing_file1.to_string_lossy(), false);
+        insert_test_file(
+            &mut database,
+            volume_id1,
+            &temp_dir.path().join("vol1_missing.txt").to_string_lossy(),
+            false,
+        );
+
+        // Add entries for volume 2 (1 existing, 2 missing)
+        insert_test_file(&mut database, volume_id2, &existing_file2.to_string_lossy(), false);
+        insert_test_file(
+            &mut database,
+            volume_id2,
+            &temp_dir.path().join("vol2_missing1.txt").to_string_lossy(),
+            false,
+        );
+        insert_test_file(
+            &mut database,
+            volume_id2,
+            &temp_dir.path().join("vol2_missing2.txt").to_string_lossy(),
+            false,
+        );
+
+        // Prune both volumes at once
+        let stats =
+            prune_multiple_volumes(&database, &[volume_id1, volume_id2], false).expect("Multi-volume prune failed");
+
+        // Should remove 3 missing files total (1 from vol1 + 2 from vol2)
+        assert_eq!(stats.files_removed, 3);
+        assert_eq!(stats.directories_removed, 0);
+        assert_eq!(stats.entries_checked, 5);
+    }
+
+    #[test]
+    fn test_prune_multiple_volumes_empty_list() {
+        let (database, _temp_dir) = setup_test_database();
+
+        let stats = prune_multiple_volumes(&database, &[], false).expect("Empty prune failed");
+
+        assert_eq!(stats.files_removed, 0);
+        assert_eq!(stats.directories_removed, 0);
+        assert_eq!(stats.entries_checked, 0);
     }
 }

@@ -52,6 +52,7 @@ cargo test -p filefind
     - `src/daemon.rs` - Core daemon logic and lifecycle
     - `src/ipc_server.rs` - IPC server for handling client commands
     - `src/mft.rs` - NTFS MFT reading
+    - `src/pruner.rs` - Database pruning for stale entries
     - `src/scanner.rs` - File scanning logic (MFT and directory walking)
     - `src/usn.rs` - USN Journal monitoring
     - `src/watcher.rs` - File system watcher for non-NTFS drives
@@ -108,6 +109,7 @@ Remember to update the example config file when adding new config options.
 - `log_level` - Log level: error, warn, info, debug, trace
 - `verbose` - Enable verbose output
 - `database_path` - Custom database file location
+- `force_clean_scan` - Force clean scan mode (delete all entries before inserting)
 
 ### CLI Configuration Options
 
@@ -131,6 +133,18 @@ Remember to update the example config file when adding new config options.
 - Tracks file system changes efficiently
 - Query "what changed since USN X" instead of rescanning
 - Handles creates, deletes, renames, modifications
+- Used for incremental stale entry cleanup after scans
+
+### Scan Modes
+
+The daemon supports two scan modes:
+
+- **Incremental mode** (default): Scans and UPSERTs entries, then cleans up stale entries.
+  For NTFS volumes, uses USN journal to efficiently identify deleted/renamed files.
+  For non-NTFS volumes, runs volume pruner after scan.
+- **Clean mode** (`--force` flag or `force_clean_scan` config): Deletes all existing
+  entries for a volume before inserting new ones. Use for complete rebuilds.
+  Clean scan is automatically used when the database is empty.
 
 ### File Watcher (non-NTFS/network drives)
 
