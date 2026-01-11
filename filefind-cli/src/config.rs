@@ -100,7 +100,14 @@ impl CliConfig {
         }
 
         // Determine the output format: CLI arg overrides user config
-        let output_format = args.output.map_or(user_config.cli.format, OutputFormat::from);
+        // --simple and --info flags are shortcuts for --output simple/info
+        let output_format = if args.simple {
+            OutputFormat::Simple
+        } else if args.info {
+            OutputFormat::Info
+        } else {
+            args.output.map_or(user_config.cli.format, OutputFormat::from)
+        };
 
         // Case sensitivity: CLI arg overrides user config
         let case_sensitive = args.case || user_config.cli.case_sensitive;
@@ -155,6 +162,7 @@ impl From<OutputFormatArg> for OutputFormat {
         match value {
             OutputFormatArg::Simple => Self::Simple,
             OutputFormatArg::Grouped => Self::Grouped,
+            OutputFormatArg::Info => Self::Info,
         }
     }
 }
@@ -177,6 +185,8 @@ mod tests {
             dirs: false,
             limit: 20,
             output: None,
+            simple: false,
+            info: false,
             verbose: false,
             exact: false,
         }

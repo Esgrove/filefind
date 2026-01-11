@@ -59,8 +59,16 @@ pub struct Args {
     pub limit: usize,
 
     /// Output format.
-    #[arg(short = 'o', long, value_enum)]
+    #[arg(short = 'o', long, value_enum, conflicts_with_all = ["simple", "info"])]
     pub output: Option<OutputFormatArg>,
+
+    /// Simple output (shortcut for --output simple)
+    #[arg(short = 's', long, conflicts_with_all = ["output", "info"])]
+    pub simple: bool,
+
+    /// Info output with file sizes (shortcut for --output info)
+    #[arg(short = 'i', long, conflicts_with_all = ["output", "simple"])]
+    pub info: bool,
 
     /// Print verbose output.
     #[arg(short = 'v', long)]
@@ -101,8 +109,10 @@ pub enum Command {
 pub enum OutputFormatArg {
     /// Simple list of paths without type or size information.
     Simple,
-    /// Files grouped by directory (default).
+    /// Files grouped by directory.
     Grouped,
+    /// Detailed info format with file size.
+    Info,
 }
 
 /// Sort order for volumes listing.

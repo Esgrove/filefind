@@ -110,6 +110,8 @@ pub enum OutputFormat {
     /// Files grouped by directory (default).
     #[default]
     Grouped,
+    /// Detailed info with size.
+    Info,
 }
 
 /// Log level for the daemon.
@@ -244,6 +246,7 @@ impl std::fmt::Display for OutputFormat {
         match self {
             Self::Simple => write!(f, "simple"),
             Self::Grouped => write!(f, "grouped"),
+            Self::Info => write!(f, "info"),
         }
     }
 }
@@ -255,6 +258,7 @@ impl std::str::FromStr for OutputFormat {
         match s.to_lowercase().as_str() {
             "simple" => Ok(Self::Simple),
             "grouped" => Ok(Self::Grouped),
+            "info" => Ok(Self::Info),
             _ => Err(format!("Unknown output format: {s}")),
         }
     }

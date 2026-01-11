@@ -165,6 +165,7 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     match config.output_format {
         OutputFormat::Grouped => display_grouped_output(&directories, &files, &display_options, &highlight_patterns),
         OutputFormat::Simple => display_simple(&directories, &files, &display_options, &highlight_patterns),
+        OutputFormat::Info => display_info(&directories, &files, &display_options, &highlight_patterns),
     }
 
     // Show search stats if verbose
@@ -483,6 +484,74 @@ fn display_simple(
             }
         }
     }
+}
+
+/// Display results in info format with size.
+fn display_info(
+    directories: &[&filefind::types::FileEntry],
+    files: &[&filefind::types::FileEntry],
+    options: &DisplayOptions,
+    highlight_patterns: &[&str],
+) {
+    // Build a map of directory path -> total size of files under it
+    let dir_sizes = calculate_directory_sizes(files);
+
+    if options.files_only {
+        for file in files {
+            print_entry_info(file, None, highlight_patterns);
+        }
+    } else if options.directories_only {
+        for directory in directories {
+            let size = dir_sizes.get(&directory.full_path).copied();
+            print_entry_info(directory, size, highlight_patterns);
+        }
+    } else {
+        // Combine all entries and sort by path
+        let mut all_entries: Vec<_> = directories.iter().chain(files.iter()).collect();
+        all_entries.sort_by(|a, b| a.full_path.cmp(&b.full_path));
+
+        for entry in all_entries {
+            let size = if entry.is_directory {
+                dir_sizes.get(&entry.full_path).copied()
+            } else {
+                None
+            };
+            print_entry_info(entry, size, highlight_patterns);
+        }
+    }
+}
+
+/// Calculate the total size of files under each directory.
+fn calculate_directory_sizes(files: &[&filefind::types::FileEntry]) -> HashMap<String, u64> {
+    let mut dir_sizes: HashMap<String, u64> = HashMap::new();
+
+    for file in files {
+        if let Some(parent) = PathBuf::from(&file.full_path).parent() {
+            let parent_str = parent.to_string_lossy().to_string();
+            *dir_sizes.entry(parent_str).or_insert(0) += file.size;
+        }
+    }
+
+    dir_sizes
+}
+
+/// Print a single entry with size info.
+///
+/// For directories, `calculated_size` can provide the sum of contained files.
+fn print_entry_info(entry: &filefind::types::FileEntry, calculated_size: Option<u64>, highlight_patterns: &[&str]) {
+    let size_str = if entry.is_directory {
+        calculated_size.map_or_else(|| format!("{:>10}", "-"), |size| format!("{:>10}", format_size(size)))
+    } else {
+        format!("{:>10}", format_size(entry.size))
+    };
+
+    let path_display = if entry.is_directory {
+        entry.full_path.cyan().to_string()
+    } else {
+        highlight_match(&entry.full_path, highlight_patterns)
+    };
+
+    println!("{size_str}  {path_display}");
 }
 
 /// Check if a path is accessible with a timeout.
