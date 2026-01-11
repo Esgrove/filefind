@@ -331,11 +331,11 @@ fn format_status_menu_text(status: &DaemonStatus) -> String {
 fn get_daemon_status(ipc_client: &IpcClient) -> DaemonStatus {
     match ipc_client.get_status() {
         Ok(status) => {
-            trace!("Got daemon status: {:?}", status.state);
+            trace!("Daemon status: {:?}", status.state);
             status
         }
         Err(error) => {
-            warn!("Failed to get daemon status (daemon may not be running): {}", error);
+            warn!("Failed to get daemon status: {}", error);
             DaemonStatus::default()
         }
     }
