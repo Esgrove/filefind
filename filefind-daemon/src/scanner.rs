@@ -280,6 +280,11 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config, cle
         debug!("Incremental scan mode: will clean up stale entries after scanning");
     }
 
+    // Capture the maximum file ID before processing any results.
+    // This allows the pruner to skip entries that are inserted during this scan.
+    let max_id_before_scan = database.get_max_file_id().unwrap_or(0);
+    debug!("Max file ID before scan: {}", max_id_before_scan);
+
     // Process results as they complete using FuturesUnordered
     let mut futures: FuturesUnordered<_> = tasks.into_iter().collect();
     let mut total_entries = 0usize;
@@ -311,9 +316,15 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config, cle
     }
 
     // For incremental scan, prune non-NTFS volumes that don't have USN support
+    // Only check entries that existed before this scan started (id <= max_id_before_scan)
     if !clean_scan && !non_ntfs_volume_ids.is_empty() {
         info!("Pruning {} non-NTFS volume(s)...", non_ntfs_volume_ids.len());
-        prune_non_ntfs_volumes(database, &non_ntfs_volume_ids, config.daemon.verbose);
+        prune_non_ntfs_volumes(
+            database,
+            &non_ntfs_volume_ids,
+            max_id_before_scan,
+            config.daemon.verbose,
+        );
     }
 
     let total_elapsed = total_start.elapsed();
@@ -815,17 +826,18 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
 /// This is called after scanning to clean up stale entries for volumes
 /// that don't support USN journal. Uses parallel filesystem checks across
 /// all volumes for maximum I/O throughput.
-fn prune_non_ntfs_volumes(database: &Database, volume_ids_to_prune: &[i64], verbose: bool) {
+fn prune_non_ntfs_volumes(database: &Database, volume_ids_to_prune: &[i64], max_id: i64, verbose: bool) {
     if volume_ids_to_prune.is_empty() {
         return;
     }
 
     debug!(
-        "Running parallel pruning for {} non-NTFS volume(s)",
-        volume_ids_to_prune.len()
+        "Running parallel pruning for {} non-NTFS volume(s) (entries with id <= {})",
+        volume_ids_to_prune.len(),
+        max_id
     );
 
-    match prune_multiple_volumes(database, volume_ids_to_prune, verbose) {
+    match prune_multiple_volumes(database, volume_ids_to_prune, Some(max_id), verbose) {
         Ok(stats) => {
             if stats.files_removed > 0 || stats.directories_removed > 0 {
                 info!(

@@ -138,7 +138,7 @@ pub fn prune_missing_entries(database: &Database, verbose: bool) -> Result<Prune
 /// Returns an error if database operations fail.
 #[allow(dead_code, reason = "public API for single-volume pruning, used in tests")]
 pub fn prune_volume_entries(database: &Database, volume_id: i64, verbose: bool) -> Result<PruneStats> {
-    let entries = get_entries_for_volume(database, volume_id)?;
+    let entries = get_entries_for_volume(database, volume_id, None)?;
 
     if entries.is_empty() {
         if verbose {
@@ -185,11 +185,18 @@ pub fn prune_volume_entries(database: &Database, volume_id: i64, verbose: bool) 
 /// # Arguments
 /// * `database` - The database to prune
 /// * `volume_ids` - The volume IDs to prune entries for
+/// * `max_id` - Optional maximum file ID to prune; entries with higher IDs are skipped.
+///   This is useful to skip entries that were just inserted during the current scan.
 /// * `verbose` - Whether to print verbose progress information
 ///
 /// # Errors
 /// Returns an error if database operations fail.
-pub fn prune_multiple_volumes(database: &Database, volume_ids: &[i64], verbose: bool) -> Result<PruneStats> {
+pub fn prune_multiple_volumes(
+    database: &Database,
+    volume_ids: &[i64],
+    max_id: Option<i64>,
+    verbose: bool,
+) -> Result<PruneStats> {
     if volume_ids.is_empty() {
         return Ok(PruneStats::default());
     }
@@ -197,7 +204,7 @@ pub fn prune_multiple_volumes(database: &Database, volume_ids: &[i64], verbose: 
     // Step 1: Read entries for all volumes from the database (sequential)
     let mut all_entries: Vec<EntryToCheck> = Vec::new();
     for &volume_id in volume_ids {
-        let entries = get_entries_for_volume(database, volume_id)?;
+        let entries = get_entries_for_volume(database, volume_id, max_id)?;
         if verbose && !entries.is_empty() {
             debug!("Volume {}: {} entries to check", volume_id, entries.len());
         }
@@ -434,29 +441,55 @@ fn get_all_entries(database: &Database) -> Result<Vec<EntryToCheck>> {
 }
 
 /// Get entries for a specific volume from the database.
-fn get_entries_for_volume(database: &Database, volume_id: i64) -> Result<Vec<EntryToCheck>> {
+///
+/// If `max_id` is provided, only returns entries with `id <= max_id`.
+/// This is useful to skip entries that were just inserted during the current scan.
+fn get_entries_for_volume(database: &Database, volume_id: i64, max_id: Option<i64>) -> Result<Vec<EntryToCheck>> {
     let connection = database.connection();
 
-    let mut statement = connection
-        .prepare(
-            r"
-            SELECT id, full_path, is_directory
-            FROM files
-            WHERE volume_id = ?1
-            ",
-        )
-        .context("Failed to prepare volume entries query")?;
+    let entries = if let Some(max) = max_id {
+        let mut statement = connection
+            .prepare(
+                r"
+                SELECT id, full_path, is_directory
+                FROM files
+                WHERE volume_id = ?1 AND id <= ?2
+                ",
+            )
+            .context("Failed to prepare volume entries query")?;
 
-    let entries = statement
-        .query_map([volume_id], |row| {
-            Ok(EntryToCheck {
-                id: row.get(0)?,
-                full_path: row.get(1)?,
-                is_directory: row.get(2)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .context("Failed to query volume entries")?;
+        statement
+            .query_map([volume_id, max], |row| {
+                Ok(EntryToCheck {
+                    id: row.get(0)?,
+                    full_path: row.get(1)?,
+                    is_directory: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to query volume entries")?
+    } else {
+        let mut statement = connection
+            .prepare(
+                r"
+                SELECT id, full_path, is_directory
+                FROM files
+                WHERE volume_id = ?1
+                ",
+            )
+            .context("Failed to prepare volume entries query")?;
+
+        statement
+            .query_map([volume_id], |row| {
+                Ok(EntryToCheck {
+                    id: row.get(0)?,
+                    full_path: row.get(1)?,
+                    is_directory: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to query volume entries")?
+    };
 
     Ok(entries)
 }
@@ -777,8 +810,8 @@ mod tests {
         );
 
         // Prune both volumes at once
-        let stats =
-            prune_multiple_volumes(&database, &[volume_id1, volume_id2], false).expect("Multi-volume prune failed");
+        let stats = prune_multiple_volumes(&database, &[volume_id1, volume_id2], None, false)
+            .expect("Multi-volume prune failed");
 
         // Should remove 3 missing files total (1 from vol1 + 2 from vol2)
         assert_eq!(stats.files_removed, 3);
@@ -790,7 +823,7 @@ mod tests {
     fn test_prune_multiple_volumes_empty_list() {
         let (database, _temp_dir) = setup_test_database();
 
-        let stats = prune_multiple_volumes(&database, &[], false).expect("Empty prune failed");
+        let stats = prune_multiple_volumes(&database, &[], None, false).expect("Empty prune failed");
 
         assert_eq!(stats.files_removed, 0);
         assert_eq!(stats.directories_removed, 0);

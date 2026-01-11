@@ -880,6 +880,22 @@ impl Database {
         Ok(())
     }
 
+    /// Get the maximum file ID in the database.
+    ///
+    /// Returns 0 if the database is empty. This is useful for tracking which
+    /// entries existed before a scan, so the pruner can skip newly inserted entries.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn get_max_file_id(&self) -> Result<i64> {
+        let max_id: i64 = self
+            .connection
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM files", [], |row| row.get(0))
+            .context("Failed to get max file ID")?;
+
+        Ok(max_id)
+    }
+
     /// Get the underlying connection for advanced operations.
     #[must_use]
     pub const fn connection(&self) -> &Connection {
@@ -3161,5 +3177,59 @@ mod tests {
         let patterns = vec!["日本語".to_string(), "中文".to_string()];
         let results = database.search_by_names_all(&patterns, 100).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_max_file_id_empty_database() {
+        let database = Database::open_in_memory().unwrap();
+
+        let max_id = database.get_max_file_id().unwrap();
+        assert_eq!(max_id, 0);
+    }
+
+    #[test]
+    fn test_get_max_file_id_with_entries() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL001", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert some files
+        let file1 = create_test_file(volume_id, "file1.txt", "C:\\file1.txt", 100);
+        let file2 = create_test_file(volume_id, "file2.txt", "C:\\file2.txt", 200);
+        let file3 = create_test_file(volume_id, "file3.txt", "C:\\file3.txt", 300);
+
+        database.insert_file(&file1).unwrap();
+        let max_after_first = database.get_max_file_id().unwrap();
+        assert!(max_after_first > 0);
+
+        database.insert_file(&file2).unwrap();
+        let max_after_second = database.get_max_file_id().unwrap();
+        assert!(max_after_second > max_after_first);
+
+        database.insert_file(&file3).unwrap();
+        let max_after_third = database.get_max_file_id().unwrap();
+        assert!(max_after_third > max_after_second);
+    }
+
+    #[test]
+    fn test_get_max_file_id_after_deletion() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL002", "D:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert files
+        let file1 = create_test_file(volume_id, "file1.txt", "D:\\file1.txt", 100);
+        let file2 = create_test_file(volume_id, "file2.txt", "D:\\file2.txt", 200);
+
+        database.insert_file(&file1).unwrap();
+        database.insert_file(&file2).unwrap();
+
+        let max_before_delete = database.get_max_file_id().unwrap();
+
+        // Delete first file - max should remain the same (IDs don't get reused)
+        database.delete_file_by_path(&file1.full_path).unwrap();
+
+        let max_after_delete = database.get_max_file_id().unwrap();
+        assert_eq!(max_after_delete, max_before_delete);
     }
 }

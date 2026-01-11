@@ -116,6 +116,7 @@ const fn apply_cli_args(
     }
     if verbose {
         config.daemon.verbose = true;
+        config.daemon.log_level = LogLevel::Debug;
     }
     if let Some(force) = force_clean_scan
         && force
