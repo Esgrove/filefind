@@ -10,7 +10,7 @@ mod scanner;
 mod usn;
 mod watcher;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -116,7 +116,13 @@ const fn apply_cli_args(
     }
     if verbose {
         config.daemon.verbose = true;
-        config.daemon.log_level = LogLevel::Debug;
+        // Only upgrade log level if current level is less verbose than Debug
+        if matches!(
+            config.daemon.log_level,
+            LogLevel::Error | LogLevel::Warn | LogLevel::Info
+        ) {
+            config.daemon.log_level = LogLevel::Debug;
+        }
     }
     if let Some(force) = force_clean_scan
         && force
@@ -153,7 +159,14 @@ fn main() -> Result<()> {
     tracing::trace!("{config:#?}");
 
     match args.command {
-        Some(Command::Start { foreground, rescan }) => daemon::start_daemon(foreground, rescan, &config),
+        Some(Command::Start { foreground, rescan }) => {
+            let options = daemon::DaemonOptions {
+                foreground,
+                rescan,
+                ..Default::default()
+            };
+            daemon::start_daemon(&options, &config)
+        }
         Some(Command::Stop) => {
             daemon::stop_daemon();
             Ok(())
@@ -161,12 +174,12 @@ fn main() -> Result<()> {
         Some(Command::Status) => daemon::show_status(&config),
         Some(Command::Scan { path, .. }) => tokio::runtime::Runtime::new()?.block_on(scanner::run_scan(path, &config)),
         Some(Command::Stats) => daemon::show_stats(&config),
-        Some(Command::Volumes { detailed }) => daemon::list_volumes(detailed, &config),
+        Some(Command::Volumes { detailed }) => daemon::list_volumes(&config.database_path(), detailed),
         Some(Command::Detect) => {
             daemon::detect_drives();
             Ok(())
         }
-        Some(Command::Reset { force }) => reset_database(force, &config),
+        Some(Command::Reset { force }) => reset_database(&config.database_path(), force),
         Some(Command::Prune) => run_prune(&config),
         Some(Command::Completion { .. }) => unreachable!("Handled above"),
         None => {
@@ -214,9 +227,7 @@ fn init_logging(log_level: LogLevel, foreground: bool) -> Result<()> {
 }
 
 /// Delete the database file and start fresh.
-fn reset_database(force: bool, config: &Config) -> Result<()> {
-    let database_path = config.database_path();
-
+fn reset_database(database_path: &Path, force: bool) -> Result<()> {
     if !database_path.exists() {
         tracing::debug!("Database does not exist at: {}", database_path.display());
         return Ok(());
@@ -236,7 +247,7 @@ fn reset_database(force: bool, config: &Config) -> Result<()> {
         }
     }
 
-    std::fs::remove_file(&database_path).context("Failed to delete database")?;
+    std::fs::remove_file(database_path).context("Failed to delete database")?;
     println!("Database deleted: {}", database_path.display());
 
     Ok(())

@@ -123,7 +123,7 @@ pub enum OutputFormat {
 }
 
 /// Log level for the daemon.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     /// Error messages only.

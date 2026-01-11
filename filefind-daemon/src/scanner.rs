@@ -88,9 +88,23 @@ pub async fn run_scan(path: Option<PathBuf>, config: &Config) -> Result<()> {
     let mut database = Database::open(&database_path)?;
     debug!("Database: {}", database_path.display());
 
-    // Determine if we should do a clean scan:
-    // - Always if force_clean_scan is set in config
-    // - Automatically if database is new/empty
+    if let Some(ref scan_path) = path {
+        // Scan a specific path provided via command line
+        scan_single_path(&mut database, scan_path, config).await?;
+    } else {
+        // Scan all configured paths or auto-detect NTFS volumes
+        scan_configured_paths(&mut database, config).await?;
+    }
+
+    Ok(())
+}
+
+/// Determine if we should do a clean scan based on config and database state.
+///
+/// Returns `true` if:
+/// - `force_clean_scan` is set in config, or
+/// - The database is empty (no files or directories)
+fn should_clean_scan(database: &Database, config: &Config) -> Result<bool> {
     let stats = database.get_stats()?;
     let is_empty_db = stats.total_files == 0 && stats.total_directories == 0;
     let clean_scan = config.daemon.force_clean_scan || is_empty_db;
@@ -105,15 +119,7 @@ pub async fn run_scan(path: Option<PathBuf>, config: &Config) -> Result<()> {
         debug!("Performing incremental scan with stale entry cleanup");
     }
 
-    if let Some(ref scan_path) = path {
-        // Scan a specific path provided via command line
-        scan_single_path(&mut database, scan_path, config, clean_scan).await?;
-    } else {
-        // Scan all configured paths or auto-detect NTFS volumes
-        scan_configured_paths(&mut database, config, clean_scan).await?;
-    }
-
-    Ok(())
+    Ok(clean_scan)
 }
 
 /// Scan a single path, automatically detecting the appropriate scanning strategy.
@@ -122,13 +128,9 @@ pub async fn run_scan(path: Option<PathBuf>, config: &Config) -> Result<()> {
 /// * `database` - Database to store entries in
 /// * `scan_path` - Path to scan
 /// * `config` - Configuration settings
-/// * `clean_scan` - If true, deletes existing entries before inserting new ones
-pub async fn scan_single_path(
-    database: &mut Database,
-    scan_path: &Path,
-    config: &Config,
-    clean_scan: bool,
-) -> Result<()> {
+pub async fn scan_single_path(database: &mut Database, scan_path: &Path, config: &Config) -> Result<()> {
+    let clean_scan = should_clean_scan(database, config)?;
+
     debug!("Scanning: {}", scan_path.display());
 
     if !is_path_accessible(scan_path) {
@@ -197,24 +199,17 @@ pub async fn scan_single_path(
     Ok(())
 }
 
-/// Scan all configured paths, or auto-detect NTFS volumes if none are configured.
+/// Collect paths to scan from config or auto-detect NTFS volumes.
 ///
-/// # Arguments
-/// * `database` - Database to store entries in
-/// * `config` - Configuration settings
-/// * `clean_scan` - If true, deletes existing entries before inserting new ones.
-///   If false, performs incremental update with stale entry cleanup.
-pub async fn scan_configured_paths(database: &mut Database, config: &Config, clean_scan: bool) -> Result<()> {
-    let total_start = Instant::now();
-
-    // Collect all paths to scan
+/// Returns `None` if no valid paths are found.
+fn collect_paths_to_scan(config: &Config) -> Option<CategorizedPaths> {
     let paths_to_scan: Vec<String> = if config.daemon.paths.is_empty() {
         // Auto-detect NTFS volumes when no paths are configured
         let ntfs_drives = detect_ntfs_volumes();
 
         if ntfs_drives.is_empty() {
             warn!("No NTFS volumes detected. Configure paths in the config file.");
-            return Ok(());
+            return None;
         }
 
         ntfs_drives.iter().map(|d| format!("{d}:")).collect()
@@ -223,13 +218,29 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config, cle
     };
 
     let categorized = categorize_paths(paths_to_scan);
-    let total_tasks = categorized.task_count();
 
-    if total_tasks == 0 {
-        warn!("No valid paths to scan.");
-        return Ok(());
+    if categorized.task_count() == 0 {
+        warn!("No valid paths to scan");
+        return None;
     }
 
+    Some(categorized)
+}
+
+/// Scan all configured paths, or auto-detect NTFS volumes if none are configured.
+///
+/// # Arguments
+/// * `database` - Database to store entries in
+/// * `config` - Configuration settings
+pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> Result<()> {
+    let clean_scan = should_clean_scan(database, config)?;
+    let total_start = Instant::now();
+
+    let Some(categorized) = collect_paths_to_scan(config) else {
+        return Ok(());
+    };
+
+    let total_tasks = categorized.task_count();
     if total_tasks == 1 {
         info!("Scanning 1 path...");
     } else {
@@ -282,8 +293,13 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config, cle
 
     // Capture the maximum file ID before processing any results.
     // This allows the pruner to skip entries that are inserted during this scan.
-    let max_id_before_scan = database.get_max_file_id().unwrap_or(0);
-    debug!("Max file ID before scan: {}", max_id_before_scan);
+    let max_id_before_scan = database.get_max_file_id().unwrap_or_else(|error| {
+        warn!("Failed to get max file ID, pruner will check all entries: {}", error);
+        0
+    });
+    if max_id_before_scan > 0 {
+        debug!("Max file ID before scan: {}", max_id_before_scan);
+    }
 
     // Process results as they complete using FuturesUnordered
     let mut futures: FuturesUnordered<_> = tasks.into_iter().collect();

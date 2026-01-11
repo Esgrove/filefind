@@ -712,8 +712,8 @@ mod tests {
         let grouped = group_entries_by_volume(entries);
 
         assert_eq!(grouped.len(), 2);
-        assert_eq!(grouped.get("C:").map(|v| v.len()), Some(2));
-        assert_eq!(grouped.get("D:").map(|v| v.len()), Some(1));
+        assert_eq!(grouped.get("C:").map(Vec::len), Some(2));
+        assert_eq!(grouped.get("D:").map(Vec::len), Some(1));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! - Coordinating updates to the database based on file changes
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -75,6 +75,9 @@ pub struct Daemon {
 /// Configuration for the daemon.
 #[derive(Debug, Clone)]
 pub struct DaemonOptions {
+    /// Run in foreground instead of daemonizing.
+    pub foreground: bool,
+
     /// Force a full rescan on startup.
     pub rescan: bool,
 
@@ -89,6 +92,7 @@ pub struct DaemonOptions {
 impl Default for DaemonOptions {
     fn default() -> Self {
         Self {
+            foreground: false,
             rescan: false,
             usn_poll_interval_ms: DEFAULT_USN_POLL_INTERVAL_MS,
             watcher_debounce_ms: DEFAULT_WATCHER_DEBOUNCE_MS,
@@ -770,15 +774,10 @@ impl Drop for Daemon {
 /// Start the daemon process.
 ///
 /// This is the main entry point called from CLI.
-pub fn start_daemon(foreground: bool, rescan: bool, config: &Config) -> Result<()> {
-    let options = DaemonOptions {
-        rescan,
-        ..Default::default()
-    };
+pub fn start_daemon(options: &DaemonOptions, config: &Config) -> Result<()> {
+    let mut daemon = Daemon::new(config.clone(), options.clone());
 
-    let mut daemon = Daemon::new(config.clone(), options);
-
-    if foreground {
+    if options.foreground {
         if config.daemon.verbose {
             print_info!("Starting daemon in foreground mode...");
         }
@@ -799,7 +798,7 @@ pub fn start_daemon(foreground: bool, rescan: bool, config: &Config) -> Result<(
         })
     } else {
         // Spawn a detached background process
-        spawn_background_daemon(rescan)?;
+        spawn_background_daemon(options.rescan)?;
         Ok(())
     }
 }
@@ -992,16 +991,14 @@ pub fn show_stats(config: &Config) -> Result<()> {
 }
 
 /// List indexed volumes.
-pub fn list_volumes(detailed: bool, config: &Config) -> Result<()> {
-    let database_path = config.database_path();
-
+pub fn list_volumes(database_path: &Path, detailed: bool) -> Result<()> {
     if !database_path.exists() {
         print_error!("Database not found at: {}", database_path.display());
         println!("Run 'filefindd scan' to create the index.");
         return Ok(());
     }
 
-    let database = Database::open(&database_path)?;
+    let database = Database::open(database_path)?;
     let volumes = database.get_all_volumes()?;
 
     if volumes.is_empty() {
@@ -1106,11 +1103,13 @@ mod tests {
     #[test]
     fn test_daemon_options_custom() {
         let options = DaemonOptions {
+            foreground: true,
             rescan: true,
             usn_poll_interval_ms: 500,
             watcher_debounce_ms: 200,
         };
 
+        assert!(options.foreground);
         assert!(options.rescan);
         assert_eq!(options.usn_poll_interval_ms, 500);
         assert_eq!(options.watcher_debounce_ms, 200);
