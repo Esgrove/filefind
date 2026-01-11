@@ -19,10 +19,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser)]
 #[command(
+    about,
     author,
-    version,
     name = env!("CARGO_BIN_NAME"),
-    about
+    version,
 )]
 pub struct Args {
     /// Enable verbose logging
