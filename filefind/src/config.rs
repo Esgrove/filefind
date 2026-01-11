@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tracing::warn;
+use tracing_subscriber::filter::LevelFilter;
 
 const PROJECT_NAME: &str = "filefind";
 
@@ -150,6 +151,24 @@ impl LogLevel {
             Self::Debug => "debug",
             Self::Trace => "trace",
         }
+    }
+
+    /// Convert to a tracing `LevelFilter`.
+    #[must_use]
+    pub const fn to_level_filter(self) -> LevelFilter {
+        match self {
+            Self::Error => LevelFilter::ERROR,
+            Self::Warn => LevelFilter::WARN,
+            Self::Info => LevelFilter::INFO,
+            Self::Debug => LevelFilter::DEBUG,
+            Self::Trace => LevelFilter::TRACE,
+        }
+    }
+}
+
+impl From<LogLevel> for LevelFilter {
+    fn from(level: LogLevel) -> Self {
+        level.to_level_filter()
     }
 }
 

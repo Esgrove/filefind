@@ -15,6 +15,7 @@ clap_complete = { workspace = true }
 colored = { workspace = true }
 dirs = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Crate-specific dependencies
 postcard = { version = "1.1", features = ["use-std"] }

@@ -25,7 +25,7 @@ use filefind::{Config, LogLevel, format_number, get_log_directory, print_info, p
 /// Background file indexing daemon for filefind
 #[derive(Parser)]
 #[command(about, author, version, name = env!("CARGO_BIN_NAME"))]
-struct Args {
+struct DaemonCli {
     /// Subcommand to execute
     #[command(subcommand)]
     command: Option<Command>,
@@ -132,10 +132,10 @@ const fn apply_cli_args(
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = DaemonCli::parse();
 
     if let Some(Command::Completion { shell, install }) = &args.command {
-        return filefind::generate_shell_completion(*shell, Args::command(), *install, env!("CARGO_BIN_NAME"));
+        return filefind::generate_shell_completion(*shell, DaemonCli::command(), *install, env!("CARGO_BIN_NAME"));
     }
 
     // Determine if we're running in foreground mode

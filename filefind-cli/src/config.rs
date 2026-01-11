@@ -10,7 +10,7 @@ use regex::Regex;
 
 use filefind::config::{OutputFormat, UserConfig};
 
-use crate::{Args, Command, OutputFormatArg, SortBy};
+use crate::{Command, FileFindCli, OutputFormatArg, SortBy};
 
 /// Combined configuration from user config and CLI arguments.
 ///
@@ -76,7 +76,7 @@ impl CliConfig {
     ///
     /// # Errors
     /// Returns an error if regex mode is enabled and the pattern is invalid.
-    pub fn from_args(args: Args) -> Result<Self> {
+    pub fn from_args(args: FileFindCli) -> Result<Self> {
         let user_config = UserConfig::load();
 
         // Trim patterns and filter empty strings
@@ -174,11 +174,11 @@ impl From<OutputFormatArg> for OutputFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Args;
+    use crate::FileFindCli;
 
     /// Helper to create Args with patterns for testing.
-    fn args_with_patterns(patterns: Vec<&str>) -> Args {
-        Args {
+    fn args_with_patterns(patterns: Vec<&str>) -> FileFindCli {
+        FileFindCli {
             command: None,
             patterns: patterns.into_iter().map(String::from).collect(),
             all: false,

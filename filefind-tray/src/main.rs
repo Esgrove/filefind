@@ -11,9 +11,9 @@ mod icons;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use filefind::get_log_directory;
+use filefind::{LogLevel, get_log_directory};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -24,17 +24,24 @@ use tracing_subscriber::util::SubscriberInitExt;
     name = env!("CARGO_BIN_NAME"),
     version,
 )]
-pub struct Args {
-    /// Enable verbose logging
+pub struct TrayArgs {
+    /// Set the log level
+    #[arg(short = 'l', long = "log", value_enum)]
+    log_level: Option<LogLevel>,
+
+    /// Enable verbose logging (shortcut for --log debug)
     #[arg(short, long)]
     verbose: bool,
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = TrayArgs::parse();
 
-    // Initialize logging to file
-    init_logging(args.verbose)?;
+    let log_level = args
+        .log_level
+        .unwrap_or(if args.verbose { LogLevel::Debug } else { LogLevel::Info });
+
+    init_logging(log_level.to_level_filter())?;
 
     tracing::info!("Starting filefind tray application");
 
@@ -44,13 +51,7 @@ fn main() -> Result<()> {
 /// Initialize logging to a file in the same directory as daemon logs.
 ///
 /// Logs are written to ~/logs/filefind/filefind-tray.log with daily rotation.
-fn init_logging(verbose: bool) -> Result<()> {
-    let filter = if verbose {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::new("info")
-    };
-
+fn init_logging(filter: LevelFilter) -> Result<()> {
     let log_dir = get_log_directory()?;
     std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 

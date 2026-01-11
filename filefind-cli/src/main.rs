@@ -22,7 +22,7 @@ use crate::config::CliConfig;
     name = env!("CARGO_BIN_NAME"),
     about = "Fast file search using the filefind index"
 )]
-pub struct Args {
+pub struct FileFindCli {
     /// Subcommand to execute
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -142,11 +142,11 @@ pub enum SortBy {
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = FileFindCli::parse();
 
     // Handle completion subcommand early (no config needed)
     if let Some(Command::Completion { shell, install }) = &args.command {
-        return generate_shell_completion(*shell, Args::command(), *install, env!("CARGO_BIN_NAME"));
+        return generate_shell_completion(*shell, FileFindCli::command(), *install, env!("CARGO_BIN_NAME"));
     }
 
     // Build the final config from user config and CLI args

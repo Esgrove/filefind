@@ -31,7 +31,7 @@ exclude = [
 ]
 
 # File patterns to exclude (glob syntax)
-# exclude_patterns = ["*.tmp", "~$*", "Thumbs.db", "*.parts"]
+exclude_patterns = ["*.tmp", "~$*", "Thumbs.db", "*.parts"]
 
 # Rescan interval for non-NTFS/network drives in seconds
 # scan_interval_seconds = 3600
@@ -46,10 +46,6 @@ exclude = [
 # database_path = ""
 
 # Force clean scan (delete existing entries before inserting new ones).
-# When false (default), uses incremental UPSERT which is faster but may
-# leave stale entries for moved/deleted files. Use `filefindd scan --force`
-# to do a one-time clean scan, or set this to true to always clean scan.
-# Clean scan is always performed automatically if the database is empty.
 # force_clean_scan = false
 
 [cli]
