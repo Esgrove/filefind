@@ -43,8 +43,6 @@ fn main() -> Result<()> {
 
     init_logging(log_level.to_level_filter())?;
 
-    tracing::info!("Starting filefind tray application");
-
     app::run()
 }
 
