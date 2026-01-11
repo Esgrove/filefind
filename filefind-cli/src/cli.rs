@@ -383,9 +383,12 @@ fn display_grouped_output(
                     highlight_match(&directory.full_path, highlight_patterns),
                     file_count
                 );
-            } else {
-                // Empty folder: print in bold yellow
+            } else if is_directory_empty_on_disk(&directory.full_path) {
+                // Truly empty folder on disk: print in bold yellow
                 print_bold_yellow!("{}", highlight_match(&directory.full_path, highlight_patterns));
+            } else {
+                // Directory has files but none match the search: print in magenta
+                print_bold_magenta!("{}", highlight_match(&directory.full_path, highlight_patterns));
             }
         }
     } else {
@@ -422,9 +425,12 @@ fn display_grouped(
             if total_files > options.files_per_dir {
                 println!("  {} ({} files)", "...".dimmed(), total_files - options.files_per_dir);
             }
-        } else {
-            // Empty folder: print in bold yellow
+        } else if is_directory_empty_on_disk(&directory.full_path) {
+            // Truly empty folder on disk: print in bold yellow
             print_bold_yellow(&directory.full_path);
+        } else {
+            // Directory has files but none match the search: print in magenta
+            print_bold_magenta(&directory.full_path);
         }
         println!();
     }
@@ -469,6 +475,24 @@ fn is_empty_directory(files: &[&filefind::types::FileEntry], dir_path: &str) -> 
             .parent()
             .is_some_and(|p| p.to_string_lossy() == dir_path)
     })
+}
+
+/// Check if a directory is truly empty on the filesystem.
+/// Returns true if the directory exists and contains no entries.
+/// Returns false if the directory has contents, doesn't exist, or check times out.
+fn is_directory_empty_on_disk(path: &str) -> bool {
+    let path = path.to_string();
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        let is_empty = Path::new(&path)
+            .read_dir()
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        let _ = sender.send(is_empty);
+    });
+
+    receiver.recv_timeout(CHECK_TIMEOUT).unwrap_or(false)
 }
 
 /// Display results in list format
