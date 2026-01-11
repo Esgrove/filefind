@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, params};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::types::{FileEntry, IndexedVolume, VolumeType};
 
@@ -161,7 +161,7 @@ impl Database {
             },
         )?;
 
-        debug!("Registered REGEXP function");
+        trace!("Registered REGEXP function");
         Ok(())
     }
 

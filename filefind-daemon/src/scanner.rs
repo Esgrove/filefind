@@ -111,12 +111,12 @@ fn should_clean_scan(database: &Database, config: &Config) -> Result<bool> {
 
     if clean_scan {
         if config.daemon.force_clean_scan {
-            info!("Performing clean scan (--force flag set)");
+            info!("Performing clean scan");
         } else {
-            debug!("Performing clean scan (database is empty)");
+            info!("Performing clean scan for empty database");
         }
     } else {
-        debug!("Performing incremental scan with stale entry cleanup");
+        debug!("Performing incremental scan");
     }
 
     Ok(clean_scan)
@@ -283,12 +283,6 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
         tasks.push(tokio::spawn(async move {
             scan_path_directory(scan_path, label, exclude).await
         }));
-    }
-
-    if clean_scan {
-        debug!("Clean scan mode: will delete existing entries before inserting");
-    } else {
-        debug!("Incremental scan mode: will clean up stale entries after scanning");
     }
 
     // Capture the maximum file ID before processing any results.
