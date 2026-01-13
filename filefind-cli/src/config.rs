@@ -132,9 +132,12 @@ impl CliConfig {
         })
     }
 
-    /// Expand patterns by adding variants for dot-separated patterns.
+    /// Expand patterns by adding variants for dot-separated and space-separated patterns.
     ///
-    /// For example, `some.name` becomes `["some.name", "some name", "somename"]`.
+    /// For example:
+    /// - `some.name` becomes `["some.name", "some name", "somename"]`
+    /// - `some name` becomes `["some name", "some.name", "somename"]`
+    ///
     /// This helps match different naming conventions (dots, spaces, or no separator).
     fn expand_patterns(patterns: &[String]) -> Vec<String> {
         let mut expanded = Vec::new();
@@ -142,15 +145,31 @@ impl CliConfig {
         for pattern in patterns {
             expanded.push(pattern.clone());
 
-            // If pattern contains dots (but isn't a glob pattern with wildcards),
-            // also add space-separated and no-separator variants
-            if pattern.contains('.') && !pattern.contains('*') && !pattern.contains('?') {
+            // Skip glob patterns with wildcards
+            if pattern.contains('*') || pattern.contains('?') {
+                continue;
+            }
+
+            // If pattern contains dots, add space-separated and no-separator variants
+            if pattern.contains('.') {
                 let space_variant = pattern.replace('.', " ");
                 if !space_variant.is_empty() && space_variant != *pattern {
                     expanded.push(space_variant);
                 }
 
                 let empty_variant = pattern.replace('.', "");
+                if !empty_variant.is_empty() && empty_variant != *pattern {
+                    expanded.push(empty_variant);
+                }
+            }
+            // If pattern contains spaces, add dot-separated and no-separator variants
+            else if pattern.contains(' ') {
+                let dot_variant = pattern.replace(' ', ".");
+                if !dot_variant.is_empty() && dot_variant != *pattern {
+                    expanded.push(dot_variant);
+                }
+
+                let empty_variant = pattern.replace(' ', "");
                 if !empty_variant.is_empty() && empty_variant != *pattern {
                     expanded.push(empty_variant);
                 }
@@ -216,6 +235,20 @@ mod tests {
         let patterns = vec!["somename".to_string()];
         let expanded = CliConfig::expand_patterns(&patterns);
         assert_eq!(expanded, vec!["somename"]);
+    }
+
+    #[test]
+    fn test_expand_patterns_single_space() {
+        let patterns = vec!["some name".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(expanded, vec!["some name", "some.name", "somename"]);
+    }
+
+    #[test]
+    fn test_expand_patterns_multiple_spaces() {
+        let patterns = vec!["some name here".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(expanded, vec!["some name here", "some.name.here", "somenamehere"]);
     }
 
     #[test]
