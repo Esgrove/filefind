@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, params};
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use crate::types::{FileEntry, IndexedVolume, VolumeType};
 
@@ -377,7 +377,7 @@ impl Database {
             .execute("DELETE FROM files WHERE volume_id = ?1", params![volume_id])
             .context("Failed to delete files for volume")?;
 
-        info!("Deleted {} files for volume {}", rows_affected, volume_id);
+        debug!("Deleted {} files for volume {}", rows_affected, volume_id);
         Ok(rows_affected)
     }
 

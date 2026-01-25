@@ -769,7 +769,7 @@ fn process_scan_result(database: &mut Database, result: ScanResult, clean_scan: 
             }
 
             info!(
-                "{} - {} entries in {:.2}s",
+                "{} Scanned {} entries in {:.2}s",
                 label,
                 format_number(count as u64),
                 elapsed.as_secs_f64()
