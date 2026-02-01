@@ -1,20 +1,18 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use colored::Colorize;
 
+use filefind::types::FileEntry;
 use filefind::config::OutputFormat;
-use filefind::{Database, format_size, print_bold_magenta, print_bold_yellow, print_error};
+use filefind::{format_size, print_bold_magenta, print_bold_yellow, print_error, Database};
 
 use crate::config::{CliConfig, DisplayOptions};
-use crate::{SortBy, VolumeSortBy};
+use crate::{utils, SortBy, VolumeSortBy};
 
-const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
+pub(crate) const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// List all indexed volumes.
 pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
@@ -49,7 +47,7 @@ pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
         };
 
         // Check if the volume is actually accessible
-        let is_online = check_path_accessible(&volume.mount_point);
+        let is_online = utils::check_path_accessible(&volume.mount_point);
 
         volume_data.push((
             mount_and_label,
@@ -198,7 +196,7 @@ pub fn show_stats(database: &Database) -> Result<()> {
 }
 
 /// Filter results to only include entries on specified drives.
-fn filter_by_drives(results: Vec<filefind::types::FileEntry>, drives: &[String]) -> Vec<filefind::types::FileEntry> {
+fn filter_by_drives(results: Vec<FileEntry>, drives: &[String]) -> Vec<FileEntry> {
     if drives.is_empty() {
         return results;
     }
@@ -217,7 +215,7 @@ fn filter_by_drives(results: Vec<filefind::types::FileEntry>, drives: &[String])
 }
 
 /// Search for results matching ANY pattern (OR mode).
-fn search_any_pattern(config: &CliConfig, database: &Database) -> Result<Vec<filefind::types::FileEntry>> {
+fn search_any_pattern(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut results = Vec::new();
 
@@ -244,7 +242,7 @@ fn search_any_pattern(config: &CliConfig, database: &Database) -> Result<Vec<fil
 /// Search for results matching ALL patterns (AND mode).
 ///
 /// Uses SQL-level AND for efficient single-query search.
-fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<filefind::types::FileEntry>> {
+fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
     if config.patterns.is_empty() {
         return Ok(Vec::new());
     }
@@ -271,9 +269,9 @@ fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<fi
 /// Search for results matching ALL patterns when patterns are mixed (some glob, some plain).
 ///
 /// Falls back to multiple queries with intersection.
-fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<Vec<filefind::types::FileEntry>> {
+fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
     let first_pattern = &config.patterns[0];
-    let mut results: Vec<filefind::types::FileEntry> = if first_pattern.contains('*') || first_pattern.contains('?') {
+    let mut results: Vec<FileEntry> = if first_pattern.contains('*') || first_pattern.contains('?') {
         database.search_by_glob(first_pattern, usize::MAX)?
     } else {
         database.search_by_name(first_pattern, usize::MAX)?
@@ -302,76 +300,17 @@ fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<
     Ok(results)
 }
 
-/// Highlight multiple patterns within text (case-insensitive).
-///
-/// Finds all matches for all patterns, merges overlapping ranges, and highlights them.
-fn highlight_match(text: &str, patterns: &[&str]) -> String {
-    if patterns.is_empty() {
-        return text.to_string();
-    }
-
-    let text_lower = text.to_lowercase();
-
-    // Collect all match ranges (start, end) for all patterns
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for pattern in patterns {
-        let pattern_lower = pattern.to_lowercase();
-        for (start, matched) in text_lower.match_indices(&pattern_lower) {
-            ranges.push((start, start + matched.len()));
-        }
-    }
-
-    if ranges.is_empty() {
-        return text.to_string();
-    }
-
-    // Sort by start position, then by end position (longer matches first)
-    ranges.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-
-    // Merge overlapping ranges
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    for (start, end) in ranges {
-        if let Some(last) = merged.last_mut() {
-            if start <= last.1 {
-                // Overlapping or adjacent, extend the range
-                last.1 = last.1.max(end);
-            } else {
-                merged.push((start, end));
-            }
-        } else {
-            merged.push((start, end));
-        }
-    }
-
-    // Build result with highlighted ranges
-    let mut result = String::new();
-    let mut last_end = 0;
-
-    for (start, end) in merged {
-        // Add text before the match
-        result.push_str(&text[last_end..start]);
-        // Add highlighted match using original case from text
-        let matched_text = &text[start..end];
-        result.push_str(&matched_text.green().bold().to_string());
-        last_end = end;
-    }
-
-    // Add remaining text
-    result.push_str(&text[last_end..]);
-    result
-}
-
 /// Display results in grouped format (files grouped by directory).
 fn display_grouped_output(
-    directories: &[&filefind::types::FileEntry],
-    files: &[&filefind::types::FileEntry],
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
     options: &DisplayOptions,
     highlight_patterns: &[&str],
 ) {
     if options.files_only {
         // Files only mode: show full paths
         for file in files {
-            println!("{}", highlight_match(&file.full_path, highlight_patterns));
+            println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
         }
     } else if options.directories_only {
         // Dirs only mode: show full path with file count
@@ -380,15 +319,15 @@ fn display_grouped_output(
             if file_count > 0 {
                 println!(
                     "{} ({} files)",
-                    highlight_match(&directory.full_path, highlight_patterns),
+                    utils::highlight_match(&directory.full_path, highlight_patterns),
                     file_count
                 );
-            } else if is_directory_empty_on_disk(&directory.full_path) {
+            } else if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Truly empty folder on disk: print in bold yellow
-                print_bold_yellow!("{} (empty)", highlight_match(&directory.full_path, highlight_patterns));
+                print_bold_yellow!("{} (empty)", utils::highlight_match(&directory.full_path, highlight_patterns));
             } else {
                 // Directory has files but none match the search: print in magenta
-                print_bold_magenta!("{}", highlight_match(&directory.full_path, highlight_patterns));
+                print_bold_magenta!("{}", utils::highlight_match(&directory.full_path, highlight_patterns));
             }
         }
     } else {
@@ -399,13 +338,13 @@ fn display_grouped_output(
 
 /// Display results grouped by directory.
 fn display_grouped(
-    directories: &[&filefind::types::FileEntry],
-    files: &[&filefind::types::FileEntry],
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
     options: &DisplayOptions,
     highlight_patterns: &[&str],
 ) {
     // Group files by their parent directory
-    let mut files_by_dir: HashMap<String, Vec<&filefind::types::FileEntry>> = HashMap::new();
+    let mut files_by_dir: HashMap<String, Vec<&FileEntry>> = HashMap::new();
     for file in files {
         let parent = PathBuf::from(&file.full_path)
             .parent()
@@ -421,12 +360,12 @@ fn display_grouped(
             print_bold_magenta!("{} ({} files)", &directory.full_path, file_count);
             let total_files = dir_files.len();
             for file in dir_files.iter().take(options.files_per_dir) {
-                println!("  {}", highlight_match(&file.name, highlight_patterns));
+                println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
             }
             if total_files > options.files_per_dir {
                 println!("  {} ({} files)", "...".dimmed(), total_files - options.files_per_dir);
             }
-        } else if is_directory_empty_on_disk(&directory.full_path) {
+        } else if utils::is_directory_empty_on_disk(&directory.full_path) {
             // Truly empty folder on disk: print in bold yellow
             print_bold_yellow!("{} (empty)", &directory.full_path);
         } else {
@@ -447,7 +386,7 @@ fn display_grouped(
             let file_count = dir_files.len();
             print_bold_magenta!("{} ({} files)", dir_path, file_count);
             for file in dir_files.iter().take(options.files_per_dir) {
-                println!("  {}", highlight_match(&file.name, highlight_patterns));
+                println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
             }
             if file_count > options.files_per_dir {
                 println!("  {} ({} files)", "...".dimmed(), file_count - options.files_per_dir);
@@ -458,7 +397,7 @@ fn display_grouped(
 }
 
 /// Count all matching files under a directory (including subdirectories).
-fn count_files_under_directory(files: &[&filefind::types::FileEntry], dir_path: &str) -> usize {
+fn count_files_under_directory(files: &[&FileEntry], dir_path: &str) -> usize {
     let dir_prefix_backslash = format!("{dir_path}\\");
     let dir_prefix_forward = format!("{dir_path}/");
     files
@@ -467,63 +406,45 @@ fn count_files_under_directory(files: &[&filefind::types::FileEntry], dir_path: 
         .count()
 }
 
-/// Check if a directory is truly empty on the filesystem.
-/// Returns true if the directory exists and contains no entries.
-/// Returns false if the directory has contents, doesn't exist, or check times out.
-fn is_directory_empty_on_disk(path: &str) -> bool {
-    let path = path.to_string();
-    let (sender, receiver) = mpsc::channel();
-
-    thread::spawn(move || {
-        let is_empty = Path::new(&path)
-            .read_dir()
-            .map(|mut entries| entries.next().is_none())
-            .unwrap_or(false);
-        let _ = sender.send(is_empty);
-    });
-
-    receiver.recv_timeout(CHECK_TIMEOUT).unwrap_or(false)
-}
-
 /// Display results in list format
 fn display_list(
-    directories: &[&filefind::types::FileEntry],
-    files: &[&filefind::types::FileEntry],
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
     options: &DisplayOptions,
     highlight_patterns: &[&str],
 ) {
     if options.files_only {
         for file in files {
-            println!("{}", highlight_match(&file.full_path, highlight_patterns));
+            println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
         }
     } else if options.directories_only {
         for directory in directories {
-            if is_directory_empty_on_disk(&directory.full_path) {
+            if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Empty folder: print in yellow
-                println!("{}", highlight_match(&directory.full_path, highlight_patterns).yellow());
+                println!("{}", utils::highlight_match(&directory.full_path, highlight_patterns).yellow());
             } else {
-                println!("{}", highlight_match(&directory.full_path, highlight_patterns));
+                println!("{}", utils::highlight_match(&directory.full_path, highlight_patterns));
             }
         }
     } else {
         // Show directories first, then files (both already sorted by caller)
         for directory in directories {
-            if is_directory_empty_on_disk(&directory.full_path) {
+            if utils::is_directory_empty_on_disk(&directory.full_path) {
                 println!("{}", directory.full_path.yellow());
             } else {
                 println!("{}", directory.full_path.cyan());
             }
         }
         for file in files {
-            println!("{}", highlight_match(&file.full_path, highlight_patterns));
+            println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
         }
     }
 }
 
 /// Display results in info format with size.
 fn display_info(
-    directories: &[&filefind::types::FileEntry],
-    files: &[&filefind::types::FileEntry],
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
     options: &DisplayOptions,
     highlight_patterns: &[&str],
 ) {
@@ -538,7 +459,7 @@ fn display_info(
         for directory in directories {
             let size = dir_sizes.get(&directory.full_path).copied();
             let file_count = count_files_under_directory(files, &directory.full_path);
-            let is_empty = is_directory_empty_on_disk(&directory.full_path);
+            let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);
             print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
         }
     } else {
@@ -546,7 +467,7 @@ fn display_info(
         for directory in directories {
             let size = dir_sizes.get(&directory.full_path).copied();
             let file_count = count_files_under_directory(files, &directory.full_path);
-            let is_empty = is_directory_empty_on_disk(&directory.full_path);
+            let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);
             print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
         }
         for file in files {
@@ -556,7 +477,7 @@ fn display_info(
 }
 
 /// Calculate the total size of files under each directory.
-fn calculate_directory_sizes(files: &[&filefind::types::FileEntry]) -> HashMap<String, u64> {
+fn calculate_directory_sizes(files: &[&FileEntry]) -> HashMap<String, u64> {
     let mut dir_sizes: HashMap<String, u64> = HashMap::new();
 
     for file in files {
@@ -575,7 +496,7 @@ fn calculate_directory_sizes(files: &[&filefind::types::FileEntry]) -> HashMap<S
 /// and `file_count` shows the number of matching files under the directory.
 /// If `is_empty` is true, the directory path is printed in yellow.
 fn print_entry_info(
-    entry: &filefind::types::FileEntry,
+    entry: &FileEntry,
     calculated_size: Option<u64>,
     file_count: Option<usize>,
     highlight_patterns: &[&str],
@@ -596,22 +517,9 @@ fn print_entry_info(
             entry.full_path.cyan().to_string()
         }
     } else {
-        highlight_match(&entry.full_path, highlight_patterns)
+        utils::highlight_match(&entry.full_path, highlight_patterns)
     };
 
     println!("{size_str}{count_str}  {path_display}");
 }
 
-/// Check if a path is accessible with a timeout.
-/// Returns false if the path doesn't exist or if the check takes longer than the timeout time.
-fn check_path_accessible(path: &str) -> bool {
-    let path = path.to_string();
-    let (sender, receiver) = mpsc::channel();
-
-    thread::spawn(move || {
-        let exists = Path::new(&path).exists();
-        let _ = sender.send(exists);
-    });
-
-    receiver.recv_timeout(CHECK_TIMEOUT).unwrap_or(false)
-}

@@ -2,6 +2,7 @@
 
 mod cli;
 mod config;
+mod utils;
 
 use anyhow::Result;
 use anyhow::bail;
