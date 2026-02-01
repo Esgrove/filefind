@@ -295,14 +295,11 @@ fn display_grouped_output(
                     file_count
                 );
             } else if utils::is_directory_empty_on_disk(&directory.full_path) {
-                // Truly empty folder on disk: print in bold yellow
-                print_bold_yellow!(
-                    "{} (empty)",
-                    utils::highlight_match(&directory.full_path, highlight_patterns)
-                );
+                // Truly empty folder on disk: print in bold yellow (no highlight to avoid mixed colors)
+                print_bold_yellow!("{} (empty)", &directory.full_path);
             } else {
-                // Directory has files but none match the search: print in magenta
-                print_bold_magenta!("{}", utils::highlight_match(&directory.full_path, highlight_patterns));
+                // Directory has files but none match the search: print in magenta (no highlight to avoid mixed colors)
+                print_bold_magenta!("{}", &directory.full_path);
             }
         }
     } else {
@@ -375,11 +372,8 @@ fn display_list(directories: &[&FileEntry], files: &[&FileEntry], config: &CliCo
     } else if config.directories_only {
         for directory in directories {
             if utils::is_directory_empty_on_disk(&directory.full_path) {
-                // Empty folder: print in yellow
-                println!(
-                    "{}",
-                    utils::highlight_match(&directory.full_path, highlight_patterns).yellow()
-                );
+                // Empty folder: print in yellow (no highlight to avoid mixed colors)
+                println!("{}", directory.full_path.yellow());
             } else {
                 println!("{}", utils::highlight_match(&directory.full_path, highlight_patterns));
             }
