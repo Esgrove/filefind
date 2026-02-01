@@ -9,7 +9,7 @@ use filefind::config::OutputFormat;
 use filefind::types::FileEntry;
 use filefind::{Database, IndexedVolume, format_size, print_bold_magenta, print_bold_yellow, print_error};
 
-use crate::config::{CliConfig, DisplayOptions};
+use crate::config::CliConfig;
 use crate::{SortBy, VolumeSortBy, utils};
 
 /// Data for displaying volume information.
@@ -134,18 +134,10 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
             .collect()
     };
 
-    let display_options = DisplayOptions {
-        directories_only: config.dirs_only,
-        files_only: config.files_only,
-        files_per_dir: config.files_per_dir,
-        verbose: config.verbose,
-        sort_by: config.sort_by,
-    };
-
     match config.output_format {
-        OutputFormat::Grouped => display_grouped_output(&directories, &files, &display_options, &highlight_patterns),
-        OutputFormat::List => display_list(&directories, &files, &display_options, &highlight_patterns),
-        OutputFormat::Info => display_info(&directories, &files, &display_options, &highlight_patterns),
+        OutputFormat::Grouped => display_grouped_output(&directories, &files, config, &highlight_patterns),
+        OutputFormat::List => display_list(&directories, &files, config, &highlight_patterns),
+        OutputFormat::Info => display_info(&directories, &files, config, &highlight_patterns),
     }
 
     // Show search stats if verbose
@@ -284,15 +276,15 @@ fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<
 fn display_grouped_output(
     directories: &[&FileEntry],
     files: &[&FileEntry],
-    options: &DisplayOptions,
+    config: &CliConfig,
     highlight_patterns: &[&str],
 ) {
-    if options.files_only {
+    if config.files_only {
         // Files only mode: show full paths
         for file in files {
             println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
         }
-    } else if options.directories_only {
+    } else if config.directories_only {
         // Dirs only mode: show full path with file count
         for directory in directories {
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
@@ -315,17 +307,12 @@ fn display_grouped_output(
         }
     } else {
         // Normal mode: group files under directories
-        display_grouped(directories, files, options, highlight_patterns);
+        display_grouped(directories, files, config, highlight_patterns);
     }
 }
 
 /// Display results grouped by directory.
-fn display_grouped(
-    directories: &[&FileEntry],
-    files: &[&FileEntry],
-    options: &DisplayOptions,
-    highlight_patterns: &[&str],
-) {
+fn display_grouped(directories: &[&FileEntry], files: &[&FileEntry], config: &CliConfig, highlight_patterns: &[&str]) {
     // Group files by their parent directory
     let mut files_by_dir: HashMap<String, Vec<&FileEntry>> = HashMap::new();
     for file in files {
@@ -342,11 +329,11 @@ fn display_grouped(
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
             print_bold_magenta!("{} ({} files)", &directory.full_path, file_count);
             let total_files = dir_files.len();
-            for file in dir_files.iter().take(options.files_per_dir) {
+            for file in dir_files.iter().take(config.files_per_dir) {
                 println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
             }
-            if total_files > options.files_per_dir {
-                println!("  {} ({} files)", "...".dimmed(), total_files - options.files_per_dir);
+            if total_files > config.files_per_dir {
+                println!("  {} ({} files)", "...".dimmed(), total_files - config.files_per_dir);
             }
         } else if utils::is_directory_empty_on_disk(&directory.full_path) {
             // Truly empty folder on disk: print in bold yellow
@@ -368,11 +355,11 @@ fn display_grouped(
         if let Some(dir_files) = files_by_dir.get(dir_path) {
             let file_count = dir_files.len();
             print_bold_magenta!("{} ({} files)", dir_path, file_count);
-            for file in dir_files.iter().take(options.files_per_dir) {
+            for file in dir_files.iter().take(config.files_per_dir) {
                 println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
             }
-            if file_count > options.files_per_dir {
-                println!("  {} ({} files)", "...".dimmed(), file_count - options.files_per_dir);
+            if file_count > config.files_per_dir {
+                println!("  {} ({} files)", "...".dimmed(), file_count - config.files_per_dir);
             }
             println!();
         }
@@ -380,17 +367,12 @@ fn display_grouped(
 }
 
 /// Display results in list format
-fn display_list(
-    directories: &[&FileEntry],
-    files: &[&FileEntry],
-    options: &DisplayOptions,
-    highlight_patterns: &[&str],
-) {
-    if options.files_only {
+fn display_list(directories: &[&FileEntry], files: &[&FileEntry], config: &CliConfig, highlight_patterns: &[&str]) {
+    if config.files_only {
         for file in files {
             println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
         }
-    } else if options.directories_only {
+    } else if config.directories_only {
         for directory in directories {
             if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Empty folder: print in yellow
@@ -418,25 +400,20 @@ fn display_list(
 }
 
 /// Display results in info format with size.
-fn display_info(
-    directories: &[&FileEntry],
-    files: &[&FileEntry],
-    options: &DisplayOptions,
-    highlight_patterns: &[&str],
-) {
+fn display_info(directories: &[&FileEntry], files: &[&FileEntry], config: &CliConfig, highlight_patterns: &[&str]) {
     // Print header if verbose
-    if options.verbose {
+    if config.verbose {
         println!("{:>10}{:>8}  PATH", "SIZE", "FILES");
     }
 
     // Show directories first, then files (both already sorted by caller)
-    if !options.files_only {
+    if !config.files_only {
         // Build a map of directory path -> total size of files under it
         let dir_sizes = utils::calculate_directory_sizes(files);
 
         // Sort directories by size if requested
         let mut sorted_dirs: Vec<_> = directories.to_vec();
-        if matches!(options.sort_by, SortBy::Size) {
+        if matches!(config.sort_by, SortBy::Size) {
             sorted_dirs.sort_by(|a, b| {
                 let size_a = dir_sizes.get(&a.full_path).copied().unwrap_or(0);
                 let size_b = dir_sizes.get(&b.full_path).copied().unwrap_or(0);
@@ -451,7 +428,7 @@ fn display_info(
             print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
         }
     }
-    if !options.directories_only {
+    if !config.directories_only {
         for file in files {
             print_entry_info(file, None, None, highlight_patterns, false);
         }

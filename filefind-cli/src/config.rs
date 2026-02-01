@@ -39,7 +39,7 @@ pub struct CliConfig {
     pub files_only: bool,
 
     /// Only show directories
-    pub dirs_only: bool,
+    pub directories_only: bool,
 
     /// Maximum files to show per directory in grouped output
     pub files_per_dir: usize,
@@ -55,24 +55,6 @@ pub struct CliConfig {
 
     /// Path to the database
     pub database_path: PathBuf,
-}
-
-/// Display options for formatting output.
-pub struct DisplayOptions {
-    /// Only show directories.
-    pub directories_only: bool,
-
-    /// Only show files.
-    pub files_only: bool,
-
-    /// Maximum files to show per directory in grouped output.
-    pub files_per_dir: usize,
-
-    /// Verbose output mode.
-    pub verbose: bool,
-
-    /// Sort order for results.
-    pub sort_by: SortBy,
 }
 
 impl CliConfig {
@@ -129,7 +111,7 @@ impl CliConfig {
             case_sensitive,
             drives: args.drive,
             files_only: args.files,
-            dirs_only: args.dirs,
+            directories_only: args.dirs,
             files_per_dir: args.limit,
             output_format,
             sort_by: args.sort.unwrap_or(SortBy::Name),
