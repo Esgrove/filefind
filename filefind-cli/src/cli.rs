@@ -467,15 +467,6 @@ fn count_files_under_directory(files: &[&filefind::types::FileEntry], dir_path: 
         .count()
 }
 
-/// Check if a directory has any files in the results.
-fn is_empty_directory(files: &[&filefind::types::FileEntry], dir_path: &str) -> bool {
-    !files.iter().any(|f| {
-        PathBuf::from(&f.full_path)
-            .parent()
-            .is_some_and(|p| p.to_string_lossy() == dir_path)
-    })
-}
-
 /// Check if a directory is truly empty on the filesystem.
 /// Returns true if the directory exists and contains no entries.
 /// Returns false if the directory has contents, doesn't exist, or check times out.
@@ -507,7 +498,7 @@ fn display_list(
         }
     } else if options.directories_only {
         for directory in directories {
-            if is_empty_directory(files, &directory.full_path) {
+            if is_directory_empty_on_disk(&directory.full_path) {
                 // Empty folder: print in yellow
                 println!("{}", highlight_match(&directory.full_path, highlight_patterns).yellow());
             } else {
@@ -517,7 +508,7 @@ fn display_list(
     } else {
         // Show directories first, then files (both already sorted by caller)
         for directory in directories {
-            if is_empty_directory(files, &directory.full_path) {
+            if is_directory_empty_on_disk(&directory.full_path) {
                 println!("{}", directory.full_path.yellow());
             } else {
                 println!("{}", directory.full_path.cyan());
@@ -541,23 +532,25 @@ fn display_info(
 
     if options.files_only {
         for file in files {
-            print_entry_info(file, None, highlight_patterns, false);
+            print_entry_info(file, None, None, highlight_patterns, false);
         }
     } else if options.directories_only {
         for directory in directories {
             let size = dir_sizes.get(&directory.full_path).copied();
-            let is_empty = is_empty_directory(files, &directory.full_path);
-            print_entry_info(directory, size, highlight_patterns, is_empty);
+            let file_count = count_files_under_directory(files, &directory.full_path);
+            let is_empty = is_directory_empty_on_disk(&directory.full_path);
+            print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
         }
     } else {
         // Show directories first, then files (both already sorted by caller)
         for directory in directories {
             let size = dir_sizes.get(&directory.full_path).copied();
-            let is_empty = is_empty_directory(files, &directory.full_path);
-            print_entry_info(directory, size, highlight_patterns, is_empty);
+            let file_count = count_files_under_directory(files, &directory.full_path);
+            let is_empty = is_directory_empty_on_disk(&directory.full_path);
+            print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
         }
         for file in files {
-            print_entry_info(file, None, highlight_patterns, false);
+            print_entry_info(file, None, None, highlight_patterns, false);
         }
     }
 }
@@ -578,11 +571,13 @@ fn calculate_directory_sizes(files: &[&filefind::types::FileEntry]) -> HashMap<S
 
 /// Print a single entry with size info.
 ///
-/// For directories, `calculated_size` can provide the sum of contained files.
+/// For directories, `calculated_size` can provide the sum of contained files,
+/// and `file_count` shows the number of matching files under the directory.
 /// If `is_empty` is true, the directory path is printed in yellow.
 fn print_entry_info(
     entry: &filefind::types::FileEntry,
     calculated_size: Option<u64>,
+    file_count: Option<usize>,
     highlight_patterns: &[&str],
     is_empty: bool,
 ) {
@@ -591,6 +586,8 @@ fn print_entry_info(
     } else {
         format!("{:>10}", format_size(entry.size))
     };
+
+    let count_str = file_count.map_or_else(String::new, |count| format!("{count:>8}"));
 
     let path_display = if entry.is_directory {
         if is_empty {
@@ -602,7 +599,7 @@ fn print_entry_info(
         highlight_match(&entry.full_path, highlight_patterns)
     };
 
-    println!("{size_str}  {path_display}");
+    println!("{size_str}{count_str}  {path_display}");
 }
 
 /// Check if a path is accessible with a timeout.
