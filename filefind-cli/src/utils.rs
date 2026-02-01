@@ -1,10 +1,13 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use colored::Colorize;
+use filefind::FileEntry;
 
-use crate::cli::CHECK_TIMEOUT;
+const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Highlight multiple patterns within the given text (case-insensitive).
 ///
@@ -95,4 +98,28 @@ pub fn check_path_accessible(path: &str) -> bool {
     });
 
     receiver.recv_timeout(CHECK_TIMEOUT).unwrap_or(false)
+}
+
+/// Calculate the total size of files under each directory.
+pub fn calculate_directory_sizes(files: &[&FileEntry]) -> HashMap<String, u64> {
+    let mut dir_sizes: HashMap<String, u64> = HashMap::new();
+
+    for file in files {
+        if let Some(parent) = PathBuf::from(&file.full_path).parent() {
+            let parent_str = parent.to_string_lossy().to_string();
+            *dir_sizes.entry(parent_str).or_insert(0) += file.size;
+        }
+    }
+
+    dir_sizes
+}
+
+/// Count all matching files under a directory (including subdirectories).
+pub fn count_files_under_directory(files: &[&FileEntry], dir_path: &str) -> usize {
+    let dir_prefix_backslash = format!("{dir_path}\\");
+    let dir_prefix_forward = format!("{dir_path}/");
+    files
+        .iter()
+        .filter(|f| f.full_path.starts_with(&dir_prefix_backslash) || f.full_path.starts_with(&dir_prefix_forward))
+        .count()
 }

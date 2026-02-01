@@ -1,18 +1,34 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use colored::Colorize;
 
-use filefind::types::FileEntry;
 use filefind::config::OutputFormat;
-use filefind::{format_size, print_bold_magenta, print_bold_yellow, print_error, Database};
+use filefind::types::FileEntry;
+use filefind::{Database, IndexedVolume, format_size, print_bold_magenta, print_bold_yellow, print_error};
 
 use crate::config::{CliConfig, DisplayOptions};
-use crate::{utils, SortBy, VolumeSortBy};
+use crate::{SortBy, VolumeSortBy, utils};
 
-pub(crate) const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
+/// Data for displaying volume information.
+struct VolumeDisplayData {
+    /// Mount point and label combined (e.g., "C: Windows").
+    mount_label: String,
+    /// Volume type (e.g., "NTFS", "Network").
+    volume_type: String,
+    /// Status string ("online" or "offline").
+    status: String,
+    /// Whether the volume is currently accessible.
+    is_online: bool,
+    /// Number of indexed files on this volume.
+    file_count: u64,
+    /// Human-readable size string (e.g., "1.5 GB").
+    size_formatted: String,
+    /// Total size in bytes for sorting.
+    total_size_bytes: u64,
+}
 
 /// List all indexed volumes.
 pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
@@ -23,86 +39,48 @@ pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
         return Ok(());
     }
 
-    // Collect volume data with stats for alignment calculations
-    // (mount_and_label, volume_type, status_str, is_online, file_count, size_str, total_size_bytes)
-    let mut volume_data: Vec<(String, String, String, bool, u64, String, u64)> = Vec::new();
-
-    for volume in &volumes {
-        let label = volume.label.as_deref().unwrap_or("");
-        let mount_and_label = if label.is_empty() {
-            volume.mount_point.clone()
-        } else {
-            format!("{} {}", volume.mount_point, label)
-        };
-
-        let (file_count, size_str, total_size) = if let Some(volume_id) = volume.id {
-            let volume_stats = database.get_volume_stats(volume_id)?;
-            (
-                volume_stats.file_count,
-                format_size(volume_stats.total_size),
-                volume_stats.total_size,
-            )
-        } else {
-            (0, String::from("N/A"), 0)
-        };
-
-        // Check if the volume is actually accessible
-        let is_online = utils::check_path_accessible(&volume.mount_point);
-
-        volume_data.push((
-            mount_and_label,
-            volume.volume_type.to_string(),
-            if is_online { "online" } else { "offline" }.to_string(),
-            is_online,
-            file_count,
-            size_str,
-            total_size,
-        ));
-    }
+    let mut volume_data = get_volume_data(database, &volumes)?;
 
     // Sort by the specified field
     match sort_by {
-        VolumeSortBy::Name => volume_data.sort_by(|a, b| a.0.cmp(&b.0)),
-        VolumeSortBy::Size => volume_data.sort_by(|a, b| b.6.cmp(&a.6)),
-        VolumeSortBy::Files => volume_data.sort_by(|a, b| b.4.cmp(&a.4)),
+        VolumeSortBy::Name => volume_data.sort_by(|a, b| a.mount_label.cmp(&b.mount_label)),
+        VolumeSortBy::Size => volume_data.sort_by(|a, b| b.total_size_bytes.cmp(&a.total_size_bytes)),
+        VolumeSortBy::Files => volume_data.sort_by(|a, b| b.file_count.cmp(&a.file_count)),
     }
 
     // Calculate maximum widths for alignment in a single pass
-    let (max_mount_label_width, max_type_width, max_status_width, max_file_count_width, max_size_width) =
-        volume_data.iter().fold(
-            (0, 0, 0, 0, 0),
-            |(mount, vtype, status, files, size),
-             (mount_label, volume_type, status_str, _, file_count, size_str, _)| {
-                (
-                    mount.max(mount_label.len()),
-                    vtype.max(volume_type.len() + 2), // +2 for brackets
-                    status.max(status_str.len() + 2), // +2 for parentheses
-                    files.max(file_count.to_string().len()),
-                    size.max(size_str.len()),
-                )
-            },
-        );
+    let (max_mount_label_width, max_type_width, max_status_width, max_file_count_width, max_size_width) = volume_data
+        .iter()
+        .fold((0, 0, 0, 0, 0), |(mount, vtype, status, files, size), vol| {
+            (
+                mount.max(vol.mount_label.len()),
+                vtype.max(vol.volume_type.len() + 2), // +2 for brackets
+                status.max(vol.status.len() + 2),     // +2 for parentheses
+                files.max(vol.file_count.to_string().len()),
+                size.max(vol.size_formatted.len()),
+            )
+        });
 
     // Print aligned output
-    for (mount_label, volume_type, status_str, is_online, file_count, size_str, _) in volume_data {
+    for vol in volume_data {
         // Pad status string first, then colorize to avoid ANSI codes affecting width calculation
-        let status_padded = format!("({status_str})");
+        let status_padded = format!("({})", vol.status);
         let status_padded = format!("{status_padded:<max_status_width$}");
-        let status_colored = if is_online {
+        let status_colored = if vol.is_online {
             status_padded.green()
         } else {
             status_padded.red()
         };
 
-        let type_bracketed = format!("[{volume_type}]");
+        let type_bracketed = format!("[{}]", vol.volume_type);
 
         println!(
             "{:<mount_width$}   {:<type_width$} {}   {:>file_width$} files   {:>size_width$}",
-            mount_label.bold(),
+            vol.mount_label.bold(),
             type_bracketed,
             status_colored,
-            file_count,
-            size_str,
+            vol.file_count,
+            vol.size_formatted,
             mount_width = max_mount_label_width,
             type_width = max_type_width,
             file_width = max_file_count_width,
@@ -160,6 +138,7 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
         directories_only: config.dirs_only,
         files_only: config.files_only,
         files_per_dir: config.files_per_dir,
+        verbose: config.verbose,
     };
 
     match config.output_format {
@@ -315,7 +294,7 @@ fn display_grouped_output(
     } else if options.directories_only {
         // Dirs only mode: show full path with file count
         for directory in directories {
-            let file_count = count_files_under_directory(files, &directory.full_path);
+            let file_count = utils::count_files_under_directory(files, &directory.full_path);
             if file_count > 0 {
                 println!(
                     "{} ({} files)",
@@ -324,7 +303,10 @@ fn display_grouped_output(
                 );
             } else if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Truly empty folder on disk: print in bold yellow
-                print_bold_yellow!("{} (empty)", utils::highlight_match(&directory.full_path, highlight_patterns));
+                print_bold_yellow!(
+                    "{} (empty)",
+                    utils::highlight_match(&directory.full_path, highlight_patterns)
+                );
             } else {
                 // Directory has files but none match the search: print in magenta
                 print_bold_magenta!("{}", utils::highlight_match(&directory.full_path, highlight_patterns));
@@ -355,7 +337,7 @@ fn display_grouped(
 
     // First, show matched directories with their files
     for directory in directories {
-        let file_count = count_files_under_directory(files, &directory.full_path);
+        let file_count = utils::count_files_under_directory(files, &directory.full_path);
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
             print_bold_magenta!("{} ({} files)", &directory.full_path, file_count);
             let total_files = dir_files.len();
@@ -396,16 +378,6 @@ fn display_grouped(
     }
 }
 
-/// Count all matching files under a directory (including subdirectories).
-fn count_files_under_directory(files: &[&FileEntry], dir_path: &str) -> usize {
-    let dir_prefix_backslash = format!("{dir_path}\\");
-    let dir_prefix_forward = format!("{dir_path}/");
-    files
-        .iter()
-        .filter(|f| f.full_path.starts_with(&dir_prefix_backslash) || f.full_path.starts_with(&dir_prefix_forward))
-        .count()
-}
-
 /// Display results in list format
 fn display_list(
     directories: &[&FileEntry],
@@ -421,7 +393,10 @@ fn display_list(
         for directory in directories {
             if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Empty folder: print in yellow
-                println!("{}", utils::highlight_match(&directory.full_path, highlight_patterns).yellow());
+                println!(
+                    "{}",
+                    utils::highlight_match(&directory.full_path, highlight_patterns).yellow()
+                );
             } else {
                 println!("{}", utils::highlight_match(&directory.full_path, highlight_patterns));
             }
@@ -448,46 +423,67 @@ fn display_info(
     options: &DisplayOptions,
     highlight_patterns: &[&str],
 ) {
-    // Build a map of directory path -> total size of files under it
-    let dir_sizes = calculate_directory_sizes(files);
+    // Print header if verbose
+    if options.verbose {
+        println!("{:>10}{:>8}  PATH", "SIZE", "FILES");
+    }
 
-    if options.files_only {
-        for file in files {
-            print_entry_info(file, None, None, highlight_patterns, false);
-        }
-    } else if options.directories_only {
+    // Show directories first, then files (both already sorted by caller)
+    if !options.files_only {
+        // Build a map of directory path -> total size of files under it
+        let dir_sizes = utils::calculate_directory_sizes(files);
+
         for directory in directories {
             let size = dir_sizes.get(&directory.full_path).copied();
-            let file_count = count_files_under_directory(files, &directory.full_path);
+            let file_count = utils::count_files_under_directory(files, &directory.full_path);
             let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);
             print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
         }
-    } else {
-        // Show directories first, then files (both already sorted by caller)
-        for directory in directories {
-            let size = dir_sizes.get(&directory.full_path).copied();
-            let file_count = count_files_under_directory(files, &directory.full_path);
-            let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);
-            print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
-        }
+    }
+    if !options.directories_only {
         for file in files {
             print_entry_info(file, None, None, highlight_patterns, false);
         }
     }
 }
 
-/// Calculate the total size of files under each directory.
-fn calculate_directory_sizes(files: &[&FileEntry]) -> HashMap<String, u64> {
-    let mut dir_sizes: HashMap<String, u64> = HashMap::new();
+/// Collect volume data with stats for alignment calculations
+fn get_volume_data(database: &Database, volumes: &[IndexedVolume]) -> Result<Vec<VolumeDisplayData>> {
+    volumes
+        .iter()
+        .map(|volume| {
+            let label = volume.label.as_deref().unwrap_or("");
+            let mount_label = if label.is_empty() {
+                volume.mount_point.clone()
+            } else {
+                format!("{} {}", volume.mount_point, label)
+            };
 
-    for file in files {
-        if let Some(parent) = PathBuf::from(&file.full_path).parent() {
-            let parent_str = parent.to_string_lossy().to_string();
-            *dir_sizes.entry(parent_str).or_insert(0) += file.size;
-        }
-    }
+            let (file_count, size_formatted, total_size_bytes) = if let Some(volume_id) = volume.id {
+                let volume_stats = database.get_volume_stats(volume_id)?;
+                (
+                    volume_stats.file_count,
+                    format_size(volume_stats.total_size),
+                    volume_stats.total_size,
+                )
+            } else {
+                (0, String::from("N/A"), 0)
+            };
 
-    dir_sizes
+            // Check if the volume is actually accessible
+            let is_online = utils::check_path_accessible(&volume.mount_point);
+
+            Ok(VolumeDisplayData {
+                mount_label,
+                volume_type: volume.volume_type.to_string(),
+                status: if is_online { "online" } else { "offline" }.to_string(),
+                is_online,
+                file_count,
+                size_formatted,
+                total_size_bytes,
+            })
+        })
+        .collect()
 }
 
 /// Print a single entry with size info.
@@ -522,4 +518,3 @@ fn print_entry_info(
 
     println!("{size_str}{count_str}  {path_display}");
 }
-

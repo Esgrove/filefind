@@ -67,6 +67,9 @@ pub struct DisplayOptions {
 
     /// Maximum files to show per directory in grouped output.
     pub files_per_dir: usize,
+
+    /// Verbose output mode.
+    pub verbose: bool,
 }
 
 impl CliConfig {
