@@ -342,7 +342,6 @@ fn display_info(
     highlight_patterns: &[&str],
     database: &Database,
 ) {
-    // Print header if verbose
     if config.verbose {
         println!("{:>10}{:>8}  PATH", "SIZE", "FILES");
         println!("────────────────────────────────────────────────────────────────────");
@@ -364,10 +363,8 @@ fn display_info(
         }
 
         for directory in sorted_dirs {
-            // Check if directory exists on disk
             if !utils::check_directory_exists(&directory.full_path) {
-                // Directory no longer exists: print in red and remove from database
-                print_entry_info_missing(directory);
+                print_entry_info(directory, None, None, highlight_patterns, true, true);
                 delete_missing_directory(database, &directory.full_path);
                 continue;
             }
@@ -375,12 +372,12 @@ fn display_info(
             let size = dir_sizes.get(&directory.full_path).copied();
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
             let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);
-            print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty);
+            print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty, false);
         }
     }
     if !config.directories_only {
         for file in files {
-            print_entry_info(file, None, None, highlight_patterns, false);
+            print_entry_info(file, None, None, highlight_patterns, false, false);
         }
     }
 }
@@ -454,6 +451,7 @@ fn print_entry_info(
     file_count: Option<usize>,
     highlight_patterns: &[&str],
     is_empty: bool,
+    is_missing: bool,
 ) {
     let size_str = if entry.is_directory {
         calculated_size.map_or_else(|| format!("{:>10}", "-"), |size| format!("{:>10}", format_size(size)))
@@ -466,21 +464,14 @@ fn print_entry_info(
     let path_display = if entry.is_directory {
         if is_empty {
             entry.full_path.yellow().to_string()
+        } else if is_missing {
+            entry.full_path.red().to_string()
         } else {
             entry.full_path.cyan().to_string()
         }
     } else {
         utils::highlight_match(&entry.full_path, highlight_patterns)
     };
-
-    println!("{size_str}{count_str}  {path_display}");
-}
-
-/// Print entry info for a missing (non-existent) directory in red.
-fn print_entry_info_missing(entry: &FileEntry) {
-    let size_str = format!("{:>10}", "-");
-    let count_str = String::new();
-    let path_display = entry.full_path.bold().red().to_string();
 
     println!("{size_str}{count_str}  {path_display}");
 }
