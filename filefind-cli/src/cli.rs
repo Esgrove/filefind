@@ -7,7 +7,9 @@ use colored::Colorize;
 
 use filefind::config::OutputFormat;
 use filefind::types::FileEntry;
-use filefind::{Database, IndexedVolume, format_size, print_bold_magenta, print_bold_yellow, print_error};
+use filefind::{
+    Database, IndexedVolume, format_size, print_bold_magenta, print_bold_red, print_bold_yellow, print_error,
+};
 
 use crate::config::CliConfig;
 use crate::{SortBy, VolumeSortBy, utils};
@@ -135,9 +137,9 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     };
 
     match config.output_format {
-        OutputFormat::Grouped => display_grouped_output(&directories, &files, config, &highlight_patterns),
-        OutputFormat::List => display_list(&directories, &files, config, &highlight_patterns),
-        OutputFormat::Info => display_info(&directories, &files, config, &highlight_patterns),
+        OutputFormat::Grouped => display_grouped_output(&directories, &files, config, &highlight_patterns, database),
+        OutputFormat::List => display_list(&directories, &files, config, &highlight_patterns, database),
+        OutputFormat::Info => display_info(&directories, &files, config, &highlight_patterns, database),
     }
 
     // Show search stats if verbose
@@ -172,6 +174,7 @@ fn display_grouped_output(
     files: &[&FileEntry],
     config: &CliConfig,
     highlight_patterns: &[&str],
+    database: &Database,
 ) {
     if config.files_only {
         // Files only mode: show full paths
@@ -181,6 +184,14 @@ fn display_grouped_output(
     } else if config.directories_only {
         // Dirs only mode: show full path with file count
         for directory in directories {
+            // Check if directory exists on disk
+            if !utils::check_directory_exists(&directory.full_path) {
+                // Directory no longer exists: print in red and remove from database
+                print_bold_red!("{}", &directory.full_path);
+                delete_missing_directory(database, &directory.full_path);
+                continue;
+            }
+
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
             if file_count > 0 {
                 println!(
@@ -197,12 +208,18 @@ fn display_grouped_output(
         }
     } else {
         // Normal mode: group files under directories
-        display_grouped(directories, files, config, highlight_patterns);
+        display_grouped(directories, files, config, highlight_patterns, database);
     }
 }
 
 /// Display results grouped by directory.
-fn display_grouped(directories: &[&FileEntry], files: &[&FileEntry], config: &CliConfig, highlight_patterns: &[&str]) {
+fn display_grouped(
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
+    config: &CliConfig,
+    highlight_patterns: &[&str],
+    database: &Database,
+) {
     // Group files by their parent directory
     let mut files_by_dir: HashMap<String, Vec<&FileEntry>> = HashMap::new();
     for file in files {
@@ -215,6 +232,15 @@ fn display_grouped(directories: &[&FileEntry], files: &[&FileEntry], config: &Cl
 
     // First, show matched directories with their files
     for directory in directories {
+        // Check if directory exists on disk
+        if !utils::check_directory_exists(&directory.full_path) {
+            // Directory no longer exists: print in red and remove from database
+            print_bold_red!("{}", &directory.full_path);
+            delete_missing_directory(database, &directory.full_path);
+            println!();
+            continue;
+        }
+
         let file_count = utils::count_files_under_directory(files, &directory.full_path);
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
             print_bold_magenta!("{} ({file_count})", &directory.full_path);
@@ -257,13 +283,27 @@ fn display_grouped(directories: &[&FileEntry], files: &[&FileEntry], config: &Cl
 }
 
 /// Display results in list format
-fn display_list(directories: &[&FileEntry], files: &[&FileEntry], config: &CliConfig, highlight_patterns: &[&str]) {
+fn display_list(
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
+    config: &CliConfig,
+    highlight_patterns: &[&str],
+    database: &Database,
+) {
     if config.files_only {
         for file in files {
             println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
         }
     } else if config.directories_only {
         for directory in directories {
+            // Check if directory exists on disk
+            if !utils::check_directory_exists(&directory.full_path) {
+                // Directory no longer exists: print in red and remove from database
+                print_bold_red!("{}", &directory.full_path);
+                delete_missing_directory(database, &directory.full_path);
+                continue;
+            }
+
             if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Empty folder: print in yellow (no highlight to avoid mixed colors)
                 println!("{}", directory.full_path.yellow());
@@ -274,6 +314,14 @@ fn display_list(directories: &[&FileEntry], files: &[&FileEntry], config: &CliCo
     } else {
         // Show directories first, then files (both already sorted by caller)
         for directory in directories {
+            // Check if directory exists on disk
+            if !utils::check_directory_exists(&directory.full_path) {
+                // Directory no longer exists: print in red and remove from database
+                print_bold_red!("{}", &directory.full_path);
+                delete_missing_directory(database, &directory.full_path);
+                continue;
+            }
+
             if utils::is_directory_empty_on_disk(&directory.full_path) {
                 println!("{}", directory.full_path.yellow());
             } else {
@@ -287,7 +335,13 @@ fn display_list(directories: &[&FileEntry], files: &[&FileEntry], config: &CliCo
 }
 
 /// Display results in info format with size.
-fn display_info(directories: &[&FileEntry], files: &[&FileEntry], config: &CliConfig, highlight_patterns: &[&str]) {
+fn display_info(
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
+    config: &CliConfig,
+    highlight_patterns: &[&str],
+    database: &Database,
+) {
     // Print header if verbose
     if config.verbose {
         println!("{:>10}{:>8}  PATH", "SIZE", "FILES");
@@ -310,6 +364,14 @@ fn display_info(directories: &[&FileEntry], files: &[&FileEntry], config: &CliCo
         }
 
         for directory in sorted_dirs {
+            // Check if directory exists on disk
+            if !utils::check_directory_exists(&directory.full_path) {
+                // Directory no longer exists: print in red and remove from database
+                print_entry_info_missing(directory);
+                delete_missing_directory(database, &directory.full_path);
+                continue;
+            }
+
             let size = dir_sizes.get(&directory.full_path).copied();
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
             let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);
@@ -412,6 +474,22 @@ fn print_entry_info(
     };
 
     println!("{size_str}{count_str}  {path_display}");
+}
+
+/// Print entry info for a missing (non-existent) directory in red.
+fn print_entry_info_missing(entry: &FileEntry) {
+    let size_str = format!("{:>10}", "-");
+    let count_str = String::new();
+    let path_display = entry.full_path.bold().red().to_string();
+
+    println!("{size_str}{count_str}  {path_display}");
+}
+
+/// Delete a missing directory and all files under it from the database.
+fn delete_missing_directory(database: &Database, path: &str) {
+    if let Err(error) = database.delete_files_under_path(path) {
+        print_error!("Failed to remove stale entries for {path}:\n{error}");
+    }
 }
 
 /// Search for results matching ANY pattern (OR mode).

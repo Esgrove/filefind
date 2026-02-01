@@ -100,6 +100,22 @@ pub fn check_path_accessible(path: &str) -> bool {
     receiver.recv_timeout(CHECK_TIMEOUT).unwrap_or(false)
 }
 
+/// Check if a directory exists on disk with a timeout.
+/// Returns true if the directory exists and is a directory.
+/// Returns false if it doesn't exist, is not a directory, or the check times out.
+pub fn check_directory_exists(path: &str) -> bool {
+    let path = path.to_string();
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        let path = Path::new(&path);
+        let exists = path.is_dir();
+        let _ = sender.send(exists);
+    });
+
+    receiver.recv_timeout(CHECK_TIMEOUT).unwrap_or(false)
+}
+
 /// Calculate the total size of files under each directory.
 pub fn calculate_directory_sizes(files: &[&FileEntry]) -> HashMap<String, u64> {
     let mut dir_sizes: HashMap<String, u64> = HashMap::new();

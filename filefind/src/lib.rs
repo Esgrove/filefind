@@ -197,15 +197,15 @@ macro_rules! print_success {
 }
 
 /// Print an info message in cyan.
-pub fn print_info(message: &str) {
+pub fn print_cyan(message: &str) {
     println!("{}", message.cyan());
 }
 
 /// Print an info message in cyan with formatting support.
 #[macro_export]
-macro_rules! print_info {
+macro_rules! print_cyan {
     ($($arg:tt)*) => {
-        $crate::print_info(&format!($($arg)*))
+        $crate::print_cyan(&format!($($arg)*))
     };
 }
 
@@ -232,6 +232,19 @@ pub fn print_bold_yellow(message: &str) {
 macro_rules! print_bold_yellow {
     ($($arg:tt)*) => {
         $crate::print_bold_yellow(&format!($($arg)*))
+    };
+}
+
+/// Print a message in bold red.
+pub fn print_bold_red(message: &str) {
+    println!("{}", message.bold().red());
+}
+
+/// Print a message in bold red with formatting support.
+#[macro_export]
+macro_rules! print_bold_red {
+    ($($arg:tt)*) => {
+        $crate::print_bold_red(&format!($($arg)*))
     };
 }
 

@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use filefind::{
-    Config, DaemonStateInfo, Database, FileChangeEvent, FileEntry, IpcClient, format_number, print_error, print_info,
+    Config, DaemonStateInfo, Database, FileChangeEvent, FileEntry, IpcClient, format_number, print_cyan, print_error,
     print_success, print_warning,
 };
 use tokio::sync::mpsc;
@@ -271,7 +271,7 @@ impl Daemon {
         }
 
         if self.verbose() {
-            print_info!("Daemon running. Press Ctrl+C to stop.");
+            print_cyan!("Daemon running. Press Ctrl+C to stop.");
         }
 
         // Main loop - wait for shutdown signal
@@ -790,7 +790,7 @@ pub fn start_daemon(options: &DaemonOptions, config: &Config) -> Result<()> {
 
     if options.foreground {
         if config.daemon.verbose {
-            print_info!("Starting daemon in foreground mode...");
+            print_cyan!("Starting daemon in foreground mode...");
         }
 
         // Run in foreground with tokio runtime
@@ -849,8 +849,8 @@ fn spawn_background_daemon(rescan: bool) -> Result<()> {
     let child = command.spawn().context("Failed to spawn background daemon process")?;
 
     print_success!("Daemon started in background (PID: {})", child.id());
-    print_info!("Use 'filefindd status' to check daemon status");
-    print_info!("Use 'filefindd stop' to stop the daemon");
+    print_cyan!("Use 'filefindd status' to check daemon status");
+    print_cyan!("Use 'filefindd stop' to stop the daemon");
 
     Ok(())
 }
@@ -861,14 +861,14 @@ fn spawn_background_daemon(_rescan: bool) -> Result<()> {
     // On Unix, we would use fork() or nohup-style daemonization
     // For now, just print a message suggesting foreground mode
     print_warning!("Background daemon mode not implemented on this platform.");
-    print_info!("Use 'filefindd start -f' for foreground mode.");
-    print_info!("Or use 'nohup filefindd start -f &' to run in background.");
+    print_cyan!("Use 'filefindd start -f' for foreground mode.");
+    print_cyan!("Or use 'nohup filefindd start -f &' to run in background.");
     Ok(())
 }
 
 /// Stop the running daemon.
 pub fn stop_daemon() {
-    print_info!("Stopping daemon...");
+    print_cyan!("Stopping daemon...");
 
     let client = IpcClient::new();
 
@@ -968,8 +968,8 @@ pub fn detect_drives() {
     }
 
     println!();
-    print_info!("Run 'filefindd scan' to index all detected NTFS volumes");
-    print_info!("Run 'filefindd scan <path>' to scan a specific directory");
+    print_cyan!("Run 'filefindd scan' to index all detected NTFS volumes");
+    print_cyan!("Run 'filefindd scan <path>' to scan a specific directory");
 }
 
 /// Show index statistics.

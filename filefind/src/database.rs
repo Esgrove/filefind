@@ -296,6 +296,31 @@ impl Database {
         Ok(rows_affected)
     }
 
+    /// Delete a directory and all files under it by path prefix.
+    ///
+    /// This deletes the directory entry itself and all entries whose path starts
+    /// with the directory path followed by a path separator.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn delete_files_under_path(&self, path: &str) -> Result<usize> {
+        // Normalize path to use backslash for consistency
+        let normalized_path = path.replace('/', "\\");
+        let path_prefix_backslash = format!("{normalized_path}\\%");
+        let path_prefix_forward = format!("{normalized_path}/%");
+
+        let rows_affected = self
+            .connection
+            .execute(
+                "DELETE FROM files WHERE full_path = ?1 OR full_path LIKE ?2 OR full_path LIKE ?3",
+                rusqlite::params![normalized_path, path_prefix_backslash, path_prefix_forward],
+            )
+            .context("Failed to delete files under path")?;
+
+        debug!("Deleted {} entries under path {}", rows_affected, path);
+        Ok(rows_affected)
+    }
+
     /// Delete files by their MFT reference numbers for a specific volume.
     ///
     /// This is used for incremental cleanup based on USN journal changes.
@@ -1632,6 +1657,143 @@ mod tests {
         // Should return 0 and not error with empty list
         let deleted = database.delete_files_by_mft_references(volume_id, &[]).unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn test_delete_files_under_path() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("UNDER_PATH_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Create a directory and files under it
+        database
+            .insert_file(&create_test_directory(volume_id, "MyFolder", "C:\\MyFolder"))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "file1.txt",
+                "C:\\MyFolder\\file1.txt",
+                100,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "file2.txt",
+                "C:\\MyFolder\\file2.txt",
+                200,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_directory(
+                volume_id,
+                "SubFolder",
+                "C:\\MyFolder\\SubFolder",
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "nested.txt",
+                "C:\\MyFolder\\SubFolder\\nested.txt",
+                50,
+            ))
+            .unwrap();
+
+        // Create a file outside the folder
+        database
+            .insert_file(&create_test_file(volume_id, "other.txt", "C:\\other.txt", 300))
+            .unwrap();
+
+        // Verify all entries exist
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.total_files, 4);
+        assert_eq!(stats.total_directories, 2);
+
+        // Delete the folder and everything under it
+        let deleted = database.delete_files_under_path("C:\\MyFolder").unwrap();
+        assert_eq!(deleted, 5); // 1 dir + 2 files + 1 subdir + 1 nested file
+
+        // Verify the folder and its contents are gone
+        let results = database.search_by_name("MyFolder", 10).unwrap();
+        assert!(results.is_empty());
+        let results = database.search_by_name("file1", 10).unwrap();
+        assert!(results.is_empty());
+        let results = database.search_by_name("nested", 10).unwrap();
+        assert!(results.is_empty());
+
+        // The other file should still exist
+        let results = database.search_by_name("other", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_delete_files_under_path_not_found() {
+        let database = Database::open_in_memory().unwrap();
+
+        // Should return 0 and not error when path doesn't exist
+        let deleted = database.delete_files_under_path("C:\\NonExistent").unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn test_delete_files_under_path_only_directory() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("ONLY_DIR_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Create only a directory (no files under it)
+        database
+            .insert_file(&create_test_directory(volume_id, "EmptyFolder", "C:\\EmptyFolder"))
+            .unwrap();
+
+        // Delete the folder
+        let deleted = database.delete_files_under_path("C:\\EmptyFolder").unwrap();
+        assert_eq!(deleted, 1);
+
+        // Verify it's gone
+        let results = database.search_by_name("EmptyFolder", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_delete_files_under_path_with_similar_names() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("SIMILAR_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Create folders with similar names
+        database
+            .insert_file(&create_test_directory(volume_id, "Test", "C:\\Test"))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "file.txt", "C:\\Test\\file.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_directory(volume_id, "Testing", "C:\\Testing"))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "file.txt", "C:\\Testing\\file.txt", 200))
+            .unwrap();
+        database
+            .insert_file(&create_test_directory(volume_id, "TestData", "C:\\TestData"))
+            .unwrap();
+
+        // Delete only C:\Test (not C:\Testing or C:\TestData)
+        let deleted = database.delete_files_under_path("C:\\Test").unwrap();
+        assert_eq!(deleted, 2); // C:\Test and C:\Test\file.txt
+
+        // C:\Testing and its file should still exist
+        let results = database.search_by_path("Testing", 10).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // C:\TestData should still exist
+        let results = database.search_by_path("TestData", 10).unwrap();
+        assert_eq!(results.len(), 1);
     }
 
     #[test]

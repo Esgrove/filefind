@@ -20,7 +20,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use filefind::{Config, LogLevel, format_number, get_log_directory, print_info, print_success};
+use filefind::{Config, LogLevel, format_number, get_log_directory, print_cyan, print_success};
 
 /// Background file indexing daemon for filefind
 #[derive(Parser)]
@@ -258,13 +258,13 @@ fn run_prune(config: &Config) -> Result<()> {
     let database_path = config.database_path();
 
     if !database_path.exists() {
-        print_info!("Database does not exist at: {}", database_path.display());
+        print_cyan!("Database does not exist at: {}", database_path.display());
         return Ok(());
     }
 
     let database = filefind::Database::open(&database_path)?;
 
-    print_info!("Pruning database entries for missing files and directories...");
+    print_cyan!("Pruning database entries for missing files and directories...");
 
     let stats = pruner::prune_missing_entries(&database, config.daemon.verbose)?;
 
