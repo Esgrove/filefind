@@ -10,10 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
-use filefind::{
-    DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, Database, deserialize_command, get_ipc_path,
-    read_message, serialize_response, write_message,
-};
+use filefind::{DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, Database, get_ipc_path};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -291,30 +288,20 @@ impl IpcServer {
     fn handle_windows_client_sync(&self, file: &std::fs::File) -> Result<()> {
         // Read the command using binary protocol
         let mut reader = file;
-        let Ok(command_bytes) = read_message(&mut reader) else {
-            return Ok(());
-        };
-
-        if command_bytes.is_empty() {
-            return Ok(());
-        }
-
-        // Parse and handle the command
-        let response = match deserialize_command(&command_bytes) {
+        let response = match DaemonCommand::read_from(&mut reader) {
             Ok(command) => {
                 debug!("Received command: {:?}", command);
                 self.handle_command_sync(command)
             }
             Err(error) => {
-                warn!("Failed to parse command: {}", error);
-                DaemonResponse::Error(format!("Invalid command: {error}"))
+                warn!("Failed to parse command from Windows named pipe client: {}", error);
+                DaemonResponse::Error(format!("Invalid command: failed to read/parse IPC message: {error}"))
             }
         };
 
         // Send response
-        let response_bytes = serialize_response(&response)?;
         let mut write_file = file;
-        write_message(&mut write_file, &response_bytes)?;
+        response.write_to(&mut write_file)?;
 
         Ok(())
     }
@@ -390,30 +377,20 @@ impl IpcServer {
 
         // Read the command using binary protocol
         let mut reader = &stream;
-        let Ok(command_bytes) = read_message(&mut reader) else {
-            return Ok(());
-        };
-
-        if command_bytes.is_empty() {
-            return Ok(());
-        }
-
-        // Parse and handle the command
-        let response = match deserialize_command(&command_bytes) {
+        let response = match DaemonCommand::read_from(&mut reader) {
             Ok(command) => {
                 debug!("Received command: {:?}", command);
                 self.handle_command_sync(command)
             }
             Err(error) => {
-                warn!("Failed to parse command: {}", error);
-                DaemonResponse::Error(format!("Invalid command: {error}"))
+                warn!("Failed to parse command from Unix domain socket client: {}", error);
+                DaemonResponse::Error(format!("Invalid command: failed to read/parse IPC message: {error}"))
             }
         };
 
         // Send response
-        let response_bytes = serialize_response(&response)?;
         let mut write_stream = &stream;
-        write_message(&mut write_stream, &response_bytes)?;
+        response.write_to(&mut write_stream)?;
 
         Ok(())
     }

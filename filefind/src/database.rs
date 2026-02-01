@@ -9,10 +9,13 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use regex::Regex;
 use rusqlite::functions::FunctionFlags;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use tracing::{debug, trace};
 
 use crate::types::{FileEntry, IndexedVolume, VolumeType};
+
+/// Batch size for MFT reference delete operations.
+const MFT_DELETE_BATCH_SIZE: usize = 500;
 
 /// Database wrapper for file index operations.
 pub struct Database {
@@ -77,94 +80,6 @@ impl Database {
         Ok(database)
     }
 
-    /// Initialize the database schema.
-    fn initialize(&self) -> Result<()> {
-        self.register_regexp_function()?;
-
-        self.connection
-            .execute_batch(
-                r"
-                -- Indexed volumes/drives
-                CREATE TABLE IF NOT EXISTS volumes (
-                    id INTEGER PRIMARY KEY,
-                    serial_number TEXT NOT NULL UNIQUE,
-                    label TEXT,
-                    mount_point TEXT NOT NULL,
-                    volume_type TEXT NOT NULL,
-                    last_scan_time INTEGER,
-                    last_usn INTEGER,
-                    is_online INTEGER NOT NULL DEFAULT 1
-                );
-
-                -- Indexed files and directories
-                CREATE TABLE IF NOT EXISTS files (
-                    id INTEGER PRIMARY KEY,
-                    volume_id INTEGER NOT NULL,
-                    parent_id INTEGER,
-                    name TEXT NOT NULL,
-                    full_path TEXT NOT NULL,
-                    is_directory INTEGER NOT NULL,
-                    size INTEGER NOT NULL DEFAULT 0,
-                    created_time INTEGER,
-                    modified_time INTEGER,
-                    mft_reference INTEGER,
-                    FOREIGN KEY (volume_id) REFERENCES volumes(id) ON DELETE CASCADE
-                );
-
-                -- Indexes for fast searching
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path ON files(full_path);
-                CREATE INDEX IF NOT EXISTS idx_files_name ON files(name COLLATE NOCASE);
-                CREATE INDEX IF NOT EXISTS idx_files_volume ON files(volume_id);
-                CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
-                CREATE INDEX IF NOT EXISTS idx_files_is_directory ON files(is_directory);
-                CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_time);
-
-                -- Enable foreign keys
-                PRAGMA foreign_keys = ON;
-
-                -- Performance optimizations
-                PRAGMA journal_mode = WAL;
-                PRAGMA synchronous = NORMAL;
-                PRAGMA cache_size = -64000;
-                ",
-            )
-            .context("Failed to initialize database schema")?;
-
-        debug!("Database schema initialized");
-        Ok(())
-    }
-
-    /// Register the REGEXP function for regex searches.
-    ///
-    /// This enables SQL queries like: `SELECT * FROM files WHERE name REGEXP 'pattern'`
-    fn register_regexp_function(&self) -> Result<()> {
-        self.connection.create_scalar_function(
-            "regexp",
-            2,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |ctx| {
-                // Get the pattern and compile/cache it
-                let pattern: Arc<Regex> = ctx.get_or_create_aux(0, |vr| {
-                    let pattern_str = vr
-                        .as_str()
-                        .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-                    Regex::new(pattern_str).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
-                })?;
-
-                // Get the text to match against
-                let text = ctx
-                    .get_raw(1)
-                    .as_str()
-                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-
-                Ok(pattern.is_match(text))
-            },
-        )?;
-
-        trace!("Registered REGEXP function");
-        Ok(())
-    }
-
     /// Add or update a volume in the database.
     ///
     /// # Errors
@@ -185,7 +100,7 @@ impl Database {
                     last_usn = excluded.last_usn,
                     is_online = excluded.is_online
                 ",
-                params![
+                rusqlite::params![
                     volume.serial_number,
                     volume.label,
                     volume.mount_point,
@@ -203,7 +118,7 @@ impl Database {
             .connection
             .query_row(
                 "SELECT id FROM volumes WHERE serial_number = ?1",
-                params![volume.serial_number],
+                rusqlite::params![volume.serial_number],
                 |row| row.get(0),
             )
             .context("Failed to get volume ID after upsert")?;
@@ -225,7 +140,7 @@ impl Database {
         )?;
 
         let volume = statement
-            .query_row(params![serial_number], |row| {
+            .query_row(rusqlite::params![serial_number], |row| {
                 Ok(IndexedVolume {
                     id: Some(row.get(0)?),
                     serial_number: row.get(1)?,
@@ -294,7 +209,7 @@ impl Database {
                     modified_time = excluded.modified_time,
                     mft_reference = excluded.mft_reference
                 ",
-                params![
+                rusqlite::params![
                     file.volume_id,
                     file.parent_id,
                     file.name,
@@ -335,7 +250,7 @@ impl Database {
             )?;
 
             for file in files {
-                statement.execute(params![
+                statement.execute(rusqlite::params![
                     file.volume_id,
                     file.parent_id,
                     file.name,
@@ -361,7 +276,7 @@ impl Database {
     pub fn delete_file_by_path(&self, path: &str) -> Result<bool> {
         let rows_affected = self
             .connection
-            .execute("DELETE FROM files WHERE full_path = ?1", params![path])
+            .execute("DELETE FROM files WHERE full_path = ?1", rusqlite::params![path])
             .context("Failed to delete file")?;
 
         Ok(rows_affected > 0)
@@ -374,15 +289,12 @@ impl Database {
     pub fn delete_files_for_volume(&self, volume_id: i64) -> Result<usize> {
         let rows_affected = self
             .connection
-            .execute("DELETE FROM files WHERE volume_id = ?1", params![volume_id])
+            .execute("DELETE FROM files WHERE volume_id = ?1", rusqlite::params![volume_id])
             .context("Failed to delete files for volume")?;
 
         debug!("Deleted {} files for volume {}", rows_affected, volume_id);
         Ok(rows_affected)
     }
-
-    /// Batch size for MFT reference delete operations.
-    const MFT_DELETE_BATCH_SIZE: usize = 500;
 
     /// Delete files by their MFT reference numbers for a specific volume.
     ///
@@ -400,7 +312,7 @@ impl Database {
         let mut total_deleted = 0usize;
 
         // Process in batches to avoid SQL statement size limits
-        for chunk in mft_references.chunks(Self::MFT_DELETE_BATCH_SIZE) {
+        for chunk in mft_references.chunks(MFT_DELETE_BATCH_SIZE) {
             let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
             let query = format!(
                 "DELETE FROM files WHERE volume_id = ?1 AND mft_reference IN ({})",
@@ -454,7 +366,7 @@ impl Database {
 
         let files = statement
             .query_map(
-                params![search_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                rusqlite::params![search_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
                 row_to_file_entry,
             )?
             .collect::<Result<Vec<_>, _>>()
@@ -523,7 +435,7 @@ impl Database {
 
         let files = statement
             .query_map(
-                params![name, i64::try_from(limit).unwrap_or(i64::MAX)],
+                rusqlite::params![name, i64::try_from(limit).unwrap_or(i64::MAX)],
                 row_to_file_entry,
             )?
             .collect::<Result<Vec<_>, _>>()
@@ -555,7 +467,7 @@ impl Database {
 
         let files = statement
             .query_map(
-                params![sql_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                rusqlite::params![sql_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
                 row_to_file_entry,
             )?
             .collect::<Result<Vec<_>, _>>()
@@ -644,7 +556,7 @@ impl Database {
 
         let files = statement
             .query_map(
-                params![effective_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                rusqlite::params![effective_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
                 row_to_file_entry,
             )?
             .collect::<Result<Vec<_>, _>>()
@@ -728,7 +640,7 @@ impl Database {
 
         let files = statement
             .query_map(
-                params![search_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+                rusqlite::params![search_pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
                 row_to_file_entry,
             )?
             .collect::<Result<Vec<_>, _>>()
@@ -779,19 +691,19 @@ impl Database {
     pub fn get_volume_stats(&self, volume_id: i64) -> Result<VolumeStats> {
         let file_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM files WHERE volume_id = ?1 AND is_directory = 0",
-            params![volume_id],
+            rusqlite::params![volume_id],
             |row| row.get(0),
         )?;
 
         let directory_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM files WHERE volume_id = ?1 AND is_directory = 1",
-            params![volume_id],
+            rusqlite::params![volume_id],
             |row| row.get(0),
         )?;
 
         let total_size: i64 = self.connection.query_row(
             "SELECT COALESCE(SUM(size), 0) FROM files WHERE volume_id = ?1 AND is_directory = 0",
-            params![volume_id],
+            rusqlite::params![volume_id],
             |row| row.get(0),
         )?;
 
@@ -810,7 +722,7 @@ impl Database {
         self.connection
             .execute(
                 "UPDATE volumes SET last_usn = ?1, last_scan_time = ?2 WHERE id = ?3",
-                params![usn, system_time_to_unix(SystemTime::now()), volume_id],
+                rusqlite::params![usn, system_time_to_unix(SystemTime::now()), volume_id],
             )
             .context("Failed to update volume USN")?;
 
@@ -828,7 +740,7 @@ impl Database {
         self.connection
             .execute(
                 "UPDATE volumes SET last_usn = ?1, last_scan_time = ?2 WHERE mount_point = ?3 OR mount_point = ?4",
-                params![
+                rusqlite::params![
                     usn,
                     system_time_to_unix(SystemTime::now()),
                     mount_point,
@@ -858,7 +770,7 @@ impl Database {
         let mount_point_with_slash = format!("{mount_point}\\");
 
         let usn = statement
-            .query_row(params![mount_point, mount_point_with_slash], |row| row.get(0))
+            .query_row(rusqlite::params![mount_point, mount_point_with_slash], |row| row.get(0))
             .optional()
             .context("Failed to query volume USN")?;
 
@@ -873,7 +785,7 @@ impl Database {
         self.connection
             .execute(
                 "UPDATE volumes SET is_online = ?1 WHERE id = ?2",
-                params![is_online, volume_id],
+                rusqlite::params![is_online, volume_id],
             )
             .context("Failed to update volume online status")?;
 
@@ -900,6 +812,94 @@ impl Database {
     #[must_use]
     pub const fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    /// Initialize the database schema.
+    fn initialize(&self) -> Result<()> {
+        self.register_regexp_function()?;
+
+        self.connection
+            .execute_batch(
+                r"
+                -- Indexed volumes/drives
+                CREATE TABLE IF NOT EXISTS volumes (
+                    id INTEGER PRIMARY KEY,
+                    serial_number TEXT NOT NULL UNIQUE,
+                    label TEXT,
+                    mount_point TEXT NOT NULL,
+                    volume_type TEXT NOT NULL,
+                    last_scan_time INTEGER,
+                    last_usn INTEGER,
+                    is_online INTEGER NOT NULL DEFAULT 1
+                );
+
+                -- Indexed files and directories
+                CREATE TABLE IF NOT EXISTS files (
+                    id INTEGER PRIMARY KEY,
+                    volume_id INTEGER NOT NULL,
+                    parent_id INTEGER,
+                    name TEXT NOT NULL,
+                    full_path TEXT NOT NULL,
+                    is_directory INTEGER NOT NULL,
+                    size INTEGER NOT NULL DEFAULT 0,
+                    created_time INTEGER,
+                    modified_time INTEGER,
+                    mft_reference INTEGER,
+                    FOREIGN KEY (volume_id) REFERENCES volumes(id) ON DELETE CASCADE
+                );
+
+                -- Indexes for fast searching
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path ON files(full_path);
+                CREATE INDEX IF NOT EXISTS idx_files_name ON files(name COLLATE NOCASE);
+                CREATE INDEX IF NOT EXISTS idx_files_volume ON files(volume_id);
+                CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
+                CREATE INDEX IF NOT EXISTS idx_files_is_directory ON files(is_directory);
+                CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_time);
+
+                -- Enable foreign keys
+                PRAGMA foreign_keys = ON;
+
+                -- Performance optimizations
+                PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = NORMAL;
+                PRAGMA cache_size = -64000;
+                ",
+            )
+            .context("Failed to initialize database schema")?;
+
+        debug!("Database schema initialized");
+        Ok(())
+    }
+
+    /// Register the REGEXP function for regex searches.
+    ///
+    /// This enables SQL queries like: `SELECT * FROM files WHERE name REGEXP 'pattern'`
+    fn register_regexp_function(&self) -> Result<()> {
+        self.connection.create_scalar_function(
+            "regexp",
+            2,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                // Get the pattern and compile/cache it
+                let pattern: Arc<Regex> = ctx.get_or_create_aux(0, |vr| {
+                    let pattern_str = vr
+                        .as_str()
+                        .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                    Regex::new(pattern_str).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
+                })?;
+
+                // Get the text to match against
+                let text = ctx
+                    .get_raw(1)
+                    .as_str()
+                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+
+                Ok(pattern.is_match(text))
+            },
+        )?;
+
+        trace!("Registered REGEXP function");
+        Ok(())
     }
 }
 

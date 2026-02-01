@@ -1,6 +1,7 @@
 //! Core data types for filefind.
 
-use std::path::PathBuf;
+use std::fs::Metadata;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::SystemTime;
 
@@ -156,14 +157,6 @@ impl VolumeType {
     }
 }
 
-impl FromStr for VolumeType {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::parse(s))
-    }
-}
-
 impl IndexedVolume {
     /// Create a new indexed volume with default values.
     #[must_use]
@@ -199,6 +192,28 @@ impl FileEntry {
         }
     }
 
+    /// Create a new file entry from a path and metadata.
+    #[must_use]
+    pub fn from_metadata(volume_id: i64, path: &Path, metadata: &Metadata) -> Self {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        Self {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name,
+            full_path: path.to_string_lossy().to_string(),
+            is_directory: metadata.is_dir(),
+            size: if metadata.is_file() { metadata.len() } else { 0 },
+            created_time: metadata.created().ok(),
+            modified_time: metadata.modified().ok(),
+            mft_reference: None,
+        }
+    }
+
     /// Get the file extension, if any.
     #[must_use]
     pub fn extension(&self) -> Option<&str> {
@@ -208,6 +223,14 @@ impl FileEntry {
         std::path::Path::new(&self.full_path)
             .extension()
             .and_then(|ext| ext.to_str())
+    }
+}
+
+impl FromStr for VolumeType {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::parse(s))
     }
 }
 

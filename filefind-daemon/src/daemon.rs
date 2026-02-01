@@ -89,17 +89,6 @@ pub struct DaemonOptions {
     pub watcher_debounce_ms: u64,
 }
 
-impl Default for DaemonOptions {
-    fn default() -> Self {
-        Self {
-            foreground: false,
-            rescan: false,
-            usn_poll_interval_ms: DEFAULT_USN_POLL_INTERVAL_MS,
-            watcher_debounce_ms: DEFAULT_WATCHER_DEBOUNCE_MS,
-        }
-    }
-}
-
 /// Volume monitor that tracks a single volume.
 struct VolumeMonitor {
     /// USN monitor for NTFS volumes (None for non-NTFS).
@@ -594,7 +583,9 @@ impl Daemon {
         // Update USN values in database
         if let Some(ref db) = self.database {
             for (drive_letter, new_usn) in usn_updates {
-                let _ = db.update_volume_usn_by_drive(drive_letter, new_usn);
+                if let Err(error) = db.update_volume_usn_by_drive(drive_letter, new_usn) {
+                    error!("Failed to update USN for drive {}: {}", drive_letter, error);
+                }
             }
         }
 
@@ -672,23 +663,7 @@ impl Daemon {
 
                 // Get file metadata and insert into database
                 if let Ok(metadata) = std::fs::metadata(&path) {
-                    let name = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().to_string())
-                        .unwrap_or_default();
-
-                    let entry = FileEntry {
-                        id: None,
-                        volume_id,
-                        parent_id: None,
-                        name,
-                        full_path: path.to_string_lossy().to_string(),
-                        is_directory: metadata.is_dir(),
-                        size: if metadata.is_file() { metadata.len() } else { 0 },
-                        created_time: metadata.created().ok(),
-                        modified_time: metadata.modified().ok(),
-                        mft_reference: None,
-                    };
+                    let entry = FileEntry::from_metadata(volume_id, &path, &metadata);
 
                     if let Err(error) = db.insert_file(&entry) {
                         debug!("Failed to insert file {}: {}", path.display(), error);
@@ -703,7 +678,7 @@ impl Daemon {
 
                 let path_str = path.to_string_lossy();
                 if let Err(error) = db.delete_file_by_path(&path_str) {
-                    debug!("Failed to delete file {}: {}", path.display(), error);
+                    error!("Failed to delete file {}: {}", path.display(), error);
                 }
             }
             FileChangeEvent::Renamed { from, to } => {
@@ -711,7 +686,9 @@ impl Daemon {
 
                 // Delete old entry
                 let from_str = from.to_string_lossy();
-                let _ = db.delete_file_by_path(&from_str);
+                if let Err(error) = db.delete_file_by_path(&from_str) {
+                    error!("Failed to delete old path {}: {}", from.display(), error);
+                }
 
                 // Get volume_id from drive letter
                 let Some(volume_id) = self.get_volume_id_for_path(&to) else {
@@ -721,26 +698,10 @@ impl Daemon {
 
                 // Insert new entry
                 if let Ok(metadata) = std::fs::metadata(&to) {
-                    let name = to
-                        .file_name()
-                        .map(|name| name.to_string_lossy().to_string())
-                        .unwrap_or_default();
-
-                    let entry = FileEntry {
-                        id: None,
-                        volume_id,
-                        parent_id: None,
-                        name,
-                        full_path: to.to_string_lossy().to_string(),
-                        is_directory: metadata.is_dir(),
-                        size: if metadata.is_file() { metadata.len() } else { 0 },
-                        created_time: metadata.created().ok(),
-                        modified_time: metadata.modified().ok(),
-                        mft_reference: None,
-                    };
+                    let entry = FileEntry::from_metadata(volume_id, &to, &metadata);
 
                     if let Err(error) = db.insert_file(&entry) {
-                        debug!("Failed to insert renamed file {}: {}", to.display(), error);
+                        error!("Failed to insert renamed file {}: {}", to.display(), error);
                     }
                 }
             }
@@ -792,6 +753,17 @@ impl Daemon {
     }
 }
 
+impl Default for DaemonOptions {
+    fn default() -> Self {
+        Self {
+            foreground: false,
+            rescan: false,
+            usn_poll_interval_ms: DEFAULT_USN_POLL_INTERVAL_MS,
+            watcher_debounce_ms: DEFAULT_WATCHER_DEBOUNCE_MS,
+        }
+    }
+}
+
 impl std::fmt::Display for DaemonState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -805,7 +777,7 @@ impl std::fmt::Display for DaemonState {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        // Ensure shutdown is signaled
+        // Ensure shutdown is signalled
         self.shutdown.store(true, Ordering::Relaxed);
     }
 }

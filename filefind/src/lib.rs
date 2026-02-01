@@ -15,8 +15,7 @@ pub mod types;
 pub use config::{CONFIG_PATH, LogLevel, UserConfig as Config};
 pub use database::{Database, VolumeStats};
 pub use ipc::{
-    DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, IpcClient, deserialize_command, deserialize_response,
-    get_ipc_path, read_message, serialize_command, serialize_response, write_message,
+    DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, IpcClient, get_ipc_path, read_message, write_message,
 };
 pub use types::{FileChangeEvent, FileEntry, IndexedVolume, VolumeType};
 

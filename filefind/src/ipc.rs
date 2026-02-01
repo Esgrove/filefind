@@ -8,13 +8,14 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Default timeout for IPC operations.
-pub const IPC_TIMEOUT: Duration = Duration::from_secs(5);
+pub const IPC_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Name of the named pipe (Windows) or socket file (Unix).
 pub const IPC_PIPE_NAME: &str = "filefind-daemon";
@@ -22,8 +23,23 @@ pub const IPC_PIPE_NAME: &str = "filefind-daemon";
 /// Maximum message size in bytes.
 const MAX_MESSAGE_SIZE: usize = 1024;
 
+/// Path to the IPC socket/pipe.
+static IPC_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+    #[cfg(windows)]
+    {
+        PathBuf::from(format!(r"\\.\pipe\{IPC_PIPE_NAME}"))
+    }
+    #[cfg(not(windows))]
+    {
+        let runtime_dir = dirs::runtime_dir()
+            .or_else(dirs::cache_dir)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        runtime_dir.join(format!("{IPC_PIPE_NAME}.sock"))
+    }
+});
+
 /// Commands that can be sent to the daemon.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonCommand {
     /// Request daemon to stop.
     Stop,
@@ -42,7 +58,7 @@ pub enum DaemonCommand {
 }
 
 /// Response from the daemon.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonResponse {
     /// Acknowledgement of command.
     Ok,
@@ -55,7 +71,7 @@ pub enum DaemonResponse {
 }
 
 /// Current daemon status.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {
     /// Current state of the daemon.
     pub state: DaemonStateInfo,
@@ -72,7 +88,7 @@ pub struct DaemonStatus {
 }
 
 /// Simplified daemon state for IPC.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonStateInfo {
     /// Daemon is stopped.
     Stopped,
@@ -86,129 +102,90 @@ pub enum DaemonStateInfo {
     Stopping,
 }
 
-impl std::fmt::Display for DaemonStateInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stopped => write!(f, "stopped"),
-            Self::Starting => write!(f, "starting"),
-            Self::Running => write!(f, "running"),
-            Self::Scanning => write!(f, "scanning"),
-            Self::Stopping => write!(f, "stopping"),
-        }
-    }
-}
-
-impl Default for DaemonStatus {
-    fn default() -> Self {
-        Self {
-            state: DaemonStateInfo::Stopped,
-            indexed_files: 0,
-            indexed_directories: 0,
-            monitored_volumes: 0,
-            uptime_seconds: 0,
-            is_paused: false,
-        }
-    }
-}
-
-/// Get the path to the IPC socket/pipe.
-#[must_use]
-pub fn get_ipc_path() -> PathBuf {
-    #[cfg(windows)]
-    {
-        // Windows named pipe path
-        PathBuf::from(format!(r"\\.\pipe\{IPC_PIPE_NAME}"))
-    }
-    #[cfg(not(windows))]
-    {
-        // Unix domain socket in runtime directory
-        let runtime_dir = dirs::runtime_dir()
-            .or_else(dirs::cache_dir)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        runtime_dir.join(format!("{IPC_PIPE_NAME}.sock"))
-    }
-}
-
-/// Serialize a command to bytes for transmission.
-///
-/// Returns raw postcard bytes. Use `write_message` to add length framing.
-///
-/// # Errors
-///
-/// Returns an error if serialization fails.
-pub fn serialize_command(command: &DaemonCommand) -> Result<Vec<u8>> {
-    postcard::to_stdvec(command).context("Failed to serialize command")
-}
-
-/// Deserialize a command from bytes.
-///
-/// # Errors
-///
-/// Returns an error if deserialization fails.
-pub fn deserialize_command(bytes: &[u8]) -> Result<DaemonCommand> {
-    postcard::from_bytes(bytes).context("Failed to deserialize command")
-}
-
-/// Serialize a response to bytes for transmission.
-///
-/// Returns raw postcard bytes. Use `write_message` to add length framing.
-///
-/// # Errors
-///
-/// Returns an error if serialization fails.
-pub fn serialize_response(response: &DaemonResponse) -> Result<Vec<u8>> {
-    postcard::to_stdvec(response).context("Failed to serialize response")
-}
-
-/// Deserialize a response from bytes.
-///
-/// # Errors
-///
-/// Returns an error if deserialization fails.
-pub fn deserialize_response(bytes: &[u8]) -> Result<DaemonResponse> {
-    postcard::from_bytes(bytes).context("Failed to deserialize response")
-}
-
-/// Write a length-prefixed message to a writer.
-///
-/// # Errors
-///
-/// Returns an error if writing fails.
-pub fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
-    // Write length prefix (2 bytes, little-endian)
-    let len = u16::try_from(data.len()).context("Message too large to send")?;
-    writer.write_all(&len.to_le_bytes())?;
-    // Write message data
-    writer.write_all(data)?;
-    writer.flush()?;
-    Ok(())
-}
-
-/// Read a length-prefixed message from a reader.
-///
-/// # Errors
-///
-/// Returns an error if reading fails or message is too large.
-pub fn read_message<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
-    // Read length prefix
-    let mut len_bytes = [0u8; 2];
-    reader.read_exact(&mut len_bytes)?;
-    let len = u16::from_le_bytes(len_bytes) as usize;
-
-    if len > MAX_MESSAGE_SIZE {
-        anyhow::bail!("Message too large: {len} bytes");
-    }
-
-    // Read message data
-    let mut buffer = vec![0u8; len];
-    reader.read_exact(&mut buffer)?;
-    Ok(buffer)
-}
-
 /// IPC client for communicating with the daemon.
 pub struct IpcClient {
     /// Timeout for operations.
     timeout: Duration,
+}
+
+impl DaemonCommand {
+    /// Serialize this command to bytes for transmission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        postcard::to_stdvec(self).context("Failed to serialize command")
+    }
+
+    /// Serialize and write this command to a writer with length framing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing fails.
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+        let data = self.serialize()?;
+        write_message(writer, &data)
+    }
+
+    /// Read and deserialize a command from a reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or deserialization fails.
+    pub fn read_from<R: Read>(reader: &mut R) -> Result<Self> {
+        let data = read_message(reader)?;
+        Self::deserialize(&data)
+    }
+
+    /// Deserialize a command from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization fails.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self> {
+        postcard::from_bytes(bytes).context("Failed to deserialize command")
+    }
+}
+
+impl DaemonResponse {
+    /// Serialize and write this response to a writer with length framing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing fails.
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+        let data = self.serialize()?;
+        write_message(writer, &data)
+    }
+
+    /// Serialize this response to bytes for transmission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        postcard::to_stdvec(self).context("Failed to serialize response")
+    }
+
+    /// Read and deserialize a response from a reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or deserialization fails.
+    pub fn read_from<R: Read>(reader: &mut R) -> Result<Self> {
+        let data = read_message(reader)?;
+        Self::deserialize(&data)
+    }
+
+    /// Deserialize a response from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization fails.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self> {
+        postcard::from_bytes(bytes).context("Failed to deserialize response")
+    }
 }
 
 impl IpcClient {
@@ -336,23 +313,21 @@ impl IpcClient {
         let pipe_path = get_ipc_path();
 
         // Try to connect to the named pipe
-        let file = OpenOptions::new()
+        let mut pipe = OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(FILE_FLAG_OVERLAPPED)
-            .open(&pipe_path)
+            .open(pipe_path)
             .context("Failed to connect to daemon - is it running?")?;
 
         // Wrap in a struct that implements timeout via polling
         // Windows named pipes don't support set_read_timeout directly,
         // but we can use the timeout for overall operation timing
         let start = std::time::Instant::now();
-        let mut file = file;
 
         // Serialize and send command
-        let command_bytes = serialize_command(&command)?;
-        write_message(&mut file, &command_bytes)?;
-        file.flush()?;
+        command.write_to(&mut pipe)?;
+        pipe.flush()?;
 
         // Check timeout before reading
         if start.elapsed() > self.timeout {
@@ -360,8 +335,7 @@ impl IpcClient {
         }
 
         // Read response
-        let response_bytes = read_message(&mut file)?;
-        deserialize_response(&response_bytes)
+        DaemonResponse::read_from(&mut pipe)
     }
 
     #[cfg(not(windows))]
@@ -377,12 +351,35 @@ impl IpcClient {
         stream.set_write_timeout(Some(self.timeout))?;
 
         // Serialize and send command
-        let command_bytes = serialize_command(&command)?;
-        write_message(&mut stream, &command_bytes)?;
+        command.write_to(&mut stream)?;
 
         // Read response
-        let response_bytes = read_message(&mut stream)?;
-        deserialize_response(&response_bytes)
+        DaemonResponse::read_from(&mut stream)
+    }
+}
+
+impl std::fmt::Display for DaemonStateInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => write!(f, "stopped"),
+            Self::Starting => write!(f, "starting"),
+            Self::Running => write!(f, "running"),
+            Self::Scanning => write!(f, "scanning"),
+            Self::Stopping => write!(f, "stopping"),
+        }
+    }
+}
+
+impl Default for DaemonStatus {
+    fn default() -> Self {
+        Self {
+            state: DaemonStateInfo::Stopped,
+            indexed_files: 0,
+            indexed_directories: 0,
+            monitored_volumes: 0,
+            uptime_seconds: 0,
+            is_paused: false,
+        }
     }
 }
 
@@ -390,6 +387,48 @@ impl Default for IpcClient {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Get the path to the IPC socket/pipe.
+#[must_use]
+pub fn get_ipc_path() -> &'static PathBuf {
+    &IPC_PATH
+}
+
+/// Write a length-prefixed message to a writer.
+///
+/// # Errors
+///
+/// Returns an error if writing fails.
+pub fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
+    // Write length prefix (2 bytes, little-endian)
+    let len = u16::try_from(data.len()).context("Message too large to send")?;
+    writer.write_all(&len.to_le_bytes())?;
+    // Write message data
+    writer.write_all(data)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Read a length-prefixed message from a reader.
+///
+/// # Errors
+///
+/// Returns an error if reading fails or the message is too large.
+pub fn read_message<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
+    // Read length prefix
+    let mut len_bytes = [0u8; 2];
+    reader.read_exact(&mut len_bytes)?;
+    let len = u16::from_le_bytes(len_bytes) as usize;
+
+    if len > MAX_MESSAGE_SIZE {
+        anyhow::bail!("Message too large: {len} bytes");
+    }
+
+    // Read message data
+    let mut buffer = vec![0u8; len];
+    reader.read_exact(&mut buffer)?;
+    Ok(buffer)
 }
 
 #[cfg(test)]
@@ -413,9 +452,9 @@ mod tests {
         ];
 
         for command in commands {
-            let bytes = serialize_command(&command).expect("serialize");
+            let bytes = command.serialize().expect("serialize");
             // Raw postcard bytes, no length prefix
-            let parsed = deserialize_command(&bytes).expect("deserialize");
+            let parsed = DaemonCommand::deserialize(&bytes).expect("deserialize");
             assert_eq!(command, parsed);
         }
     }
@@ -430,9 +469,9 @@ mod tests {
         ];
 
         for response in responses {
-            let bytes = serialize_response(&response).expect("serialize");
+            let bytes = response.serialize().expect("serialize");
             // Raw postcard bytes, no length prefix
-            let parsed = deserialize_response(&bytes).expect("deserialize");
+            let parsed = DaemonResponse::deserialize(&bytes).expect("deserialize");
             assert_eq!(response, parsed);
         }
     }
@@ -480,7 +519,7 @@ mod tests {
     fn test_message_size_compact() {
         // Verify that postcard produces compact output
         let command = DaemonCommand::Ping;
-        let bytes = serialize_command(&command).expect("serialize");
+        let bytes = command.serialize().expect("serialize");
         // Length prefix (2) + minimal enum representation (1)
         assert!(
             bytes.len() <= 4,
@@ -490,7 +529,7 @@ mod tests {
 
         let status = DaemonStatus::default();
         let response = DaemonResponse::Status(status);
-        let bytes = serialize_response(&response).expect("serialize");
+        let bytes = response.serialize().expect("serialize");
         // Should be much smaller than JSON
         assert!(
             bytes.len() < 50,
@@ -546,14 +585,14 @@ mod tests {
         ];
 
         for command in commands {
-            let bytes = serialize_command(&command);
+            let bytes = command.serialize();
             assert!(bytes.is_ok(), "Failed to serialize {command:?}");
 
             let bytes = bytes.unwrap();
             assert!(!bytes.is_empty(), "Serialized data empty for {command:?}");
 
             // Raw postcard bytes, no length prefix
-            let deserialized = deserialize_command(&bytes);
+            let deserialized = DaemonCommand::deserialize(&bytes);
             assert!(deserialized.is_ok(), "Failed to deserialize {command:?}");
             assert_eq!(deserialized.unwrap(), command);
         }
@@ -578,12 +617,12 @@ mod tests {
         ];
 
         for response in responses {
-            let bytes = serialize_response(&response);
+            let bytes = response.serialize();
             assert!(bytes.is_ok(), "Failed to serialize {response:?}");
 
             let bytes = bytes.unwrap();
             // Raw postcard bytes, no length prefix
-            let deserialized = deserialize_response(&bytes);
+            let deserialized = DaemonResponse::deserialize(&bytes);
             assert!(deserialized.is_ok(), "Failed to deserialize {response:?}");
             assert_eq!(deserialized.unwrap(), response);
         }
@@ -642,8 +681,8 @@ mod tests {
         let long_message = "a".repeat(500);
         let response = DaemonResponse::Error(long_message.clone());
 
-        let bytes = serialize_response(&response).expect("serialize");
-        let deserialized = deserialize_response(&bytes).expect("deserialize");
+        let bytes = response.serialize().expect("serialize");
+        let deserialized = DaemonResponse::deserialize(&bytes).expect("deserialize");
 
         if let DaemonResponse::Error(msg) = deserialized {
             assert_eq!(msg, long_message);
@@ -657,8 +696,8 @@ mod tests {
         let unicode_message = "Error: 文件未找到 αβγ 🚫";
         let response = DaemonResponse::Error(unicode_message.to_string());
 
-        let bytes = serialize_response(&response).expect("serialize");
-        let deserialized = deserialize_response(&bytes).expect("deserialize");
+        let bytes = response.serialize().expect("serialize");
+        let deserialized = DaemonResponse::deserialize(&bytes).expect("deserialize");
 
         if let DaemonResponse::Error(msg) = deserialized {
             assert_eq!(msg, unicode_message);
@@ -679,8 +718,8 @@ mod tests {
         };
 
         let response = DaemonResponse::Status(status);
-        let bytes = serialize_response(&response).expect("serialize");
-        let deserialized = deserialize_response(&bytes).expect("deserialize");
+        let bytes = response.serialize().expect("serialize");
+        let deserialized = DaemonResponse::deserialize(&bytes).expect("deserialize");
 
         if let DaemonResponse::Status(s) = deserialized {
             assert_eq!(s.indexed_files, u64::MAX);
@@ -700,46 +739,46 @@ mod tests {
     #[test]
     fn test_deserialize_invalid_command() {
         let invalid_bytes = [0xFF, 0xFF, 0xFF];
-        let result = deserialize_command(&invalid_bytes);
+        let result = DaemonCommand::deserialize(&invalid_bytes);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_deserialize_invalid_response() {
         let invalid_bytes = [0xFF, 0xFF, 0xFF];
-        let result = deserialize_response(&invalid_bytes);
+        let result = DaemonResponse::deserialize(&invalid_bytes);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_deserialize_empty_bytes() {
         let empty: [u8; 0] = [];
-        let result = deserialize_command(&empty);
+        let result = DaemonCommand::deserialize(&empty);
         assert!(result.is_err());
 
-        let result = deserialize_response(&empty);
+        let result = DaemonResponse::deserialize(&empty);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_serialize_command_raw_bytes() {
         let command = DaemonCommand::Ping;
-        let bytes = serialize_command(&command).expect("serialize");
+        let bytes = command.serialize().expect("serialize");
 
         // Should be raw postcard bytes (no length prefix)
         // Verify we can deserialize directly
-        let decoded: DaemonCommand = deserialize_command(&bytes).expect("deserialize");
+        let decoded = DaemonCommand::deserialize(&bytes).expect("deserialize");
         assert_eq!(decoded, command);
     }
 
     #[test]
     fn test_serialize_response_raw_bytes() {
         let response = DaemonResponse::Ok;
-        let bytes = serialize_response(&response).expect("serialize");
+        let bytes = response.serialize().expect("serialize");
 
         // Should be raw postcard bytes (no length prefix)
         // Verify we can deserialize directly
-        let decoded: DaemonResponse = deserialize_response(&bytes).expect("deserialize");
+        let decoded = DaemonResponse::deserialize(&bytes).expect("deserialize");
         assert_eq!(decoded, response);
     }
 
@@ -860,13 +899,11 @@ mod tests {
         for original_command in commands {
             // Client side: serialize and write
             let mut buffer = Vec::new();
-            let command_bytes = serialize_command(&original_command).expect("serialize command");
-            write_message(&mut buffer, &command_bytes).expect("write message");
+            original_command.write_to(&mut buffer).expect("write command");
 
             // Server side: read and deserialize
             let mut cursor = Cursor::new(buffer);
-            let received_bytes = read_message(&mut cursor).expect("read message");
-            let received_command = deserialize_command(&received_bytes).expect("deserialize command");
+            let received_command = DaemonCommand::read_from(&mut cursor).expect("read command");
 
             assert_eq!(original_command, received_command);
         }
@@ -896,13 +933,11 @@ mod tests {
         for original_response in responses {
             // Server side: serialize and write
             let mut buffer = Vec::new();
-            let response_bytes = serialize_response(&original_response).expect("serialize response");
-            write_message(&mut buffer, &response_bytes).expect("write message");
+            original_response.write_to(&mut buffer).expect("write response");
 
             // Client side: read and deserialize
             let mut cursor = Cursor::new(buffer);
-            let received_bytes = read_message(&mut cursor).expect("read message");
-            let received_response = deserialize_response(&received_bytes).expect("deserialize response");
+            let received_response = DaemonResponse::read_from(&mut cursor).expect("read response");
 
             assert_eq!(original_response, received_response);
         }
@@ -916,13 +951,11 @@ mod tests {
         // Step 1: Client sends GetStatus command
         let command = DaemonCommand::GetStatus;
         let mut request_buffer = Vec::new();
-        let command_bytes = serialize_command(&command).expect("serialize command");
-        write_message(&mut request_buffer, &command_bytes).expect("write command");
+        command.write_to(&mut request_buffer).expect("write command");
 
         // Step 2: Server receives and parses command
         let mut request_cursor = Cursor::new(request_buffer);
-        let received_command_bytes = read_message(&mut request_cursor).expect("read command");
-        let received_command = deserialize_command(&received_command_bytes).expect("deserialize command");
+        let received_command = DaemonCommand::read_from(&mut request_cursor).expect("read command");
         assert_eq!(received_command, DaemonCommand::GetStatus);
 
         // Step 3: Server generates response
@@ -938,13 +971,11 @@ mod tests {
 
         // Step 4: Server sends response
         let mut response_buffer = Vec::new();
-        let response_bytes = serialize_response(&response).expect("serialize response");
-        write_message(&mut response_buffer, &response_bytes).expect("write response");
+        response.write_to(&mut response_buffer).expect("write response");
 
         // Step 5: Client receives and parses response
         let mut response_cursor = Cursor::new(response_buffer);
-        let received_response_bytes = read_message(&mut response_cursor).expect("read response");
-        let received_response = deserialize_response(&received_response_bytes).expect("deserialize response");
+        let received_response = DaemonResponse::read_from(&mut response_cursor).expect("read response");
 
         // Verify the full cycle
         match received_response {
@@ -971,15 +1002,13 @@ mod tests {
         let commands = [DaemonCommand::Ping, DaemonCommand::GetStatus, DaemonCommand::Pause];
 
         for command in &commands {
-            let command_bytes = serialize_command(command).expect("serialize");
-            write_message(&mut buffer, &command_bytes).expect("write");
+            command.write_to(&mut buffer).expect("write");
         }
 
         // Read them back in order
         let mut cursor = Cursor::new(buffer);
         for expected_command in &commands {
-            let received_bytes = read_message(&mut cursor).expect("read");
-            let received_command = deserialize_command(&received_bytes).expect("deserialize");
+            let received_command = DaemonCommand::read_from(&mut cursor).expect("read");
             assert_eq!(&received_command, expected_command);
         }
     }
@@ -998,13 +1027,11 @@ mod tests {
 
             // Serialize and write
             let mut buffer = Vec::new();
-            let response_bytes = serialize_response(&response).expect("serialize");
-            write_message(&mut buffer, &response_bytes).expect("write");
+            response.write_to(&mut buffer).expect("write");
 
             // Read and deserialize
             let mut cursor = Cursor::new(buffer);
-            let received_bytes = read_message(&mut cursor).expect("read");
-            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+            let received_response = DaemonResponse::read_from(&mut cursor).expect("read");
 
             match received_response {
                 DaemonResponse::Error(msg) => assert_eq!(msg, error_message),
@@ -1039,12 +1066,10 @@ mod tests {
 
             // Full roundtrip
             let mut buffer = Vec::new();
-            let response_bytes = serialize_response(&response).expect("serialize");
-            write_message(&mut buffer, &response_bytes).expect("write");
+            response.write_to(&mut buffer).expect("write");
 
             let mut cursor = Cursor::new(buffer);
-            let received_bytes = read_message(&mut cursor).expect("read");
-            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+            let received_response = DaemonResponse::read_from(&mut cursor).expect("read");
 
             match received_response {
                 DaemonResponse::Status(s) => assert_eq!(s.state, daemon_state),
@@ -1070,12 +1095,10 @@ mod tests {
             let response = DaemonResponse::Status(status);
 
             let mut buffer = Vec::new();
-            let response_bytes = serialize_response(&response).expect("serialize");
-            write_message(&mut buffer, &response_bytes).expect("write");
+            response.write_to(&mut buffer).expect("write");
 
             let mut cursor = Cursor::new(buffer);
-            let received_bytes = read_message(&mut cursor).expect("read");
-            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+            let received_response = DaemonResponse::read_from(&mut cursor).expect("read");
 
             match received_response {
                 DaemonResponse::Status(s) => assert_eq!(s.is_paused, is_paused),
@@ -1101,12 +1124,10 @@ mod tests {
             let response = DaemonResponse::Error(message.to_string());
 
             let mut buffer = Vec::new();
-            let response_bytes = serialize_response(&response).expect("serialize");
-            write_message(&mut buffer, &response_bytes).expect("write");
+            response.write_to(&mut buffer).expect("write");
 
             let mut cursor = Cursor::new(buffer);
-            let received_bytes = read_message(&mut cursor).expect("read");
-            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+            let received_response = DaemonResponse::read_from(&mut cursor).expect("read");
 
             match received_response {
                 DaemonResponse::Error(msg) => assert_eq!(msg, message),
@@ -1141,12 +1162,10 @@ mod tests {
             let response = DaemonResponse::Status(status);
 
             let mut buffer = Vec::new();
-            let response_bytes = serialize_response(&response).expect("serialize");
-            write_message(&mut buffer, &response_bytes).expect("write");
+            response.write_to(&mut buffer).expect("write");
 
             let mut cursor = Cursor::new(buffer);
-            let received_bytes = read_message(&mut cursor).expect("read");
-            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+            let received_response = DaemonResponse::read_from(&mut cursor).expect("read");
 
             match received_response {
                 DaemonResponse::Status(s) => {
@@ -1168,8 +1187,7 @@ mod tests {
         // Create a valid message
         let response = DaemonResponse::Ok;
         let mut buffer = Vec::new();
-        let response_bytes = serialize_response(&response).expect("serialize");
-        write_message(&mut buffer, &response_bytes).expect("write");
+        response.write_to(&mut buffer).expect("write");
 
         // Truncate the buffer to simulate partial transmission
         buffer.truncate(buffer.len() / 2);
@@ -1215,10 +1233,10 @@ mod tests {
         assert_eq!(received_bytes, garbage_data);
 
         // But deserialization should fail
-        let result = deserialize_command(&received_bytes);
+        let result = DaemonCommand::deserialize(&received_bytes);
         assert!(result.is_err());
 
-        let result = deserialize_response(&received_bytes);
+        let result = DaemonResponse::deserialize(&received_bytes);
         assert!(result.is_err());
     }
 
@@ -1237,26 +1255,26 @@ mod tests {
 
         // Request 1: Ping
         let mut req1_buf = Vec::new();
-        write_message(&mut req1_buf, &serialize_command(&DaemonCommand::Ping).unwrap()).unwrap();
+        DaemonCommand::Ping.write_to(&mut req1_buf).unwrap();
 
         let mut cursor = Cursor::new(req1_buf);
-        let cmd = deserialize_command(&read_message(&mut cursor).unwrap()).unwrap();
+        let cmd = DaemonCommand::read_from(&mut cursor).unwrap();
         assert_eq!(cmd, DaemonCommand::Ping);
 
         // Response 1: Pong
         let mut resp1_buf = Vec::new();
-        write_message(&mut resp1_buf, &serialize_response(&DaemonResponse::Pong).unwrap()).unwrap();
+        DaemonResponse::Pong.write_to(&mut resp1_buf).unwrap();
 
         let mut cursor = Cursor::new(resp1_buf);
-        let resp = deserialize_response(&read_message(&mut cursor).unwrap()).unwrap();
+        let resp = DaemonResponse::read_from(&mut cursor).unwrap();
         assert_eq!(resp, DaemonResponse::Pong);
 
         // Request 2: GetStatus
         let mut req2_buf = Vec::new();
-        write_message(&mut req2_buf, &serialize_command(&DaemonCommand::GetStatus).unwrap()).unwrap();
+        DaemonCommand::GetStatus.write_to(&mut req2_buf).unwrap();
 
         let mut cursor = Cursor::new(req2_buf);
-        let cmd = deserialize_command(&read_message(&mut cursor).unwrap()).unwrap();
+        let cmd = DaemonCommand::read_from(&mut cursor).unwrap();
         assert_eq!(cmd, DaemonCommand::GetStatus);
 
         // Response 2: Status
@@ -1269,14 +1287,10 @@ mod tests {
             is_paused: false,
         };
         let mut resp2_buf = Vec::new();
-        write_message(
-            &mut resp2_buf,
-            &serialize_response(&DaemonResponse::Status(status)).unwrap(),
-        )
-        .unwrap();
+        DaemonResponse::Status(status).write_to(&mut resp2_buf).unwrap();
 
         let mut cursor = Cursor::new(resp2_buf);
-        let resp = deserialize_response(&read_message(&mut cursor).unwrap()).unwrap();
+        let resp = DaemonResponse::read_from(&mut cursor).unwrap();
         match resp {
             DaemonResponse::Status(s) => assert_eq!(s.indexed_files, 42),
             other => panic!("Expected Status, got {other:?}"),
@@ -1284,18 +1298,18 @@ mod tests {
 
         // Request 3: Stop
         let mut req3_buf = Vec::new();
-        write_message(&mut req3_buf, &serialize_command(&DaemonCommand::Stop).unwrap()).unwrap();
+        DaemonCommand::Stop.write_to(&mut req3_buf).unwrap();
 
         let mut cursor = Cursor::new(req3_buf);
-        let cmd = deserialize_command(&read_message(&mut cursor).unwrap()).unwrap();
+        let cmd = DaemonCommand::read_from(&mut cursor).unwrap();
         assert_eq!(cmd, DaemonCommand::Stop);
 
         // Response 3: Ok
         let mut resp3_buf = Vec::new();
-        write_message(&mut resp3_buf, &serialize_response(&DaemonResponse::Ok).unwrap()).unwrap();
+        DaemonResponse::Ok.write_to(&mut resp3_buf).unwrap();
 
         let mut cursor = Cursor::new(resp3_buf);
-        let resp = deserialize_response(&read_message(&mut cursor).unwrap()).unwrap();
+        let resp = DaemonResponse::read_from(&mut cursor).unwrap();
         assert_eq!(resp, DaemonResponse::Ok);
     }
 
@@ -1376,12 +1390,10 @@ mod tests {
 
         for original_command in commands {
             // Write command to pipe
-            let command_bytes = serialize_command(&original_command).expect("serialize");
-            write_message(&mut writer, &command_bytes).expect("write to pipe");
+            original_command.write_to(&mut writer).expect("write to pipe");
 
             // Read from pipe
-            let received_bytes = read_message(&mut reader).expect("read from pipe");
-            let received_command = deserialize_command(&received_bytes).expect("deserialize");
+            let received_command = DaemonCommand::read_from(&mut reader).expect("read from pipe");
 
             assert_eq!(original_command, received_command);
         }
@@ -1409,12 +1421,10 @@ mod tests {
 
         for original_response in responses {
             // Write response to pipe
-            let response_bytes = serialize_response(&original_response).expect("serialize");
-            write_message(&mut writer, &response_bytes).expect("write to pipe");
+            original_response.write_to(&mut writer).expect("write to pipe");
 
             // Read from pipe
-            let received_bytes = read_message(&mut reader).expect("read from pipe");
-            let received_response = deserialize_response(&received_bytes).expect("deserialize");
+            let received_response = DaemonResponse::read_from(&mut reader).expect("read from pipe");
 
             assert_eq!(original_response, received_response);
         }
@@ -1430,12 +1440,10 @@ mod tests {
 
         // Client sends GetStatus command
         let command = DaemonCommand::GetStatus;
-        let command_bytes = serialize_command(&command).expect("serialize command");
-        write_message(&mut client_writer, &command_bytes).expect("client write");
+        command.write_to(&mut client_writer).expect("client write");
 
         // Server receives command
-        let received_bytes = read_message(&mut server_reader).expect("server read");
-        let received_command = deserialize_command(&received_bytes).expect("deserialize command");
+        let received_command = DaemonCommand::read_from(&mut server_reader).expect("server read");
         assert_eq!(received_command, DaemonCommand::GetStatus);
 
         // Server sends response
@@ -1448,12 +1456,10 @@ mod tests {
             is_paused: false,
         };
         let response = DaemonResponse::Status(status);
-        let response_bytes = serialize_response(&response).expect("serialize response");
-        write_message(&mut server_writer, &response_bytes).expect("server write");
+        response.write_to(&mut server_writer).expect("server write");
 
         // Client receives response
-        let received_bytes = read_message(&mut client_reader).expect("client read");
-        let received_response = deserialize_response(&received_bytes).expect("deserialize response");
+        let received_response = DaemonResponse::read_from(&mut client_reader).expect("client read");
 
         match received_response {
             DaemonResponse::Status(s) => {
@@ -1484,14 +1490,12 @@ mod tests {
         ];
 
         for command in &messages {
-            let bytes = serialize_command(command).expect("serialize");
-            write_message(&mut writer, &bytes).expect("write");
+            command.write_to(&mut writer).expect("write");
         }
 
-        // Read all messages back
+        // Read back all messages
         for expected in &messages {
-            let bytes = read_message(&mut reader).expect("read");
-            let received = deserialize_command(&bytes).expect("deserialize");
+            let received = DaemonCommand::read_from(&mut reader).expect("read");
             assert_eq!(&received, expected);
         }
     }
@@ -1512,8 +1516,7 @@ mod tests {
             let commands = [DaemonCommand::Ping, DaemonCommand::GetStatus, DaemonCommand::Stop];
 
             for command in commands {
-                let bytes = serialize_command(&command).expect("serialize");
-                write_message(&mut writer, &bytes).expect("write");
+                command.write_to(&mut writer).expect("write");
             }
         });
 
@@ -1521,8 +1524,7 @@ mod tests {
         let reader_handle = thread::spawn(move || {
             let mut received = Vec::new();
             for _ in 0..3 {
-                let bytes = read_message(&mut reader).expect("read");
-                let command = deserialize_command(&bytes).expect("deserialize");
+                let command = DaemonCommand::read_from(&mut reader).expect("read");
                 received.push(command);
             }
             tx.send(received).expect("send to channel");
@@ -1556,12 +1558,10 @@ mod tests {
         let response = DaemonResponse::Status(status);
 
         // Send through pipe
-        let bytes = serialize_response(&response).expect("serialize");
-        write_message(&mut writer, &bytes).expect("write");
+        response.write_to(&mut writer).expect("write");
 
         // Receive from pipe
-        let received_bytes = read_message(&mut reader).expect("read");
-        let received = deserialize_response(&received_bytes).expect("deserialize");
+        let received = DaemonResponse::read_from(&mut reader).expect("read");
 
         match received {
             DaemonResponse::Status(s) => {
@@ -1583,11 +1583,9 @@ mod tests {
         let long_error = "Error: ".to_string() + &"x".repeat(500);
         let response = DaemonResponse::Error(long_error.clone());
 
-        let bytes = serialize_response(&response).expect("serialize");
-        write_message(&mut writer, &bytes).expect("write");
+        response.write_to(&mut writer).expect("write");
 
-        let received_bytes = read_message(&mut reader).expect("read");
-        let received = deserialize_response(&received_bytes).expect("deserialize");
+        let received = DaemonResponse::read_from(&mut reader).expect("read");
 
         match received {
             DaemonResponse::Error(msg) => assert_eq!(msg, long_error),

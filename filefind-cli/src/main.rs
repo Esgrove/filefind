@@ -144,7 +144,6 @@ pub enum SortBy {
 fn main() -> Result<()> {
     let args = FileFindCli::parse();
 
-    // Handle completion subcommand early (no config needed)
     if let Some(Command::Completion { shell, install }) = &args.command {
         return generate_shell_completion(*shell, FileFindCli::command(), *install, env!("CARGO_BIN_NAME"));
     }

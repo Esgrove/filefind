@@ -166,6 +166,51 @@ impl LogLevel {
     }
 }
 
+impl UserConfig {
+    /// Load configuration from the default config file path.
+    ///
+    /// Returns default configuration if the file doesn't exist or can't be parsed.
+    #[must_use]
+    pub fn load() -> Self {
+        Self::load_from_path(CONFIG_PATH.as_deref())
+    }
+
+    /// Load configuration from a specific path.
+    ///
+    /// Returns default configuration if the file doesn't exist or can't be parsed.
+    #[must_use]
+    pub fn load_from_path(path: Option<&std::path::Path>) -> Self {
+        let Some(path) = path else {
+            return Self::default();
+        };
+
+        let config_string = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) => {
+                warn!("Failed to read config file {}: {error}", path.display());
+                return Self::default();
+            }
+        };
+
+        match toml::from_str(&config_string) {
+            Ok(config) => config,
+            Err(error) => {
+                warn!("Failed to parse config file {}: {error}", path.display());
+                Self::default()
+            }
+        }
+    }
+
+    /// Get the database path, using the configured path or the default.
+    #[must_use]
+    pub fn database_path(&self) -> PathBuf {
+        self.daemon
+            .database_path
+            .clone()
+            .unwrap_or_else(|| DATABASE_PATH.clone())
+    }
+}
+
 impl From<LogLevel> for LevelFilter {
     fn from(level: LogLevel) -> Self {
         level.to_level_filter()
@@ -221,51 +266,6 @@ impl Default for CliConfig {
             case_sensitive: false,
             show_hidden: false,
         }
-    }
-}
-
-impl UserConfig {
-    /// Load configuration from the default config file path.
-    ///
-    /// Returns default configuration if the file doesn't exist or can't be parsed.
-    #[must_use]
-    pub fn load() -> Self {
-        Self::load_from_path(CONFIG_PATH.as_deref())
-    }
-
-    /// Load configuration from a specific path.
-    ///
-    /// Returns default configuration if the file doesn't exist or can't be parsed.
-    #[must_use]
-    pub fn load_from_path(path: Option<&std::path::Path>) -> Self {
-        let Some(path) = path else {
-            return Self::default();
-        };
-
-        let config_string = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(error) => {
-                warn!("Failed to read config file {}: {error}", path.display());
-                return Self::default();
-            }
-        };
-
-        match toml::from_str(&config_string) {
-            Ok(config) => config,
-            Err(error) => {
-                warn!("Failed to parse config file {}: {error}", path.display());
-                Self::default()
-            }
-        }
-    }
-
-    /// Get the database path, using the configured path or the default.
-    #[must_use]
-    pub fn database_path(&self) -> PathBuf {
-        self.daemon
-            .database_path
-            .clone()
-            .unwrap_or_else(|| DATABASE_PATH.clone())
     }
 }
 

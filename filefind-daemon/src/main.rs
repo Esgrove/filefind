@@ -104,33 +104,6 @@ enum Command {
     },
 }
 
-/// Apply CLI arguments to the config, with CLI args taking precedence.
-const fn apply_cli_args(
-    config: &mut Config,
-    log_level: Option<LogLevel>,
-    verbose: bool,
-    force_clean_scan: Option<bool>,
-) {
-    if let Some(level) = log_level {
-        config.daemon.log_level = level;
-    }
-    if verbose {
-        config.daemon.verbose = true;
-        // Only upgrade log level if current level is less verbose than Debug
-        if matches!(
-            config.daemon.log_level,
-            LogLevel::Error | LogLevel::Warn | LogLevel::Info
-        ) {
-            config.daemon.log_level = LogLevel::Debug;
-        }
-    }
-    if let Some(force) = force_clean_scan
-        && force
-    {
-        config.daemon.force_clean_scan = true;
-    }
-}
-
 fn main() -> Result<()> {
     let args = DaemonCli::parse();
 
@@ -224,6 +197,33 @@ fn init_logging(log_level: LogLevel, foreground: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Apply CLI arguments to the config, with CLI args taking precedence.
+const fn apply_cli_args(
+    config: &mut Config,
+    log_level: Option<LogLevel>,
+    verbose: bool,
+    force_clean_scan: Option<bool>,
+) {
+    if let Some(level) = log_level {
+        config.daemon.log_level = level;
+    }
+    if verbose {
+        config.daemon.verbose = true;
+        // Only upgrade log level if current level is less verbose than Debug
+        if matches!(
+            config.daemon.log_level,
+            LogLevel::Error | LogLevel::Warn | LogLevel::Info
+        ) {
+            config.daemon.log_level = LogLevel::Debug;
+        }
+    }
+    if let Some(force) = force_clean_scan
+        && force
+    {
+        config.daemon.force_clean_scan = true;
+    }
 }
 
 /// Delete the database file and start fresh.

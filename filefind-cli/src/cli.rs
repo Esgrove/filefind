@@ -167,111 +167,6 @@ pub fn show_stats(database: &Database) -> Result<()> {
     Ok(())
 }
 
-/// Filter results to only include entries on specified drives.
-fn filter_by_drives(results: Vec<FileEntry>, drives: &[String]) -> Vec<FileEntry> {
-    if drives.is_empty() {
-        return results;
-    }
-
-    results
-        .into_iter()
-        .filter(|entry| {
-            let entry_drive = entry.full_path.chars().next().map(|c| c.to_ascii_uppercase());
-            entry_drive.is_some_and(|drive_char| {
-                drives
-                    .iter()
-                    .any(|d| d.chars().next().is_some_and(|c| c.to_ascii_uppercase() == drive_char))
-            })
-        })
-        .collect()
-}
-
-/// Search for results matching ANY pattern (OR mode).
-fn search_any_pattern(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
-    let mut seen_paths: HashSet<String> = HashSet::new();
-    let mut results = Vec::new();
-
-    for pattern in &config.patterns {
-        let pattern_results = if config.regex {
-            database.search_by_regex(pattern, config.case_sensitive, usize::MAX)?
-        } else if pattern.contains('*') || pattern.contains('?') {
-            database.search_by_glob(pattern, usize::MAX)?
-        } else {
-            database.search_by_name(pattern, usize::MAX)?
-        };
-
-        // Deduplicate results across patterns
-        for entry in pattern_results {
-            if seen_paths.insert(entry.full_path.clone()) {
-                results.push(entry);
-            }
-        }
-    }
-
-    Ok(results)
-}
-
-/// Search for results matching ALL patterns (AND mode).
-///
-/// Uses SQL-level AND for efficient single-query search.
-fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
-    if config.patterns.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Check if all patterns are the same type (all glob or all plain)
-    let all_glob = config.patterns.iter().all(|p| p.contains('*') || p.contains('?'));
-    let any_glob = config.patterns.iter().any(|p| p.contains('*') || p.contains('?'));
-
-    if config.regex {
-        // All regex patterns - use SQL-level AND
-        database.search_by_regexes_all(&config.patterns, config.case_sensitive, usize::MAX)
-    } else if all_glob {
-        // All glob patterns - use SQL-level AND
-        database.search_by_globs_all(&config.patterns, usize::MAX)
-    } else if !any_glob {
-        // All plain name patterns - use SQL-level AND
-        database.search_by_names_all(&config.patterns, usize::MAX)
-    } else {
-        // Mixed glob and plain patterns - fall back to multiple queries with intersection
-        search_all_patterns_mixed(config, database)
-    }
-}
-
-/// Search for results matching ALL patterns when patterns are mixed (some glob, some plain).
-///
-/// Falls back to multiple queries with intersection.
-fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
-    let first_pattern = &config.patterns[0];
-    let mut results: Vec<FileEntry> = if first_pattern.contains('*') || first_pattern.contains('?') {
-        database.search_by_glob(first_pattern, usize::MAX)?
-    } else {
-        database.search_by_name(first_pattern, usize::MAX)?
-    };
-
-    // For each additional pattern, filter results to only those that also match
-    for pattern in config.patterns.iter().skip(1) {
-        let pattern_results: HashSet<String> = if pattern.contains('*') || pattern.contains('?') {
-            database.search_by_glob(pattern, usize::MAX)?
-        } else {
-            database.search_by_name(pattern, usize::MAX)?
-        }
-        .into_iter()
-        .map(|entry| entry.full_path)
-        .collect();
-
-        // Keep only results that also match this pattern
-        results.retain(|entry| pattern_results.contains(&entry.full_path));
-
-        // Early exit if no results remain
-        if results.is_empty() {
-            break;
-        }
-    }
-
-    Ok(results)
-}
-
 /// Display results in grouped format (files grouped by directory).
 fn display_grouped_output(
     directories: &[&FileEntry],
@@ -468,6 +363,25 @@ fn get_volume_data(database: &Database, volumes: &[IndexedVolume]) -> Result<Vec
         .collect()
 }
 
+/// Filter results to only include entries on specified drives.
+fn filter_by_drives(results: Vec<FileEntry>, drives: &[String]) -> Vec<FileEntry> {
+    if drives.is_empty() {
+        return results;
+    }
+
+    results
+        .into_iter()
+        .filter(|entry| {
+            let entry_drive = entry.full_path.chars().next().map(|c| c.to_ascii_uppercase());
+            entry_drive.is_some_and(|drive_char| {
+                drives
+                    .iter()
+                    .any(|d| d.chars().next().is_some_and(|c| c.to_ascii_uppercase() == drive_char))
+            })
+        })
+        .collect()
+}
+
 /// Print a single entry with size info.
 ///
 /// For directories, `calculated_size` can provide the sum of contained files,
@@ -499,4 +413,90 @@ fn print_entry_info(
     };
 
     println!("{size_str}{count_str}  {path_display}");
+}
+
+/// Search for results matching ANY pattern (OR mode).
+fn search_any_pattern(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut results = Vec::new();
+
+    for pattern in &config.patterns {
+        let pattern_results = if config.regex {
+            database.search_by_regex(pattern, config.case_sensitive, usize::MAX)?
+        } else if pattern.contains('*') || pattern.contains('?') {
+            database.search_by_glob(pattern, usize::MAX)?
+        } else {
+            database.search_by_name(pattern, usize::MAX)?
+        };
+
+        // Deduplicate results across patterns
+        for entry in pattern_results {
+            if seen_paths.insert(entry.full_path.clone()) {
+                results.push(entry);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Search for results matching ALL patterns (AND mode).
+///
+/// Uses SQL-level AND for efficient single-query search.
+fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
+    if config.patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Check if all patterns are the same type (all glob or all plain)
+    let all_glob = config.patterns.iter().all(|p| p.contains('*') || p.contains('?'));
+    let any_glob = config.patterns.iter().any(|p| p.contains('*') || p.contains('?'));
+
+    if config.regex {
+        // All regex patterns - use SQL-level AND
+        database.search_by_regexes_all(&config.patterns, config.case_sensitive, usize::MAX)
+    } else if all_glob {
+        // All glob patterns - use SQL-level AND
+        database.search_by_globs_all(&config.patterns, usize::MAX)
+    } else if !any_glob {
+        // All plain name patterns - use SQL-level AND
+        database.search_by_names_all(&config.patterns, usize::MAX)
+    } else {
+        // Mixed glob and plain patterns - fall back to multiple queries with intersection
+        search_all_patterns_mixed(config, database)
+    }
+}
+
+/// Search for results matching ALL patterns when patterns are mixed (some glob, some plain).
+///
+/// Falls back to multiple queries with intersection.
+fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
+    let first_pattern = &config.patterns[0];
+    let mut results: Vec<FileEntry> = if first_pattern.contains('*') || first_pattern.contains('?') {
+        database.search_by_glob(first_pattern, usize::MAX)?
+    } else {
+        database.search_by_name(first_pattern, usize::MAX)?
+    };
+
+    // For each additional pattern, filter results to only those that also match
+    for pattern in config.patterns.iter().skip(1) {
+        let pattern_results: HashSet<String> = if pattern.contains('*') || pattern.contains('?') {
+            database.search_by_glob(pattern, usize::MAX)?
+        } else {
+            database.search_by_name(pattern, usize::MAX)?
+        }
+        .into_iter()
+        .map(|entry| entry.full_path)
+        .collect();
+
+        // Keep only results that also match this pattern
+        results.retain(|entry| pattern_results.contains(&entry.full_path));
+
+        // Early exit if no results remain
+        if results.is_empty() {
+            break;
+        }
+    }
+
+    Ok(results)
 }

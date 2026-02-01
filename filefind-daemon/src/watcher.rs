@@ -22,6 +22,10 @@ use filefind::types::FileChangeEvent;
 /// Default debounce duration to coalesce rapid file changes.
 const DEFAULT_DEBOUNCE_MS: u64 = 1000;
 
+/// Default number of concurrent directory scan tasks.
+/// Optimized for HDDs (NCQ depth) and network shares (latency hiding).
+const DEFAULT_SCAN_CONCURRENCY: usize = 32;
+
 /// File system watcher for monitoring directories.
 pub struct FileWatcher {
     /// The paths being watched.
@@ -40,16 +44,26 @@ pub struct FileWatcher {
     shutdown: Arc<AtomicBool>,
 }
 
-impl Default for FileWatcher {
-    fn default() -> Self {
-        Self {
-            watched_paths: Vec::new(),
-            exclude_patterns: Vec::new(),
-            debounce_ms: DEFAULT_DEBOUNCE_MS,
-            recursive: true,
-            shutdown: Arc::new(AtomicBool::new(false)),
-        }
-    }
+/// Entry from a directory scan.
+#[derive(Debug, Clone)]
+pub struct ScanEntry {
+    /// Full path to the file or directory.
+    pub path: PathBuf,
+
+    /// File or directory name.
+    pub name: String,
+
+    /// Whether this is a directory.
+    pub is_directory: bool,
+
+    /// File size in bytes (0 for directories).
+    pub size: u64,
+
+    /// Last modified time.
+    pub modified: Option<std::time::SystemTime>,
+
+    /// Creation time.
+    pub created: Option<std::time::SystemTime>,
 }
 
 impl FileWatcher {
@@ -312,9 +326,40 @@ impl FileWatcher {
     }
 }
 
-/// Default number of concurrent directory scan tasks.
-/// Optimized for HDDs (NCQ depth) and network shares (latency hiding).
-const DEFAULT_SCAN_CONCURRENCY: usize = 32;
+impl ScanEntry {
+    /// Convert to a `FileEntry` for database storage, consuming self.
+    #[must_use]
+    pub fn into_file_entry(self, volume_id: i64) -> filefind::types::FileEntry {
+        filefind::types::FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: self.name,
+            full_path: self
+                .path
+                .into_os_string()
+                .into_string()
+                .unwrap_or_else(|os_string| os_string.to_string_lossy().into_owned()),
+            is_directory: self.is_directory,
+            size: self.size,
+            created_time: self.created,
+            modified_time: self.modified,
+            mft_reference: None,
+        }
+    }
+}
+
+impl Default for FileWatcher {
+    fn default() -> Self {
+        Self {
+            watched_paths: Vec::new(),
+            exclude_patterns: Vec::new(),
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
+            shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
 
 /// Perform an initial directory scan to populate the index.
 ///
@@ -398,6 +443,37 @@ pub async fn scan_directory_with_concurrency(
     Ok(result)
 }
 
+/// Check if a path matches any of the exclusion patterns.
+///
+/// Supports glob-style patterns:
+/// - `*pattern` - matches paths ending with "pattern"
+/// - `pattern*` - matches paths starting with "pattern"
+/// - `*pattern*` - matches paths containing "pattern"
+/// - `pattern` - matches paths containing "pattern" anywhere
+pub fn matches_exclude_patterns(path_str: &str, exclude_patterns: &[String]) -> bool {
+    for pattern in exclude_patterns {
+        if pattern.starts_with('*') && pattern.ends_with('*') {
+            let inner = &pattern[1..pattern.len() - 1];
+            if path_str.contains(inner) {
+                return true;
+            }
+        } else if let Some(suffix) = pattern.strip_prefix('*') {
+            if path_str.ends_with(suffix) {
+                return true;
+            }
+        } else if pattern.ends_with('*') {
+            let prefix = &pattern[..pattern.len() - 1];
+            if path_str.starts_with(prefix) {
+                return true;
+            }
+        } else if path_str.contains(pattern) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Scan a single directory and return its subdirectories.
 async fn scan_single_directory(
     dir: PathBuf,
@@ -462,82 +538,6 @@ async fn scan_single_directory(
     }
 
     subdirs
-}
-
-/// Check if a path matches any of the exclusion patterns.
-///
-/// Supports glob-style patterns:
-/// - `*pattern` - matches paths ending with "pattern"
-/// - `pattern*` - matches paths starting with "pattern"
-/// - `*pattern*` - matches paths containing "pattern"
-/// - `pattern` - matches paths containing "pattern" anywhere
-pub fn matches_exclude_patterns(path_str: &str, exclude_patterns: &[String]) -> bool {
-    for pattern in exclude_patterns {
-        if pattern.starts_with('*') && pattern.ends_with('*') {
-            let inner = &pattern[1..pattern.len() - 1];
-            if path_str.contains(inner) {
-                return true;
-            }
-        } else if let Some(suffix) = pattern.strip_prefix('*') {
-            if path_str.ends_with(suffix) {
-                return true;
-            }
-        } else if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len() - 1];
-            if path_str.starts_with(prefix) {
-                return true;
-            }
-        } else if path_str.contains(pattern) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Entry from a directory scan.
-#[derive(Debug, Clone)]
-pub struct ScanEntry {
-    /// Full path to the file or directory.
-    pub path: PathBuf,
-
-    /// File or directory name.
-    pub name: String,
-
-    /// Whether this is a directory.
-    pub is_directory: bool,
-
-    /// File size in bytes (0 for directories).
-    pub size: u64,
-
-    /// Last modified time.
-    pub modified: Option<std::time::SystemTime>,
-
-    /// Creation time.
-    pub created: Option<std::time::SystemTime>,
-}
-
-impl ScanEntry {
-    /// Convert to a `FileEntry` for database storage, consuming self.
-    #[must_use]
-    pub fn into_file_entry(self, volume_id: i64) -> filefind::types::FileEntry {
-        filefind::types::FileEntry {
-            id: None,
-            volume_id,
-            parent_id: None,
-            name: self.name,
-            full_path: self
-                .path
-                .into_os_string()
-                .into_string()
-                .unwrap_or_else(|os_string| os_string.to_string_lossy().into_owned()),
-            is_directory: self.is_directory,
-            size: self.size,
-            created_time: self.created,
-            modified_time: self.modified,
-            mft_reference: None,
-        }
-    }
 }
 
 #[cfg(test)]

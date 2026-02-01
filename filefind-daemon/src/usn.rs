@@ -20,29 +20,6 @@ use tracing::{debug, error, info};
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 
-/// A wrapper around Windows HANDLE that is Send + Sync.
-/// This is safe because we only use the HANDLE for `DeviceIoControl` calls
-/// which are thread-safe for read operations on the same handle.
-#[cfg(windows)]
-#[derive(Debug)]
-struct SendableHandle(HANDLE);
-
-#[cfg(windows)]
-unsafe impl Send for SendableHandle {}
-
-#[cfg(windows)]
-unsafe impl Sync for SendableHandle {}
-
-#[cfg(windows)]
-impl SendableHandle {
-    const fn new(handle: HANDLE) -> Self {
-        Self(handle)
-    }
-
-    const fn get(&self) -> HANDLE {
-        self.0
-    }
-}
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -55,9 +32,6 @@ use windows::Win32::System::Ioctl::{
 };
 #[cfg(windows)]
 use windows::core::PCWSTR;
-
-/// Size of the buffer for reading USN journal records.
-const USN_BUFFER_SIZE: usize = 64 * 1024;
 
 /// Reason flags for file changes.
 #[expect(dead_code, reason = "constants for USN reason flag parsing")]
@@ -85,6 +59,9 @@ mod reason_flags {
     pub const USN_REASON_STREAM_CHANGE: u32 = 0x0020_0000;
     pub const USN_REASON_CLOSE: u32 = 0x8000_0000;
 }
+
+/// Size of the buffer for reading USN journal records.
+const USN_BUFFER_SIZE: usize = 64 * 1024;
 
 /// File attribute flag for directories.
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -138,6 +115,39 @@ pub struct UsnChange {
     /// Whether this is a directory.
     pub is_directory: bool,
 }
+
+/// Information about a USN Journal.
+#[expect(dead_code, reason = "fields used via Debug trait and journal monitoring")]
+#[derive(Debug, Clone)]
+pub struct UsnJournalInfo {
+    /// Unique identifier for this journal instance.
+    pub journal_id: u64,
+
+    /// First valid USN in the journal.
+    pub first_usn: i64,
+
+    /// Next USN to be assigned.
+    pub next_usn: i64,
+
+    /// Lowest valid USN in the journal.
+    pub lowest_valid_usn: i64,
+
+    /// Maximum USN value.
+    pub max_usn: i64,
+
+    /// Maximum size of the journal in bytes.
+    pub maximum_size: u64,
+
+    /// Allocation delta for journal growth.
+    pub allocation_delta: u64,
+}
+
+/// A wrapper around Windows HANDLE that is Send + Sync.
+/// This is safe because we only use the HANDLE for `DeviceIoControl` calls
+/// which are thread-safe for read operations on the same handle.
+#[cfg(windows)]
+#[derive(Debug)]
+struct SendableHandle(HANDLE);
 
 impl UsnMonitor {
     /// Create a new USN Journal monitor for the specified drive.
@@ -502,41 +512,6 @@ impl UsnMonitor {
     }
 }
 
-#[cfg(windows)]
-impl Drop for UsnMonitor {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.volume_handle.get());
-        }
-    }
-}
-
-/// Information about a USN Journal.
-#[expect(dead_code, reason = "fields used via Debug trait and journal monitoring")]
-#[derive(Debug, Clone)]
-pub struct UsnJournalInfo {
-    /// Unique identifier for this journal instance.
-    pub journal_id: u64,
-
-    /// First valid USN in the journal.
-    pub first_usn: i64,
-
-    /// Next USN to be assigned.
-    pub next_usn: i64,
-
-    /// Lowest valid USN in the journal.
-    pub lowest_valid_usn: i64,
-
-    /// Maximum USN value.
-    pub max_usn: i64,
-
-    /// Maximum size of the journal in bytes.
-    pub maximum_size: u64,
-
-    /// Allocation delta for journal growth.
-    pub allocation_delta: u64,
-}
-
 impl UsnChange {
     /// Check if this change represents a file creation.
     #[cfg(windows)]
@@ -622,6 +597,32 @@ impl UsnChange {
     #[must_use]
     pub const fn is_close(&self) -> bool {
         false
+    }
+}
+
+#[cfg(windows)]
+unsafe impl Send for SendableHandle {}
+
+#[cfg(windows)]
+unsafe impl Sync for SendableHandle {}
+
+#[cfg(windows)]
+impl SendableHandle {
+    const fn new(handle: HANDLE) -> Self {
+        Self(handle)
+    }
+
+    const fn get(&self) -> HANDLE {
+        self.0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for UsnMonitor {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.volume_handle.get());
+        }
     }
 }
 

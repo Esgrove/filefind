@@ -99,29 +99,6 @@ pub async fn run_scan(path: Option<PathBuf>, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Determine if we should do a clean scan based on config and database state.
-///
-/// Returns `true` if:
-/// - `force_clean_scan` is set in config, or
-/// - The database is empty (no files or directories)
-fn should_clean_scan(database: &Database, config: &Config) -> Result<bool> {
-    let stats = database.get_stats()?;
-    let is_empty_db = stats.total_files == 0 && stats.total_directories == 0;
-    let clean_scan = config.daemon.force_clean_scan || is_empty_db;
-
-    if clean_scan {
-        if config.daemon.force_clean_scan {
-            info!("Performing clean scan");
-        } else {
-            info!("Performing clean scan for empty database");
-        }
-    } else {
-        debug!("Performing incremental scan");
-    }
-
-    Ok(clean_scan)
-}
-
 /// Scan a single path, automatically detecting the appropriate scanning strategy.
 ///
 /// # Arguments
@@ -197,34 +174,6 @@ pub async fn scan_single_path(database: &mut Database, scan_path: &Path, config:
     );
 
     Ok(())
-}
-
-/// Collect paths to scan from config or auto-detect NTFS volumes.
-///
-/// Returns `None` if no valid paths are found.
-fn collect_paths_to_scan(config: &Config) -> Option<CategorizedPaths> {
-    let paths_to_scan: Vec<String> = if config.daemon.paths.is_empty() {
-        // Auto-detect NTFS volumes when no paths are configured
-        let ntfs_drives = detect_ntfs_volumes();
-
-        if ntfs_drives.is_empty() {
-            warn!("No NTFS volumes detected. Configure paths in the config file.");
-            return None;
-        }
-
-        ntfs_drives.iter().map(|d| format!("{d}:")).collect()
-    } else {
-        config.daemon.paths.clone()
-    };
-
-    let categorized = categorize_paths(paths_to_scan);
-
-    if categorized.task_count() == 0 {
-        warn!("No valid paths to scan");
-        return None;
-    }
-
-    Some(categorized)
 }
 
 /// Scan all configured paths, or auto-detect NTFS volumes if none are configured.
@@ -434,192 +383,6 @@ pub async fn scan_directory_to_db(
     Ok(count)
 }
 
-/// Extract the drive letter from a path.
-///
-/// Returns `None` if the path doesn't start with a drive letter.
-fn extract_drive_letter(path: &Path) -> Option<char> {
-    let path_str = path.to_string_lossy();
-    let mut chars = path_str.chars();
-    let first = chars.next()?;
-    let second = chars.next()?;
-    (first.is_ascii_alphabetic() && second == ':').then_some(first.to_ascii_uppercase())
-}
-
-/// Check if a path looks like a drive letter path (e.g., "X:", "X:\", "X:\Data").
-fn is_drive_letter_path(path: &Path) -> bool {
-    extract_drive_letter(path).is_some()
-}
-
-/// Check if a path is accessible.
-///
-/// This function handles the case where `Path::exists()` returns false for mapped
-/// network drives when running in an elevated process. On Windows, network drive
-/// mappings are per-session and per-elevation level, so an admin process won't see
-/// drives mapped in the non-elevated user session.
-///
-/// For drive letter paths, we attempt to read the directory to verify accessibility
-/// rather than relying solely on `exists()`.
-fn is_path_accessible(path: &Path) -> bool {
-    // First try the simple exists check
-    if path.exists() {
-        return true;
-    }
-
-    // For drive letter paths, try to actually access the drive
-    // This can succeed even when exists() returns false for network drives
-    if is_drive_letter_path(path) {
-        // Normalize to root if it's just "X:" without trailing backslash
-        let root_path = if path.to_string_lossy().len() == 2 {
-            PathBuf::from(format!("{}\\", path.display()))
-        } else {
-            path.to_path_buf()
-        };
-
-        // Try to read the directory - this is more reliable than exists()
-        if std::fs::read_dir(&root_path).is_ok() {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Create volume info for a directory-based scan.
-fn create_directory_volume_info(path: &Path) -> IndexedVolume {
-    let volume_type = if is_network_path(path) {
-        VolumeType::Network
-    } else {
-        VolumeType::Local
-    };
-    IndexedVolume::new(
-        format!("path:{}", path.display()),
-        path.to_string_lossy().into_owned(),
-        volume_type,
-    )
-}
-
-/// Try MFT scan, falling back to directory scan on failure.
-async fn try_mft_with_fallback(
-    database: &mut Database,
-    drive_letter: char,
-    path_filters: &[String],
-    scan_path: &Path,
-    exclude_patterns: &[String],
-    clean_scan: bool,
-) -> Result<usize> {
-    let mft_result = if path_filters.is_empty() {
-        scan_ntfs_volume(database, drive_letter)
-    } else {
-        scan_ntfs_volume_filtered(database, drive_letter, path_filters)
-    };
-
-    match mft_result {
-        Ok(count) => Ok(count),
-        Err(err) => {
-            debug!("MFT scan failed: {}, falling back to directory scan", err);
-            scan_directory_to_db(database, scan_path, exclude_patterns, clean_scan).await
-        }
-    }
-}
-
-/// Categorize paths by type for scanning.
-fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
-    let mut ntfs_drive_roots: Vec<char> = Vec::new();
-    let mut local_paths_by_drive: HashMap<char, Vec<String>> = HashMap::new();
-    let mut mapped_network_drives: Vec<(char, PathBuf)> = Vec::new();
-    let mut unc_paths: Vec<PathBuf> = Vec::new();
-
-    for path_str in paths_to_scan {
-        let scan_path = PathBuf::from(&path_str);
-
-        if !is_path_accessible(&scan_path) {
-            if is_drive_letter_path(&scan_path) {
-                warn!(
-                    "Skipping inaccessible path: {} (if this is a mapped network drive, try using a UNC path instead)",
-                    scan_path.display()
-                );
-            } else {
-                warn!("Skipping inaccessible path: {}", scan_path.display());
-            }
-            continue;
-        }
-
-        match classify_path(&scan_path) {
-            PathType::NtfsDriveRoot => {
-                if let Some(drive_letter) = extract_drive_letter(&scan_path) {
-                    ntfs_drive_roots.push(drive_letter);
-                }
-            }
-            PathType::LocalDirectory => {
-                if let Some(drive_letter) = extract_drive_letter(&scan_path) {
-                    local_paths_by_drive.entry(drive_letter).or_default().push(path_str);
-                }
-            }
-            PathType::MappedNetworkDrive => {
-                if let Some(drive_letter) = extract_drive_letter(&scan_path) {
-                    mapped_network_drives.push((drive_letter, scan_path));
-                }
-            }
-            PathType::UncPath => {
-                unc_paths.push(scan_path);
-            }
-        }
-    }
-
-    // Remove local paths if we're scanning the whole drive
-    for drive_letter in &ntfs_drive_roots {
-        local_paths_by_drive.remove(drive_letter);
-    }
-
-    CategorizedPaths {
-        ntfs_drive_roots,
-        local_paths_by_drive,
-        mapped_network_drives,
-        unc_paths,
-    }
-}
-
-/// Scan a path using directory walking.
-async fn scan_path_directory(scan_path: PathBuf, label: String, exclude: Arc<[String]>) -> ScanResult {
-    let start = Instant::now();
-    match scan_directory(&scan_path, &exclude).await {
-        Ok(scan_entries) => {
-            let volume_info = create_directory_volume_info(&scan_path);
-            let entries: Vec<FileEntry> = scan_entries.into_iter().map(|entry| entry.into_file_entry(0)).collect();
-            ScanResult::Success {
-                label,
-                volume_info,
-                entries,
-                elapsed: start.elapsed(),
-                current_usn: None,
-            }
-        }
-        Err(error) => ScanResult::Failed {
-            label,
-            error: error.to_string(),
-        },
-    }
-}
-
-/// Scan an NTFS drive root (full drive, no filtering).
-fn scan_ntfs_drive(drive_letter: char) -> ScanResult {
-    let label = format!("{drive_letter}:");
-    let start = Instant::now();
-    match scan_ntfs_volume_sync(drive_letter, &[]) {
-        Ok((volume_info, entries, current_usn)) => ScanResult::Success {
-            label,
-            volume_info,
-            entries,
-            elapsed: start.elapsed(),
-            current_usn,
-        },
-        Err(error) => ScanResult::Failed {
-            label,
-            error: error.to_string(),
-        },
-    }
-}
-
 /// Scan local directories using MFT with path filtering, fallback to directory walking.
 async fn scan_local_directories(drive_letter: char, paths: Vec<String>, exclude: Arc<[String]>) -> ScanResult {
     let label = format!("{drive_letter}:");
@@ -716,6 +479,243 @@ async fn scan_mapped_drive(drive_letter: char, scan_path: PathBuf, exclude: Arc<
                 },
             }
         }
+    }
+}
+
+/// Try MFT scan, falling back to directory scan on failure.
+async fn try_mft_with_fallback(
+    database: &mut Database,
+    drive_letter: char,
+    path_filters: &[String],
+    scan_path: &Path,
+    exclude_patterns: &[String],
+    clean_scan: bool,
+) -> Result<usize> {
+    let mft_result = if path_filters.is_empty() {
+        scan_ntfs_volume(database, drive_letter)
+    } else {
+        scan_ntfs_volume_filtered(database, drive_letter, path_filters)
+    };
+
+    match mft_result {
+        Ok(count) => Ok(count),
+        Err(err) => {
+            debug!("MFT scan failed: {}, falling back to directory scan", err);
+            scan_directory_to_db(database, scan_path, exclude_patterns, clean_scan).await
+        }
+    }
+}
+
+/// Scan a path using directory walking.
+async fn scan_path_directory(scan_path: PathBuf, label: String, exclude: Arc<[String]>) -> ScanResult {
+    let start = Instant::now();
+    match scan_directory(&scan_path, &exclude).await {
+        Ok(scan_entries) => {
+            let volume_info = create_directory_volume_info(&scan_path);
+            let entries: Vec<FileEntry> = scan_entries.into_iter().map(|entry| entry.into_file_entry(0)).collect();
+            ScanResult::Success {
+                label,
+                volume_info,
+                entries,
+                elapsed: start.elapsed(),
+                current_usn: None,
+            }
+        }
+        Err(error) => ScanResult::Failed {
+            label,
+            error: error.to_string(),
+        },
+    }
+}
+
+/// Determine if we should do a clean scan based on config and database state.
+///
+/// Returns `true` if:
+/// - `force_clean_scan` is set in config, or
+/// - The database is empty (no files or directories)
+fn should_clean_scan(database: &Database, config: &Config) -> Result<bool> {
+    let stats = database.get_stats()?;
+    let is_empty_db = stats.total_files == 0 && stats.total_directories == 0;
+    let clean_scan = config.daemon.force_clean_scan || is_empty_db;
+
+    if clean_scan {
+        if config.daemon.force_clean_scan {
+            info!("Performing clean scan");
+        } else {
+            info!("Performing clean scan for empty database");
+        }
+    } else {
+        debug!("Performing incremental scan");
+    }
+
+    Ok(clean_scan)
+}
+
+/// Collect paths to scan from config or auto-detect NTFS volumes.
+///
+/// Returns `None` if no valid paths are found.
+fn collect_paths_to_scan(config: &Config) -> Option<CategorizedPaths> {
+    let paths_to_scan: Vec<String> = if config.daemon.paths.is_empty() {
+        // Auto-detect NTFS volumes when no paths are configured
+        let ntfs_drives = detect_ntfs_volumes();
+
+        if ntfs_drives.is_empty() {
+            warn!("No NTFS volumes detected. Configure paths in the config file.");
+            return None;
+        }
+
+        ntfs_drives.iter().map(|d| format!("{d}:")).collect()
+    } else {
+        config.daemon.paths.clone()
+    };
+
+    let categorized = categorize_paths(paths_to_scan);
+
+    if categorized.task_count() == 0 {
+        warn!("No valid paths to scan");
+        return None;
+    }
+
+    Some(categorized)
+}
+
+/// Extract the drive letter from a path.
+///
+/// Returns `None` if the path doesn't start with a drive letter.
+fn extract_drive_letter(path: &Path) -> Option<char> {
+    let path_str = path.to_string_lossy();
+    let mut chars = path_str.chars();
+    let first = chars.next()?;
+    let second = chars.next()?;
+    (first.is_ascii_alphabetic() && second == ':').then_some(first.to_ascii_uppercase())
+}
+
+/// Check if a path looks like a drive letter path (e.g., "X:", "X:\", "X:\Data").
+fn is_drive_letter_path(path: &Path) -> bool {
+    extract_drive_letter(path).is_some()
+}
+
+/// Check if a path is accessible.
+///
+/// This function handles the case where `Path::exists()` returns false for mapped
+/// network drives when running in an elevated process. On Windows, network drive
+/// mappings are per-session and per-elevation level, so an admin process won't see
+/// drives mapped in the non-elevated user session.
+///
+/// For drive letter paths, we attempt to read the directory to verify accessibility
+/// rather than relying solely on `exists()`.
+fn is_path_accessible(path: &Path) -> bool {
+    // First try the simple exists check
+    if path.exists() {
+        return true;
+    }
+
+    // For drive letter paths, try to actually access the drive
+    // This can succeed even when exists() returns false for network drives
+    if is_drive_letter_path(path) {
+        // Normalize to root if it's just "X:" without trailing backslash
+        let root_path = if path.to_string_lossy().len() == 2 {
+            PathBuf::from(format!("{}\\", path.display()))
+        } else {
+            path.to_path_buf()
+        };
+
+        // Try to read the directory - this is more reliable than exists()
+        if std::fs::read_dir(&root_path).is_ok() {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Create volume info for a directory-based scan.
+fn create_directory_volume_info(path: &Path) -> IndexedVolume {
+    let volume_type = if is_network_path(path) {
+        VolumeType::Network
+    } else {
+        VolumeType::Local
+    };
+    IndexedVolume::new(
+        format!("path:{}", path.display()),
+        path.to_string_lossy().into_owned(),
+        volume_type,
+    )
+}
+
+/// Categorize paths by type for scanning.
+fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
+    let mut ntfs_drive_roots: Vec<char> = Vec::new();
+    let mut local_paths_by_drive: HashMap<char, Vec<String>> = HashMap::new();
+    let mut mapped_network_drives: Vec<(char, PathBuf)> = Vec::new();
+    let mut unc_paths: Vec<PathBuf> = Vec::new();
+
+    for path_str in paths_to_scan {
+        let scan_path = PathBuf::from(&path_str);
+
+        if !is_path_accessible(&scan_path) {
+            if is_drive_letter_path(&scan_path) {
+                warn!(
+                    "Skipping inaccessible path: {} (if this is a mapped network drive, try using a UNC path instead)",
+                    scan_path.display()
+                );
+            } else {
+                warn!("Skipping inaccessible path: {}", scan_path.display());
+            }
+            continue;
+        }
+
+        match classify_path(&scan_path) {
+            PathType::NtfsDriveRoot => {
+                if let Some(drive_letter) = extract_drive_letter(&scan_path) {
+                    ntfs_drive_roots.push(drive_letter);
+                }
+            }
+            PathType::LocalDirectory => {
+                if let Some(drive_letter) = extract_drive_letter(&scan_path) {
+                    local_paths_by_drive.entry(drive_letter).or_default().push(path_str);
+                }
+            }
+            PathType::MappedNetworkDrive => {
+                if let Some(drive_letter) = extract_drive_letter(&scan_path) {
+                    mapped_network_drives.push((drive_letter, scan_path));
+                }
+            }
+            PathType::UncPath => {
+                unc_paths.push(scan_path);
+            }
+        }
+    }
+
+    // Remove local paths if we're scanning the whole drive
+    for drive_letter in &ntfs_drive_roots {
+        local_paths_by_drive.remove(drive_letter);
+    }
+
+    CategorizedPaths {
+        ntfs_drive_roots,
+        local_paths_by_drive,
+        mapped_network_drives,
+        unc_paths,
+    }
+}
+
+/// Scan an NTFS drive root (full drive, no filtering).
+fn scan_ntfs_drive(drive_letter: char) -> ScanResult {
+    let label = format!("{drive_letter}:");
+    let start = Instant::now();
+    match scan_ntfs_volume_sync(drive_letter, &[]) {
+        Ok((volume_info, entries, current_usn)) => ScanResult::Success {
+            label,
+            volume_info,
+            entries,
+            elapsed: start.elapsed(),
+            current_usn,
+        },
+        Err(error) => ScanResult::Failed {
+            label,
+            error: error.to_string(),
+        },
     }
 }
 
