@@ -376,7 +376,7 @@ fn display_grouped_output(
     } else if options.directories_only {
         // Dirs only mode: show full path with file count
         for directory in directories {
-            let file_count = count_files_in_directory(files, &directory.full_path);
+            let file_count = count_files_under_directory(files, &directory.full_path);
             if file_count > 0 {
                 println!(
                     "{} ({} files)",
@@ -385,7 +385,7 @@ fn display_grouped_output(
                 );
             } else if is_directory_empty_on_disk(&directory.full_path) {
                 // Truly empty folder on disk: print in bold yellow
-                print_bold_yellow!("{}", highlight_match(&directory.full_path, highlight_patterns));
+                print_bold_yellow!("{} (empty)", highlight_match(&directory.full_path, highlight_patterns));
             } else {
                 // Directory has files but none match the search: print in magenta
                 print_bold_magenta!("{}", highlight_match(&directory.full_path, highlight_patterns));
@@ -416,8 +416,9 @@ fn display_grouped(
 
     // First, show matched directories with their files
     for directory in directories {
+        let file_count = count_files_under_directory(files, &directory.full_path);
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
-            print_bold_magenta(&directory.full_path);
+            print_bold_magenta!("{} ({} files)", &directory.full_path, file_count);
             let total_files = dir_files.len();
             for file in dir_files.iter().take(options.files_per_dir) {
                 println!("  {}", highlight_match(&file.name, highlight_patterns));
@@ -427,7 +428,7 @@ fn display_grouped(
             }
         } else if is_directory_empty_on_disk(&directory.full_path) {
             // Truly empty folder on disk: print in bold yellow
-            print_bold_yellow(&directory.full_path);
+            print_bold_yellow!("{} (empty)", &directory.full_path);
         } else {
             // Directory has files but none match the search: print in magenta
             print_bold_magenta(&directory.full_path);
@@ -443,28 +444,26 @@ fn display_grouped(
 
     for dir_path in other_dirs {
         if let Some(dir_files) = files_by_dir.get(dir_path) {
-            print_bold_magenta(dir_path);
-            let total_files = dir_files.len();
+            let file_count = dir_files.len();
+            print_bold_magenta!("{} ({} files)", dir_path, file_count);
             for file in dir_files.iter().take(options.files_per_dir) {
                 println!("  {}", highlight_match(&file.name, highlight_patterns));
             }
-            if total_files > options.files_per_dir {
-                println!("  {} ({} files)", "...".dimmed(), total_files - options.files_per_dir);
+            if file_count > options.files_per_dir {
+                println!("  {} ({} files)", "...".dimmed(), file_count - options.files_per_dir);
             }
             println!();
         }
     }
 }
 
-/// Count files that are directly inside a directory.
-fn count_files_in_directory(files: &[&filefind::types::FileEntry], dir_path: &str) -> usize {
+/// Count all matching files under a directory (including subdirectories).
+fn count_files_under_directory(files: &[&filefind::types::FileEntry], dir_path: &str) -> usize {
+    let dir_prefix_backslash = format!("{dir_path}\\");
+    let dir_prefix_forward = format!("{dir_path}/");
     files
         .iter()
-        .filter(|f| {
-            PathBuf::from(&f.full_path)
-                .parent()
-                .is_some_and(|p| p.to_string_lossy() == dir_path)
-        })
+        .filter(|f| f.full_path.starts_with(&dir_prefix_backslash) || f.full_path.starts_with(&dir_prefix_forward))
         .count()
 }
 
