@@ -14,6 +14,24 @@ use filefind::{
 use crate::config::CliConfig;
 use crate::{SortBy, VolumeSortBy, utils};
 
+/// Status of an entry for display purposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryStatus {
+    /// A regular file.
+    File,
+    /// Directory exists and contains files.
+    Directory {
+        /// Total size of files under this directory.
+        size: Option<u64>,
+        /// Number of matching files under this directory.
+        file_count: usize,
+    },
+    /// Directory exists but is empty on disk.
+    EmptyDirectory,
+    /// Directory no longer exists on disk.
+    MissingDirectory,
+}
+
 /// Data for displaying volume information.
 struct VolumeDisplayData {
     /// Mount point and label combined (e.g., "C: Windows").
@@ -342,13 +360,12 @@ fn display_info(
     highlight_patterns: &[&str],
     database: &Database,
 ) {
-    if config.verbose {
-        println!("{:>10}{:>8}  PATH", "SIZE", "FILES");
-        println!("────────────────────────────────────────────────────────────────────");
-    }
-
     // Show directories first, then files (both already sorted by caller)
     if !config.files_only {
+        if config.verbose {
+            println!("{:>10}{:>8}  PATH", "SIZE", "FILES");
+            println!("────────────────────────────────────────────────────────────────────");
+        }
         // Build a map of directory path -> total size of files under it
         let dir_sizes = utils::calculate_directory_sizes(files);
 
@@ -364,20 +381,31 @@ fn display_info(
 
         for directory in sorted_dirs {
             if !utils::check_directory_exists(&directory.full_path) {
-                print_entry_info(directory, None, None, highlight_patterns, true, true);
+                print_entry_info(directory, highlight_patterns, EntryStatus::MissingDirectory);
                 delete_missing_directory(database, &directory.full_path);
                 continue;
             }
 
             let size = dir_sizes.get(&directory.full_path).copied();
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
-            let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);
-            print_entry_info(directory, size, Some(file_count), highlight_patterns, is_empty, false);
+            let status = if utils::is_directory_empty_on_disk(&directory.full_path) {
+                EntryStatus::EmptyDirectory
+            } else {
+                EntryStatus::Directory { size, file_count }
+            };
+            print_entry_info(directory, highlight_patterns, status);
         }
     }
     if !config.directories_only {
+        if config.verbose {
+            if !config.files_only {
+                println!("────────────────────────────────────────────────────────────────────");
+            }
+            println!("{:>10}  PATH", "SIZE");
+            println!("────────────────────────────────────────────────────────────────────");
+        }
         for file in files {
-            print_entry_info(file, None, None, highlight_patterns, false, false);
+            print_entry_info(file, highlight_patterns, EntryStatus::File);
         }
     }
 }
@@ -442,35 +470,30 @@ fn filter_by_drives(results: Vec<FileEntry>, drives: &[String]) -> Vec<FileEntry
 
 /// Print a single entry with size info.
 ///
-/// For directories, `calculated_size` can provide the sum of contained files,
-/// and `file_count` shows the number of matching files under the directory.
-/// If `is_empty` is true, the directory path is printed in yellow.
-fn print_entry_info(
-    entry: &FileEntry,
-    calculated_size: Option<u64>,
-    file_count: Option<usize>,
-    highlight_patterns: &[&str],
-    is_empty: bool,
-    is_missing: bool,
-) {
-    let size_str = if entry.is_directory {
-        calculated_size.map_or_else(|| format!("{:>10}", "-"), |size| format!("{:>10}", format_size(size)))
-    } else {
-        format!("{:>10}", format_size(entry.size))
-    };
-
-    let count_str = file_count.map_or_else(String::new, |count| format!("{count:>8}"));
-
-    let path_display = if entry.is_directory {
-        if is_empty {
-            entry.full_path.yellow().to_string()
-        } else if is_missing {
-            entry.full_path.red().to_string()
-        } else {
-            entry.full_path.cyan().to_string()
-        }
-    } else {
-        utils::highlight_match(&entry.full_path, highlight_patterns)
+/// For directories, the status includes the calculated size and file count.
+/// Empty directories are printed in yellow, missing directories in red.
+fn print_entry_info(entry: &FileEntry, highlight_patterns: &[&str], status: EntryStatus) {
+    let (size_str, count_str, path_display) = match status {
+        EntryStatus::File => (
+            format!("{:>10}", format_size(entry.size)),
+            String::new(),
+            utils::highlight_match(&entry.full_path, highlight_patterns),
+        ),
+        EntryStatus::Directory { size, file_count } => (
+            size.map_or_else(|| format!("{:>10}", "-"), |s| format!("{:>10}", format_size(s))),
+            format!("{file_count:>8}"),
+            entry.full_path.magenta().to_string(),
+        ),
+        EntryStatus::EmptyDirectory => (
+            format!("{:>10}", "-"),
+            format!("{:>8}", ""),
+            entry.full_path.yellow().to_string(),
+        ),
+        EntryStatus::MissingDirectory => (
+            format!("{:>10}", "-"),
+            format!("{:>8}", ""),
+            entry.full_path.red().to_string(),
+        ),
     };
 
     println!("{size_str}{count_str}  {path_display}");

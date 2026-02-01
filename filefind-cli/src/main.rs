@@ -51,7 +51,7 @@ pub struct FileFindCli {
     pub files: bool,
 
     /// Only show directories
-    #[arg(short = 'D', long)]
+    #[arg(short = 'd', long)]
     pub dirs: bool,
 
     /// Maximum number of files to show per directory
