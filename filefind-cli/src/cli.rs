@@ -143,9 +143,8 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     // Show search stats if verbose
     if config.verbose {
         let total_results = directories.len() + files.len();
-        eprintln!(
-            "\n{} results ({} directories, {} files) in {:.2}ms",
-            total_results,
+        println!(
+            "\n{total_results} results ({} directories, {} files) in {:.2}ms",
             directories.len(),
             files.len(),
             search_duration.as_secs_f64() * 1000.0
@@ -185,9 +184,8 @@ fn display_grouped_output(
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
             if file_count > 0 {
                 println!(
-                    "{} ({} files)",
-                    utils::highlight_match(&directory.full_path, highlight_patterns),
-                    file_count
+                    "{} ({file_count})",
+                    utils::highlight_match(&directory.full_path, highlight_patterns)
                 );
             } else if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Truly empty folder on disk: print in bold yellow (no highlight to avoid mixed colors)
@@ -219,13 +217,13 @@ fn display_grouped(directories: &[&FileEntry], files: &[&FileEntry], config: &Cl
     for directory in directories {
         let file_count = utils::count_files_under_directory(files, &directory.full_path);
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
-            print_bold_magenta!("{} ({} files)", &directory.full_path, file_count);
+            print_bold_magenta!("{} ({file_count})", &directory.full_path);
             let total_files = dir_files.len();
             for file in dir_files.iter().take(config.files_per_dir) {
                 println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
             }
             if total_files > config.files_per_dir {
-                println!("  {} ({} files)", "...".dimmed(), total_files - config.files_per_dir);
+                println!("  {} ({})", "...".dimmed(), total_files - config.files_per_dir);
             }
         } else if utils::is_directory_empty_on_disk(&directory.full_path) {
             // Truly empty folder on disk: print in bold yellow
@@ -246,12 +244,12 @@ fn display_grouped(directories: &[&FileEntry], files: &[&FileEntry], config: &Cl
     for dir_path in other_dirs {
         if let Some(dir_files) = files_by_dir.get(dir_path) {
             let file_count = dir_files.len();
-            print_bold_magenta!("{} ({} files)", dir_path, file_count);
+            print_bold_magenta!("{dir_path} ({file_count})");
             for file in dir_files.iter().take(config.files_per_dir) {
                 println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
             }
             if file_count > config.files_per_dir {
-                println!("  {} ({} files)", "...".dimmed(), file_count - config.files_per_dir);
+                println!("  {} ({})", "...".dimmed(), file_count - config.files_per_dir);
             }
             println!();
         }
@@ -293,6 +291,7 @@ fn display_info(directories: &[&FileEntry], files: &[&FileEntry], config: &CliCo
     // Print header if verbose
     if config.verbose {
         println!("{:>10}{:>8}  PATH", "SIZE", "FILES");
+        println!("────────────────────────────────────────────────────────────────────");
     }
 
     // Show directories first, then files (both already sorted by caller)
