@@ -139,6 +139,7 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
         files_only: config.files_only,
         files_per_dir: config.files_per_dir,
         verbose: config.verbose,
+        sort_by: config.sort_by,
     };
 
     match config.output_format {
@@ -433,7 +434,17 @@ fn display_info(
         // Build a map of directory path -> total size of files under it
         let dir_sizes = utils::calculate_directory_sizes(files);
 
-        for directory in directories {
+        // Sort directories by size if requested
+        let mut sorted_dirs: Vec<_> = directories.to_vec();
+        if matches!(options.sort_by, SortBy::Size) {
+            sorted_dirs.sort_by(|a, b| {
+                let size_a = dir_sizes.get(&a.full_path).copied().unwrap_or(0);
+                let size_b = dir_sizes.get(&b.full_path).copied().unwrap_or(0);
+                size_b.cmp(&size_a)
+            });
+        }
+
+        for directory in sorted_dirs {
             let size = dir_sizes.get(&directory.full_path).copied();
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
             let is_empty = utils::is_directory_empty_on_disk(&directory.full_path);

@@ -70,6 +70,9 @@ pub struct DisplayOptions {
 
     /// Verbose output mode.
     pub verbose: bool,
+
+    /// Sort order for results.
+    pub sort_by: SortBy,
 }
 
 impl CliConfig {
