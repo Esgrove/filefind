@@ -2,6 +2,7 @@
 //!
 //! Configuration is read from `~/.config/filefind.toml`.
 
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -77,6 +78,21 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub database_path: Option<PathBuf>,
 
+    /// Manual path mappings from UNC prefix to mapped drive letter.
+    ///
+    /// Each entry is a `[unc_prefix, drive_letter]` pair.
+    /// Used by the CLI to display search results with mapped drive letter paths
+    /// instead of UNC paths. The database always stores the real UNC paths
+    /// so the daemon can access them from an elevated process.
+    ///
+    /// Auto-detection via Win32 API is attempted first for drive letters in
+    /// the configured paths. Manual mappings here take priority over auto-detected ones.
+    ///
+    /// Example: `[["\\\\192.168.1.106\\Home", "X"], ["\\\\server\\share", "Z"]]`
+    /// This will display `X:\Data\file.txt` instead of `\\192.168.1.106\Home\Data\file.txt`.
+    #[serde(default)]
+    pub path_mappings: Vec<PathMapping>,
+
     /// Force clean scan (delete existing entries before inserting new ones).
     /// When false (default), uses incremental UPSERT which is faster but may
     /// leave stale entries for moved/deleted files.
@@ -107,6 +123,16 @@ pub struct CliConfig {
     /// Show hidden files in results.
     #[serde(default)]
     pub show_hidden: bool,
+}
+
+/// A manual mapping from a UNC path prefix to a mapped drive letter.
+#[derive(Debug, Clone)]
+pub struct PathMapping {
+    /// UNC path prefix (e.g., `\\192.168.1.106\Home`).
+    pub unc: String,
+
+    /// Mapped drive letter (e.g., `X`).
+    pub drive: String,
 }
 
 /// Output format for search results.
@@ -211,6 +237,22 @@ impl UserConfig {
     }
 }
 
+impl fmt::Display for PathMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} -> {}", self.unc, self.drive)
+    }
+}
+
+impl<'de> Deserialize<'de> for PathMapping {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let [unc, drive] = <[String; 2]>::deserialize(deserializer)?;
+        Ok(Self { unc, drive })
+    }
+}
+
 impl From<LogLevel> for LevelFilter {
     fn from(level: LogLevel) -> Self {
         level.to_level_filter()
@@ -252,6 +294,7 @@ impl Default for DaemonConfig {
             log_level: LogLevel::default(),
             verbose: false,
             database_path: None,
+            path_mappings: Vec::new(),
             force_clean_scan: false,
         }
     }

@@ -195,6 +195,73 @@ The daemon supports multiple path types:
 - Windows 10/11
 - Administrator privileges (required for MFT and USN Journal access)
 
+## Network Drives
+
+The daemon requires administrator privileges for NTFS MFT scanning.
+By default, Windows does not make mapped network drives (e.g., `X:`, `Z:`) visible to elevated processes,
+because drive mappings are tied to the non-elevated user session.
+
+This means that if you have a network share mapped to `X:`,
+the daemon running as admin won't be able to access it,
+and you would have to use UNC paths like `\\192.168.1.106\Home` instead.
+However, Windows does not always handle UNC paths correctly in shell operations.
+
+### Enable mapped drives for elevated processes
+
+Set the `EnableLinkedConnections` registry value so that
+mapped network drives are shared between elevated and non-elevated sessions:
+
+```powershell
+# Run in an elevated PowerShell
+New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+    -Name "EnableLinkedConnections" -Value 1 -PropertyType DWORD -Force
+```
+
+A **reboot is required** for the change to take effect.
+
+After rebooting, you can use mapped drive letters directly in your daemon config:
+
+```toml
+[daemon]
+paths = ["C:", "X:", "Z:"]
+```
+
+To verify the setting is active:
+
+```powershell
+Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+    -Name "EnableLinkedConnections"
+```
+
+To remove the setting:
+
+```powershell
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+    -Name "EnableLinkedConnections"
+```
+
+### Alternative: manual path mappings
+
+If you prefer not to change the registry, you can use UNC paths for scanning
+and configure `path_mappings` so the CLI displays results with drive letter paths:
+
+```toml
+[daemon]
+paths = [
+    "C:",
+    "\\\\192.168.1.106\\Home",
+    "\\\\192.168.1.107\\NAS\\Data",
+]
+path_mappings = [["\\\\192.168.1.106\\Home", "X"], ["\\\\192.168.1.107\\NAS\\Data", "Z"]]
+```
+
+The daemon scans via UNC paths (which work from elevated processes) and the database
+stores the real UNC paths internally. The path mappings are applied at display time
+by the CLI, so search results show `X:\file.txt` instead of `\\192.168.1.106\Home\file.txt`.
+
+This keeps the database consistent with paths the daemon can actually access,
+while giving you usable drive letter paths in search output.
+
 ## Architecture
 
 ### MFT Reading

@@ -3,12 +3,14 @@
 //! This module provides the `CliConfig` struct that combines user configuration with CLI arguments,
 //! where CLI arguments take precedence.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use regex::Regex;
 
 use filefind::config::{OutputFormat, UserConfig};
+use filefind::{build_path_mappings, resolve_unc_to_mapped_path};
 
 use crate::{Command, FileFindCli, OutputFormatArg, SortBy};
 
@@ -55,6 +57,10 @@ pub struct CliConfig {
 
     /// Path to the database
     pub database_path: PathBuf,
+
+    /// Path mappings for display (UNC prefix → drive letter prefix).
+    /// Applied to search results before printing.
+    pub path_mappings: HashMap<String, String>,
 }
 
 impl CliConfig {
@@ -117,7 +123,20 @@ impl CliConfig {
             sort_by: args.sort.unwrap_or(SortBy::Name),
             verbose: args.verbose,
             database_path: user_config.database_path(),
+            path_mappings: build_path_mappings(&[], &user_config.daemon.path_mappings),
         })
+    }
+
+    /// Apply path mappings to a path for display purposes.
+    ///
+    /// If the path matches a configured UNC prefix, returns the path with the
+    /// mapped drive letter prefix. Otherwise returns the original path unchanged.
+    pub fn display_path<'a>(&self, path: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.path_mappings.is_empty() {
+            return std::borrow::Cow::Borrowed(path);
+        }
+        resolve_unc_to_mapped_path(path, &self.path_mappings)
+            .map_or(std::borrow::Cow::Borrowed(path), std::borrow::Cow::Owned)
     }
 
     /// Expand patterns by adding variants for dot-separated and space-separated patterns.

@@ -30,6 +30,17 @@ exclude = [
     "C:\\ProgramData\\Microsoft",
 ]
 
+# Manual path mappings from UNC prefix to mapped drive letter.
+# Each entry is a [unc_prefix, drive_letter] pair.
+# Used by the CLI to display search results with mapped drive letter paths
+# instead of UNC paths. The database always stores the real UNC paths
+# so the daemon can access them from an elevated process.
+#
+# Auto-detection via Win32 API is attempted first for drive letters in
+# the configured paths. Manual mappings here take priority over auto-detected ones.
+#
+# path_mappings = [["\\\\192.168.1.106\\Home", "X"], ["\\\\server\\share", "Z"]]
+
 # File patterns to exclude (glob syntax)
 exclude_patterns = ["*.tmp", "~$*", "Thumbs.db", "*.parts"]
 

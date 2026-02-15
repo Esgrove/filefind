@@ -131,6 +131,17 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
 
     let search_duration = start_time.elapsed();
 
+    // Apply path mappings for display (e.g., UNC paths -> mapped drive letters)
+    let results: Vec<_> = results
+        .into_iter()
+        .map(|mut entry| {
+            if let std::borrow::Cow::Owned(mapped) = config.display_path(&entry.full_path) {
+                entry.full_path = mapped;
+            }
+            entry
+        })
+        .collect();
+
     // Filter results by drive
     let mut results: Vec<_> = filter_by_drives(results, &config.drives);
 
