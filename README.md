@@ -15,6 +15,7 @@ Indexes millions of files in seconds and keeps the database updated in real-time
 - **Flexible search**: Supports glob patterns, regex, and fuzzy matching
 - **Smart pattern expansion**: Automatically searches for "some.name", "some name", and "somename"
 - **Background daemon**: Runs quietly, keeping the index up-to-date
+- **File moving**: Move matching files to a directory with progress, disk space checks, and graceful abort
 
 ## Components
 
@@ -149,6 +150,12 @@ filefind -f "config.toml"
 
 # Show only directories
 filefind -D "projects"
+
+# Move matching files to a directory
+filefind "*.mp4" --move D:\Videos
+
+# Move with force overwrite of existing files
+filefind "*.mp4" --move D:\Videos --force
 
 # Simple output (just paths)
 filefind -o simple "*.mp4"

@@ -61,6 +61,12 @@ pub struct CliConfig {
     /// Path mappings for display (UNC prefix → drive letter prefix).
     /// Applied to search results before printing.
     pub path_mappings: HashMap<String, String>,
+
+    /// Destination directory for moving matching files.
+    pub move_to: Option<PathBuf>,
+
+    /// Force overwrite existing files at the move destination.
+    pub force_overwrite: bool,
 }
 
 impl CliConfig {
@@ -124,6 +130,8 @@ impl CliConfig {
             verbose: args.verbose,
             database_path: user_config.database_path(),
             path_mappings: build_path_mappings(&[], &user_config.daemon.path_mappings),
+            move_to: args.move_to,
+            force_overwrite: args.force,
         })
     }
 
@@ -220,6 +228,8 @@ mod tests {
             info: false,
             verbose: false,
             exact: false,
+            move_to: None,
+            force: false,
         }
     }
 

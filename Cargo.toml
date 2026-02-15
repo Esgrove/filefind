@@ -19,6 +19,8 @@ dirs = "6.0.0"
 regex = "1.12"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+ctrlc = "3.4"
+indicatif = "0.17"
 
 [workspace.dependencies.windows]
 version = "0.62.2"

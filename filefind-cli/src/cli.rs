@@ -12,6 +12,7 @@ use filefind::{
 };
 
 use crate::config::CliConfig;
+use crate::mover;
 use crate::{SortBy, VolumeSortBy, utils};
 
 /// Status of an entry for display purposes.
@@ -180,6 +181,12 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
             files.len(),
             search_duration.as_secs_f64() * 1000.0
         );
+    }
+
+    // Handle --move: move matching files after displaying results
+    if let Some(destination) = &config.move_to {
+        let file_entries: Vec<_> = results.into_iter().filter(|entry| !entry.is_directory).collect();
+        return mover::move_files(&file_entries, destination, database, config.force_overwrite);
     }
 
     Ok(())

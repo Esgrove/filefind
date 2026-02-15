@@ -36,6 +36,7 @@ SQLite database operations:
 - Volume tracking with serial numbers
 - Fast indexed search by filename
 - Support for glob patterns and regex searches
+- `update_file_path()` - Update a file's stored path after a move (clears MFT reference)
 
 ### `ipc`
 
@@ -57,6 +58,7 @@ Common data structures:
 Path and formatting helpers:
 
 - `PathType` enum for classifying paths (drive root, directory, UNC, network)
+- `get_volume_prefix()` - Extract a lowercase volume root (drive letter or UNC server/share) from a path for same-volume comparison
 - `format_size()` - Human-readable file sizes
 - `format_number()` - Number formatting with separators
 - Print macros for colored terminal output

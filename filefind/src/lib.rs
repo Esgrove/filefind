@@ -159,6 +159,49 @@ pub fn is_network_path(path: &Path) -> bool {
     is_unc_path(path) || is_mapped_network_drive(path)
 }
 
+/// Extract a lowercase volume prefix from a path for same-volume comparison.
+///
+/// Returns the drive letter (e.g., `"c:"`) for local paths, or the UNC server
+/// and share (e.g., `"\\server\share"`) for network paths. The `\\?\` prefix
+/// added by [`Path::canonicalize`] on Windows is stripped before extraction.
+///
+/// Returns `None` if the path has no recognizable volume root.
+///
+/// # Examples
+///
+/// ```
+/// # use filefind::get_volume_prefix;
+/// assert_eq!(get_volume_prefix(r"C:\Users\foo"), Some("c:".to_string()));
+/// assert_eq!(get_volume_prefix(r"\\?\D:\data"), Some("d:".to_string()));
+/// assert_eq!(get_volume_prefix(r"\\server\share\folder"), Some(r"\\server\share".to_string()));
+/// assert_eq!(get_volume_prefix("relative/path"), None);
+/// ```
+#[must_use]
+pub fn get_volume_prefix(path: &str) -> Option<String> {
+    // Strip the \\?\ extended-length prefix that canonicalize adds on Windows
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+
+    // UNC path: \\server\share\...
+    if let Some(remainder) = path.strip_prefix(r"\\") {
+        // Find server\share — the first two path components
+        let mut components = remainder.splitn(3, '\\');
+        let server = components.next()?;
+        let share = components.next()?;
+        if server.is_empty() || share.is_empty() {
+            return None;
+        }
+        return Some(format!(r"\\{server}\{share}").to_lowercase());
+    }
+
+    // Drive letter path: C:\..., C:/..., C:...
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Some(path[..2].to_lowercase());
+    }
+
+    None
+}
+
 /// Get the UNC path that a mapped network drive letter points to.
 ///
 /// Given a drive letter like 'X', returns the UNC path (e.g., `\\192.168.1.106\Home`)
@@ -956,10 +999,65 @@ mod tests {
         assert!(mappings.is_empty());
     }
 
+    #[test]
     fn test_get_unc_for_drive_local_drive() {
         // C: is almost always a local drive, not a mapped network drive
         let result = get_unc_for_drive('C');
         assert_eq!(result, None, "C: should not be a mapped network drive");
+    }
+
+    // --- get_volume_prefix tests ---
+
+    #[test]
+    fn test_get_volume_prefix_drive_letter() {
+        assert_eq!(get_volume_prefix(r"C:\Users\foo"), Some("c:".to_string()));
+        assert_eq!(get_volume_prefix(r"D:\"), Some("d:".to_string()));
+        assert_eq!(get_volume_prefix("E:"), Some("e:".to_string()));
+        assert_eq!(get_volume_prefix("f:/some/path"), Some("f:".to_string()));
+    }
+
+    #[test]
+    fn test_get_volume_prefix_drive_letter_case_insensitive() {
+        assert_eq!(get_volume_prefix(r"C:\file"), get_volume_prefix(r"c:\other"));
+        assert_eq!(get_volume_prefix(r"Z:\a"), Some("z:".to_string()));
+    }
+
+    #[test]
+    fn test_get_volume_prefix_unc_path() {
+        assert_eq!(
+            get_volume_prefix(r"\\server\share\folder\file.txt"),
+            Some(r"\\server\share".to_string())
+        );
+        assert_eq!(
+            get_volume_prefix(r"\\192.168.1.1\data"),
+            Some(r"\\192.168.1.1\data".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_volume_prefix_unc_case_insensitive() {
+        assert_eq!(
+            get_volume_prefix(r"\\SERVER\Share\foo"),
+            Some(r"\\server\share".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_volume_prefix_with_extended_length_prefix() {
+        assert_eq!(get_volume_prefix(r"\\?\C:\Users\foo"), Some("c:".to_string()));
+        assert_eq!(get_volume_prefix(r"\\?\D:\"), Some("d:".to_string()));
+    }
+
+    #[test]
+    fn test_get_volume_prefix_edge_cases() {
+        assert_eq!(get_volume_prefix(""), None);
+        assert_eq!(get_volume_prefix("relative/path"), None);
+        assert_eq!(get_volume_prefix("/unix/style"), None);
+        assert_eq!(get_volume_prefix("C"), None);
+        // Malformed UNC: missing share
+        assert_eq!(get_volume_prefix(r"\\server\"), None);
+        // Malformed UNC: nothing after \\
+        assert_eq!(get_volume_prefix(r"\\"), None);
     }
 
     #[test]

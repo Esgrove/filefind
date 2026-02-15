@@ -13,6 +13,7 @@ This is the main user-facing tool for searching files indexed by the filefind da
 - **Pattern expansion**: Automatically expands "some.name" to also search "some name" and "somename"
 - **Multiple patterns**: Search with multiple patterns.
   Defaults to logical OR search to match any single pattern with option to match all patterns (logical AND)
+- **File moving**: Move matching files to a directory with `--move`, with progress bar, disk space checks, and graceful abort
 
 ## Usage
 
@@ -46,6 +47,12 @@ Options:
 
   -D, --dirs
           Only show directories
+
+  -m, --move <DIR>
+          Move all matching files to the specified directory
+
+  -F, --force
+          Force overwrite existing files at the move destination
 
   -n, --limit <COUNT>
           Maximum number of files to show per directory
@@ -131,6 +138,12 @@ filefind -f "config.toml"
 # Show only directories
 filefind -D "projects"
 
+# Move matching files to a directory
+filefind "*.mp4" --move D:\Videos
+
+# Move with force overwrite
+filefind "*.mp4" --move D:\Videos --force
+
 # Simple output (just paths)
 filefind -o simple "*.mp4"
 
@@ -151,6 +164,35 @@ filefind completion bash > filefind.bash
 filefind completion powershell --install
 filefind completion bash --install
 ```
+
+## Move Feature
+
+The `--move <DIR>` option moves all matching **files** (not directories) to the
+specified destination directory after displaying the normal search results.
+
+### Move behavior
+
+- **Confirmation prompt**: A summary of the move plan is shown before any files
+  are touched (file count, total size, skipped files). You must confirm with `y`.
+- **Same-device moves** use `fs::rename` (atomic and instant).
+- **Cross-device moves** (e.g., local drive → network share) fall back to
+  chunked copy + size verification + delete. The original is only deleted after
+  the copy is verified.
+- **Disk space check**: Only cross-device files are counted against free space.
+  Same-device renames consume no additional disk space.
+- **Progress bar** shows bytes transferred, ETA, and current filename.
+- **Ctrl+C** finishes the current file then stops. Press Ctrl+C a second time
+  to force-quit immediately.
+- **Database update**: After each successful move the file index is updated with
+  the new path.
+
+### Conflict handling
+
+- **Duplicate filenames** in the search results: only the first occurrence is
+  moved; the rest are skipped and reported.
+- **File already exists** at the destination: skipped unless `--force` is given.
+- **File already in the destination directory**: silently counted, not moved or
+  reported as a skip.
 
 ## Pattern Expansion
 

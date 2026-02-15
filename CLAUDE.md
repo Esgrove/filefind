@@ -58,7 +58,9 @@ cargo test -p filefind
     - `src/watcher.rs` - File system watcher for non-NTFS drives
 - `filefind-cli/` - Command-line search interface
     - `src/main.rs` - CLI entry point and search logic
+    - `src/cli.rs` - Search execution, result display, and move dispatch
     - `src/config.rs` - CLI configuration merging (user config + CLI args)
+    - `src/mover.rs` - File move operations with progress, abort handling, and disk space checks
 - `filefind-tray/` - System tray application
     - `src/main.rs` - Tray app entry point
     - `src/app.rs` - Main application logic and event loop
@@ -119,6 +121,11 @@ Remember to update the example config file when adding new config options.
 - `case_sensitive` - Case-sensitive search by default
 - `show_hidden` - Show hidden files in results
 
+### CLI Move Options
+
+- `--move <DIR>` (`-m`) - Move all matching files to the specified directory
+- `--force` (`-F`) - Overwrite existing files at the move destination (requires `--move`)
+
 ## Architecture Notes
 
 ### MFT Reading (NTFS drives)
@@ -166,6 +173,7 @@ The daemon supports multiple path types:
 - SQLite for persistent storage
 - Indexed by filename for fast searches
 - Tracks volume serial numbers to handle drive reconnection
+- `update_file_path()` updates a file's stored path after a move (clears MFT reference)
 
 ### IPC (Inter-Process Communication)
 
@@ -182,12 +190,32 @@ The IPC system has two parts:
 The server runs in a dedicated thread and communicates with the main daemon loop via tokio channels.
 Shared state (`IpcServerState`) uses atomic types to safely share status information between threads.
 
+### CLI Move Feature
+
+- `--move <DIR>` moves matching files to the specified directory after displaying search results
+- `--force` overwrites existing files at the destination; without it, conflicts are skipped
+- Move strategy: try `fs::rename` first (atomic, instant on same device), fall back to
+  chunked copy+verify+delete for cross-device moves (e.g., local drive → network share)
+- Disk space check only counts cross-device files; same-device renames need no free space.
+  Volume detection uses `get_volume_prefix()` from the shared library to compare drive
+  letters or UNC server/share roots.
+- Progress bar via `indicatif`, graceful Ctrl+C abort via `ctrlc` (finish current file,
+  second Ctrl+C force-quits)
+- Confirmation prompt shows file count, total size, skipped files, and force-mode warning
+- Files already in the destination directory are counted but not moved or reported as skips
+- Duplicate filenames across search results are skipped (first occurrence wins)
+- Database is updated after each successful move; MFT reference is cleared since it may
+  be invalid on the new volume
+- The `ctrlc` handler can only be registered once per process; the function documents
+  this constraint and returns an error on a second call
+
 ### CLI Search Features
 
 - **Pattern expansion**: Dot-separated patterns like "some.name" automatically expand to also search "some name" and "somename"
 - **Glob patterns**: Supports `*` and `?` wildcards
 - **Regex search**: Full regex support with `-r` flag
 - **Exact matching**: Disable pattern expansion with `-e` flag
+- **File moving**: Move matching files to a directory with `--move <DIR>`
 
 ### System Tray Application
 

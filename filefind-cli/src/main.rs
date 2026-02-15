@@ -2,7 +2,10 @@
 
 mod cli;
 mod config;
+mod mover;
 mod utils;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -53,6 +56,14 @@ pub struct FileFindCli {
     /// Only show directories
     #[arg(short = 'd', long)]
     pub dirs: bool,
+
+    /// Move all matching files to the specified directory
+    #[arg(short = 'm', long = "move", value_name = "DIR", conflicts_with = "dirs")]
+    pub move_to: Option<PathBuf>,
+
+    /// Force overwrite existing files at the move destination
+    #[arg(short = 'F', long, requires = "move_to")]
+    pub force: bool,
 
     /// Maximum number of files to show per directory
     #[arg(short = 'n', long, name = "COUNT", default_value_t = 20)]

@@ -833,6 +833,30 @@ impl Database {
         Ok(max_id)
     }
 
+    /// Update a file entry's path after it has been moved to a new location.
+    ///
+    /// Updates the full path, filename, and clears the MFT reference (which is
+    /// no longer valid on a different volume). The volume ID is left unchanged;
+    /// the daemon's next scan will correct it if the file moved to a different volume.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn update_file_path(&self, old_path: &str, new_path: &str, new_name: &str) -> Result<bool> {
+        let rows_affected = self
+            .connection
+            .execute(
+                r"
+                UPDATE files
+                SET full_path = ?1, name = ?2, mft_reference = NULL
+                WHERE full_path = ?3
+                ",
+                rusqlite::params![new_path, new_name, old_path],
+            )
+            .context("Failed to update file path")?;
+
+        Ok(rows_affected > 0)
+    }
+
     /// Get the underlying connection for advanced operations.
     #[must_use]
     pub const fn connection(&self) -> &Connection {
@@ -3393,5 +3417,86 @@ mod tests {
 
         let max_after_delete = database.get_max_file_id().unwrap();
         assert_eq!(max_after_delete, max_before_delete);
+    }
+
+    #[test]
+    fn test_update_file_path() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL010", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let mut file = create_test_file(volume_id, "report.txt", "C:\\docs\\report.txt", 500);
+        file.mft_reference = Some(12345);
+        database.insert_file(&file).unwrap();
+
+        // Update the path (simulating a move to a different directory)
+        let updated = database
+            .update_file_path("C:\\docs\\report.txt", "M:\\Data\\report.txt", "report.txt")
+            .unwrap();
+        assert!(updated);
+
+        // Old path should no longer be found
+        let old_results = database.search_by_path("C:\\docs\\report.txt", 10).unwrap();
+        assert!(old_results.is_empty());
+
+        // New path should be found
+        let new_results = database.search_by_path("M:\\Data\\report.txt", 10).unwrap();
+        assert_eq!(new_results.len(), 1);
+        assert_eq!(new_results[0].full_path, "M:\\Data\\report.txt");
+        assert_eq!(new_results[0].name, "report.txt");
+        assert_eq!(new_results[0].size, 500);
+        // MFT reference should be cleared since the file moved to a different volume
+        assert!(new_results[0].mft_reference.is_none());
+    }
+
+    #[test]
+    fn test_update_file_path_not_found() {
+        let database = Database::open_in_memory().unwrap();
+
+        let updated = database
+            .update_file_path("C:\\nonexistent.txt", "D:\\moved.txt", "moved.txt")
+            .unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn test_update_file_path_preserves_other_fields() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL011", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let file = create_test_file(volume_id, "data.bin", "C:\\old\\data.bin", 1024);
+        database.insert_file(&file).unwrap();
+
+        database
+            .update_file_path("C:\\old\\data.bin", "D:\\new\\data.bin", "data.bin")
+            .unwrap();
+
+        let results = database.search_by_path("D:\\new\\data.bin", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        // Volume ID is intentionally left unchanged (daemon's next scan will fix it)
+        assert_eq!(results[0].volume_id, volume_id);
+        assert_eq!(results[0].size, 1024);
+        assert!(!results[0].is_directory);
+    }
+
+    #[test]
+    fn test_update_file_path_with_name_change() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL012", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let file = create_test_file(volume_id, "old_name.txt", "C:\\folder\\old_name.txt", 100);
+        database.insert_file(&file).unwrap();
+
+        // Move and rename
+        database
+            .update_file_path("C:\\folder\\old_name.txt", "D:\\archive\\new_name.txt", "new_name.txt")
+            .unwrap();
+
+        let results = database.search_by_path("D:\\archive\\new_name.txt", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "new_name.txt");
+        assert_eq!(results[0].full_path, "D:\\archive\\new_name.txt");
     }
 }
