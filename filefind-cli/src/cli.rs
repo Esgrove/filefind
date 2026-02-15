@@ -183,7 +183,7 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
         );
     }
 
-    // Handle --move: move matching files after displaying results
+    // Handle move: move matching files after displaying results
     if let Some(destination) = &config.move_to {
         let file_entries: Vec<_> = results.into_iter().filter(|entry| !entry.is_directory).collect();
         return mover::move_files(&file_entries, destination, database, config.force_overwrite);
