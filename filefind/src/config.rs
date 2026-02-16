@@ -142,6 +142,8 @@ pub enum OutputFormat {
     /// Simple list of paths without type or size information.
     #[serde(alias = "simple")]
     List,
+    /// File names only, without full path.
+    Name,
     /// Files grouped by directory (default).
     #[default]
     Grouped,
@@ -316,6 +318,7 @@ impl std::fmt::Display for OutputFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::List => write!(f, "list"),
+            Self::Name => write!(f, "name"),
             Self::Grouped => write!(f, "grouped"),
             Self::Info => write!(f, "info"),
         }
@@ -328,6 +331,7 @@ impl std::str::FromStr for OutputFormat {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "list" | "simple" => Ok(Self::List),
+            "name" => Ok(Self::Name),
             "grouped" => Ok(Self::Grouped),
             "info" => Ok(Self::Info),
             _ => Err(format!("Unknown output format: {s}")),

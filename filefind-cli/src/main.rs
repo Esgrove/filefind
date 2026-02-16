@@ -70,19 +70,23 @@ pub struct FileFindCli {
     pub limit: usize,
 
     /// Output format.
-    #[arg(short = 'o', long, value_enum, conflicts_with_all = ["list", "info"])]
+    #[arg(short = 'o', long, value_enum, conflicts_with_all = ["list", "info", "name"])]
     pub output: Option<OutputFormatArg>,
 
     /// List output (shortcut for --output list)
-    #[arg(short = 'l', long, conflicts_with_all = ["output", "info"])]
+    #[arg(short = 'l', long, conflicts_with_all = ["output", "info", "name"])]
     pub list: bool,
+
+    /// Name-only output (shortcut for --output name)
+    #[arg(short = 'N', long, conflicts_with_all = ["output", "list", "info"])]
+    pub name: bool,
 
     /// Sort results by this field.
     #[arg(short = 's', long, value_enum)]
     pub sort: Option<SortBy>,
 
     /// Info output with file sizes (shortcut for --output info)
-    #[arg(short = 'i', long, conflicts_with_all = ["output", "list"])]
+    #[arg(short = 'i', long, conflicts_with_all = ["output", "list", "name"])]
     pub info: bool,
 
     /// Print verbose output.
@@ -124,6 +128,8 @@ pub enum Command {
 pub enum OutputFormatArg {
     /// List of paths without type or size information.
     List,
+    /// File names only without full paths.
+    Name,
     /// Files grouped by directory.
     Grouped,
     /// Detailed info format with file size.

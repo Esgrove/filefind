@@ -62,6 +62,7 @@ exclude_patterns = ["*.tmp", "~$*", "Thumbs.db", "*.parts"]
 [cli]
 # Default output format:
 #   "list"    - list of paths
+#   "name"    - file names only (no full paths)
 #   "grouped" - files grouped by directory (default)
 #   "info"    - paths with file size
 # format = "grouped"

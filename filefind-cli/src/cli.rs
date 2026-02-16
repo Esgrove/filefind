@@ -147,7 +147,13 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     let mut results: Vec<_> = filter_by_drives(results, &config.drives);
 
     match config.sort_by {
-        SortBy::Name => results.sort_unstable_by(|a, b| a.full_path.cmp(&b.full_path)),
+        SortBy::Name => {
+            if config.output_format == OutputFormat::Name {
+                results.sort_unstable_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            } else {
+                results.sort_unstable_by(|a, b| a.full_path.cmp(&b.full_path));
+            }
+        }
         SortBy::Size => results.sort_unstable_by(|a, b| b.size.cmp(&a.size)),
     }
 
@@ -169,6 +175,7 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     match config.output_format {
         OutputFormat::Grouped => display_grouped_output(&directories, &files, config, &highlight_patterns, database),
         OutputFormat::List => display_list(&directories, &files, config, &highlight_patterns, database),
+        OutputFormat::Name => display_name(&directories, &files, config, &highlight_patterns, database),
         OutputFormat::Info => display_info(&directories, &files, config, &highlight_patterns, database),
     }
 
@@ -318,7 +325,55 @@ fn display_grouped(
     }
 }
 
-/// Display results in list format
+/// Display results as file/directory names only (no full paths).
+///
+/// Same logic as `display_list` but prints only the name component of each entry.
+fn display_name(
+    directories: &[&FileEntry],
+    files: &[&FileEntry],
+    config: &CliConfig,
+    highlight_patterns: &[&str],
+    database: &Database,
+) {
+    if config.files_only {
+        for file in files {
+            println!("{}", utils::highlight_match(&file.name, highlight_patterns));
+        }
+    } else if config.directories_only {
+        for directory in directories {
+            if !utils::check_directory_exists(&directory.full_path) {
+                print_bold_red!("{}", &directory.name);
+                delete_missing_directory(database, &directory.full_path);
+                continue;
+            }
+
+            if utils::is_directory_empty_on_disk(&directory.full_path) {
+                println!("{}", directory.name.yellow());
+            } else {
+                println!("{}", utils::highlight_match(&directory.name, highlight_patterns));
+            }
+        }
+    } else {
+        for directory in directories {
+            if !utils::check_directory_exists(&directory.full_path) {
+                print_bold_red!("{}", &directory.name);
+                delete_missing_directory(database, &directory.full_path);
+                continue;
+            }
+
+            if utils::is_directory_empty_on_disk(&directory.full_path) {
+                println!("{}", directory.name.yellow());
+            } else {
+                println!("{}", directory.name.cyan());
+            }
+        }
+        for file in files {
+            println!("{}", utils::highlight_match(&file.name, highlight_patterns));
+        }
+    }
+}
+
+/// Display results in list format (full paths, no type or size information).
 fn display_list(
     directories: &[&FileEntry],
     files: &[&FileEntry],

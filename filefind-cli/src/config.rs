@@ -106,6 +106,8 @@ impl CliConfig {
         // --list and --info flags are shortcuts for --output list/info
         let output_format = if args.list {
             OutputFormat::List
+        } else if args.name {
+            OutputFormat::Name
         } else if args.info {
             OutputFormat::Info
         } else {
@@ -199,6 +201,7 @@ impl From<OutputFormatArg> for OutputFormat {
     fn from(value: OutputFormatArg) -> Self {
         match value {
             OutputFormatArg::List => Self::List,
+            OutputFormatArg::Name => Self::Name,
             OutputFormatArg::Grouped => Self::Grouped,
             OutputFormatArg::Info => Self::Info,
         }
@@ -224,6 +227,7 @@ mod tests {
             limit: 20,
             output: None,
             list: false,
+            name: false,
             sort: Some(SortBy::Name),
             info: false,
             verbose: false,

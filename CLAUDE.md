@@ -115,7 +115,7 @@ Remember to update the example config file when adding new config options.
 
 ### CLI Configuration Options
 
-- `format` - Output format: "simple" or "grouped"
+- `format` - Output format: "list", "name", "grouped", or "info"
 - `max_results` - Maximum results to show
 - `color` - Enable colored output
 - `case_sensitive` - Case-sensitive search by default
