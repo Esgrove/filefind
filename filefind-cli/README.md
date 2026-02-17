@@ -13,12 +13,14 @@ This is the main user-facing tool for searching files indexed by the filefind da
 - **Pattern expansion**: Automatically expands "some.name" to also search "some name" and "somename"
 - **Multiple patterns**: Search with multiple patterns.
   Defaults to logical OR search to match any single pattern with option to match all patterns (logical AND)
+- **Multiple display modes**: Grouped, list, name-only, and info output formats
+- **Sorting**: Sort results by name or file size
 - **File moving**: Move matching files to a directory with `--move`, with progress bar, disk space checks, and graceful abort
 
 ## Usage
 
 ```
-Fast file search using the filefind index
+Command-line interface for filefind file search
 
 Usage: filefind.exe [OPTIONS] [PATTERNS]... [COMMAND]
 
@@ -29,54 +31,27 @@ Commands:
   help        Print this message or the help of the given subcommand(s)
 
 Arguments:
-  [PATTERNS]...
-          Search patterns (supports glob patterns like *.txt)
+  [PATTERNS]...  Search patterns (supports glob patterns like *.txt)
 
 Options:
-  -r, --regex
-          Use regex pattern for search
-
-  -c, --case
-          Case-sensitive search
-
-  -d, --drive <DRIVE>
-          Search only in specific drives. Accepts: "C", "C:", or "C:\"
-
-  -f, --files
-          Only show files
-
-  -D, --dirs
-          Only show directories
-
-  -m, --move <DIR>
-          Move all matching files to the specified directory
-
-  -F, --force
-          Force overwrite existing files at the move destination
-
-  -n, --limit <COUNT>
-          Maximum number of files to show per directory
-
-          [default: 20]
-
-  -o, --output <OUTPUT>
-          Output format
-
-          Possible values:
-          - simple:  Simple list of paths without type or size information
-          - grouped: Files grouped by directory (default)
-
-  -v, --verbose
-          Print verbose output
-
-  -e, --exact
-          Exact pattern matches only
-
-  -h, --help
-          Print help (see a summary with '-h')
-
-  -V, --version
-          Print version
+  -a, --all              Match all patterns (logical AND)
+  -r, --regex            Use regex pattern for search
+  -c, --case             Case-sensitive search
+  -d, --drive <DRIVE>    Search only in specific drives. Accepts: "C", "C:", or "C:\"
+  -f, --files            Only show files
+  -D, --dirs             Only show directories
+  -m, --move <DIR>       Move all matching files to the specified directory
+  -F, --force            Force overwrite existing files at the move destination
+  -n, --limit <COUNT>    Maximum number of files to show per directory [default: 20]
+  -o, --output <OUTPUT>  Output format [possible values: list, name, grouped, info]
+  -l, --list             List output (shortcut for --output list)
+  -N, --name             Name-only output (shortcut for --output name)
+  -s, --sort <SORT>      Sort results by this field [possible values: name, size]
+  -i, --info             Info output with file sizes (shortcut for --output info)
+  -v, --verbose          Print verbose output
+  -e, --exact            Exact pattern matches only
+  -h, --help             Print help (see more with '--help')
+  -V, --version          Print version
 ```
 
 ### Subcommands
@@ -94,7 +69,13 @@ Usage: filefind.exe stats
 List all indexed volumes:
 
 ```
-Usage: filefind.exe volumes
+List all indexed volumes
+
+Usage: filefind.exe volumes [OPTIONS]
+
+Options:
+  -s, --sort [<SORT>]  Sort volumes by this field [possible values: name, size, files]
+  -h, --help           Print help (see more with '--help')
 ```
 
 #### completion
@@ -102,6 +83,8 @@ Usage: filefind.exe volumes
 Generate shell completion scripts:
 
 ```
+Generate shell completion scripts
+
 Usage: filefind.exe completion [OPTIONS] <SHELL>
 
 Arguments:
@@ -109,13 +92,48 @@ Arguments:
 
 Options:
   -I, --install  Install the completion script to the appropriate location
+  -h, --help     Print help
+```
+
+## Display Modes
+
+The CLI supports four output formats, selectable with `-o <FORMAT>` or shortcut flags:
+
+| Format    | Flag      | Description                         |
+| --------- | --------- | ----------------------------------- |
+| `grouped` | (default) | Files grouped by parent directory   |
+| `list`    | `-l`      | Simple list of full paths           |
+| `name`    | `-N`      | File names only, without full paths |
+| `info`    | `-i`      | Paths with file sizes               |
+
+```shell
+# Grouped output (default) — files organized under their parent directory
+filefind "*.mp4"
+
+# List output — one full path per line, no decoration
+filefind -l "*.mp4"
+filefind -o list "*.mp4"
+
+# Name-only output — just filenames, no directory paths
+filefind -N "*.mp4"
+filefind -o name "*.mp4"
+
+# Info output — paths with file sizes
+filefind -i "*.mp4"
+filefind -o info "*.mp4"
 ```
 
 ## Examples
 
 ```shell
-# Basic search (auto-expands patterns)
+# Basic search (auto-expands patterns: "some.name" also searches "some name" and "somename")
 filefind "document.pdf"
+
+# Multiple patterns (OR — match any pattern)
+filefind "*.mp4" "*.mkv" "*.avi"
+
+# Multiple patterns (AND — match all patterns)
+filefind -a "report" "2024"
 
 # Glob pattern search
 filefind "*.mp4"
@@ -138,17 +156,17 @@ filefind -f "config.toml"
 # Show only directories
 filefind -D "projects"
 
+# Sort results by size (largest first)
+filefind -s size "*.mp4"
+
+# Limit files shown per directory
+filefind -n 10 "*.txt"
+
 # Move matching files to a directory
 filefind "*.mp4" --move D:\Videos
 
 # Move with force overwrite
 filefind "*.mp4" --move D:\Videos --force
-
-# Simple output (just paths)
-filefind -o simple "*.mp4"
-
-# Limit files shown per directory
-filefind -n 10 "*.txt"
 
 # Show index statistics
 filefind stats
@@ -156,9 +174,12 @@ filefind stats
 # List all indexed volumes
 filefind volumes
 
+# List volumes sorted by size
+filefind volumes --sort size
+
 # Generate shell completion
-filefind completion powershell > _filefind.ps1
-filefind completion bash > filefind.bash
+filefind completion powershell
+filefind completion bash
 
 # Install shell completion to standard location
 filefind completion powershell --install
@@ -209,7 +230,11 @@ CLI settings can be configured in `~/.config/filefind.toml`:
 
 ```toml
 [cli]
-# Default output format: "simple" or "grouped"
+# Default output format:
+#   "list"    - list of paths
+#   "name"    - file names only (no full paths)
+#   "grouped" - files grouped by directory (default)
+#   "info"    - paths with file size
 format = "grouped"
 
 # Maximum number of results to show (0 = unlimited)

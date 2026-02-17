@@ -19,45 +19,28 @@ This daemon monitors file systems and keeps the file index up to date using:
 ## Usage
 
 ```
-Background file indexing daemon for filefind
+Filefind background file indexing daemon
 
 Usage: filefindd.exe [OPTIONS] [COMMAND]
 
 Commands:
-  start    Start the daemon and begin indexing
-  stop     Stop the daemon
-  status   Check daemon status
-  scan     Perform a one-time scan without starting the daemon
-  stats    Show index statistics
-  volumes  List indexed volumes
-  detect   Detect available drives and their types
-  reset    Delete the database and start fresh
-  help     Print this message or the help of the given subcommand(s)
+  start       Start the daemon and begin indexing
+  stop        Stop the running daemon
+  status      Check daemon status
+  scan        Perform a one-time scan without starting the daemon
+  stats       Show index statistics
+  volumes     List indexed volumes
+  detect      Detect available drives and their types
+  reset       Delete the database and start fresh
+  prune       Remove database entries for files/directories that no longer exist
+  completion  Generate shell completion scripts
+  help        Print this message or the help of the given subcommand(s)
 
 Options:
-  -C, --completion <SHELL>
-          Generate shell completion
-
-          [possible values: bash, elvish, fish, powershell, zsh]
-
-  -l, --log <LOG_LEVEL>
-          Set the log level
-
-          Possible values:
-          - error: Error messages only
-          - warn:  Warnings and errors
-          - info:  Informational messages
-          - debug: Debug messages
-          - trace: Trace messages
-
-  -v, --verbose
-          Print verbose output
-
-  -h, --help
-          Print help (see a summary with '-h')
-
-  -V, --version
-          Print version
+  -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose          Print verbose output
+  -h, --help             Print help (see more with '--help')
+  -V, --version          Print version
 ```
 
 ### Subcommands
@@ -67,11 +50,16 @@ Options:
 Start the daemon and begin indexing:
 
 ```
+Start the daemon and begin indexing
+
 Usage: filefindd.exe start [OPTIONS]
 
 Options:
-  -f, --foreground  Run in foreground instead of daemonizing
-  -r, --rescan      Force a full rescan of all volumes
+  -f, --foreground       Run in foreground instead of daemonizing
+  -r, --rescan           Force a full rescan of all volumes
+  -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose          Print verbose output
+  -h, --help             Print help (see more with '--help')
 ```
 
 #### scan
@@ -79,13 +67,18 @@ Options:
 Perform a one-time scan without starting the daemon:
 
 ```
+Perform a one-time scan without starting the daemon
+
 Usage: filefindd.exe scan [OPTIONS] [PATH]
 
 Arguments:
   [PATH]  Specific path to scan (defaults to all configured drives)
 
 Options:
-  -f, --force  Force a full rescan even if already indexed
+  -f, --force            Force a clean scan (delete existing entries before inserting new ones)
+  -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose          Print verbose output
+  -h, --help             Print help (see more with '--help')
 ```
 
 #### volumes
@@ -93,10 +86,15 @@ Options:
 List indexed volumes:
 
 ```
+List indexed volumes
+
 Usage: filefindd.exe volumes [OPTIONS]
 
 Options:
-  -d, --detailed  Show detailed information
+  -d, --detailed         Show detailed information
+  -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose          Print verbose output
+  -h, --help             Print help (see more with '--help')
 ```
 
 #### reset
@@ -104,10 +102,49 @@ Options:
 Delete the database and start fresh:
 
 ```
+Delete the database and start fresh
+
 Usage: filefindd.exe reset [OPTIONS]
 
 Options:
-  -f, --force  Skip confirmation prompt
+  -f, --force            Skip confirmation prompt
+  -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose          Print verbose output
+  -h, --help             Print help (see more with '--help')
+```
+
+#### prune
+
+Remove database entries for files/directories that no longer exist:
+
+```
+Remove database entries for files/directories that no longer exist
+
+Usage: filefindd.exe prune [OPTIONS]
+
+Options:
+  -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose          Print verbose output
+  -h, --help             Print help (see more with '--help')
+```
+
+#### completion
+
+Generate shell completion scripts:
+
+```
+Generate shell completion scripts
+
+Usage: filefindd.exe completion [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>  Shell to generate completion for [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -I, --install          Install the completion script to the appropriate location
+  -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose          Print verbose output
+  -h, --help             Print help (see more with '--help')
 ```
 
 ## Examples
@@ -134,6 +171,9 @@ filefindd scan
 # Scan a specific directory
 filefindd scan "D:\Projects"
 
+# Force a clean scan
+filefindd scan --force
+
 # Show index statistics
 filefindd stats
 
@@ -144,10 +184,48 @@ filefindd volumes --detailed
 # Detect available drives
 filefindd detect
 
+# Remove stale database entries
+filefindd prune
+
 # Reset database
 filefindd reset
 filefindd reset --force
+
+# Generate shell completion
+filefindd completion powershell
+filefindd completion bash --install
 ```
+
+### Auto-start on login (Windows Scheduled Task)
+
+To have filefind deamon start automatically when you log in, create a scheduled task:
+
+1. Open Task Scheduler (`taskschd.msc`)
+2. Click "Create Basic Task..."
+3. Name: `filefind daemon`
+4. Trigger: "When I log on"
+5. Action: "Start a program"
+6. Program: `C:\Users\<username>\.cargo\bin\filefindd.exe`
+7. Arguments: `start -f`
+8. Finish and optionally check "Open Properties" to:
+    - Enable "Run with highest privileges" (required for MFT/USN access)
+    - Under Conditions, uncheck "Start only if on AC power"
+
+Or via PowerShell (run as Administrator):
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.cargo\bin\filefindd.exe" -Argument "start -f"
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "filefind daemon" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
+```
+
+The daemon can still be stopped anytime using `filefindd stop` or the tray application.
+
+### Logging
+
+In foreground mode, logs are written to stdout.
+In background mode, logs are written to rolling files in `~/logs/filefind/` with daily rotation.
 
 ## Configuration
 
@@ -285,8 +363,3 @@ The daemon runs an IPC server (named pipes on Windows) to accept commands from t
 - `rescan` - Trigger a full rescan
 - `pause` / `resume` - Pause/resume monitoring
 - `ping` - Health check
-
-## Logging
-
-In foreground mode, logs are written to stdout.
-In background mode, logs are written to rolling files in `~/logs/filefind/` with daily rotation.

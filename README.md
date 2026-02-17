@@ -40,7 +40,7 @@ This project is organized as a Cargo workspace with multiple crates:
 
 ## Usage
 
-### Start the daemon
+### Daemon
 
 ```shell
 # Start in background (spawns detached process)
@@ -81,50 +81,9 @@ filefindd detect
 filefindd reset
 ```
 
-### Auto-start on login (Windows Scheduled Task)
+### CLI
 
-To have filefind start automatically when you log in, create a scheduled task:
-
-1. Open Task Scheduler (`taskschd.msc`)
-2. Click "Create Basic Task..."
-3. Name: `filefind daemon`
-4. Trigger: "When I log on"
-5. Action: "Start a program"
-6. Program: `C:\Users\<username>\.cargo\bin\filefindd.exe`
-7. Arguments: `start -f`
-8. Finish and optionally check "Open Properties" to:
-    - Enable "Run with highest privileges" (required for MFT/USN access)
-    - Under Conditions, uncheck "Start only if on AC power"
-
-Or via PowerShell (run as Administrator):
-
-```powershell
-$action = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.cargo\bin\filefindd.exe" -Argument "start -f"
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName "filefind daemon" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
-```
-
-The daemon can still be stopped anytime using `filefindd stop` or the tray application.
-
-### System tray application
-
-The tray application provides a convenient way to control the daemon from the system tray:
-
-```shell
-# Start the tray application
-filefind-tray
-```
-
-Features:
-
-- **Status indicator**: Icon color shows daemon state (green=running, gray=stopped, orange=scanning)
-- **Tooltip**: Shows indexed file and directory counts
-- **Menu options**: Start, Stop, Rescan, About, Quit
-
-The tray application can be added to Windows startup the same way as the daemon.
-
-### Search for files
+Search for files
 
 ```shell
 # Basic search (auto-expands patterns: "some.name" also searches "some name" and "somename")
@@ -157,11 +116,17 @@ filefind "*.mp4" --move D:\Videos
 # Move with force overwrite of existing files
 filefind "*.mp4" --move D:\Videos --force
 
-# Simple output (just paths)
-filefind -o simple "*.mp4"
+# List output — one full path per line
+filefind -l "*.mp4"
+filefind -o list "*.mp4"
 
-# Grouped output (files grouped by directory, default)
-filefind -o grouped "*.mp4"
+# Name-only output — just filenames, no directory paths
+filefind -N "*.mp4"
+filefind -o name "*.mp4"
+
+# Info output — paths with file sizes
+filefind -i "*.mp4"
+filefind -o info "*.mp4"
 
 # Limit files shown per directory
 filefind -n 10 "*.txt"
@@ -180,6 +145,23 @@ filefind completion bash
 filefind completion powershell --install
 filefind completion bash --install
 ```
+
+### System tray application
+
+The tray application provides a convenient way to control the daemon from the system tray:
+
+```shell
+# Start the tray application
+filefind-tray
+```
+
+Features:
+
+- **Status indicator**: Icon color shows daemon state (green=running, gray=stopped, orange=scanning)
+- **Tooltip**: Shows indexed file and directory counts
+- **Menu options**: Start, Stop, Rescan, About, Quit
+
+The tray application can be added to Windows startup the same way as the daemon.
 
 ## Configuration
 

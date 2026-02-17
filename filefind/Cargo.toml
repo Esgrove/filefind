@@ -17,7 +17,6 @@ dirs = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Crate-specific dependencies
 postcard = { version = "1.1", features = ["use-std"] }
 regex = { workspace = true }
 rusqlite = { version = "0.38.0", features = ["bundled", "functions"] }
@@ -28,7 +27,7 @@ toml = "1.0"
 windows-sys = { version = "0.61", features = ["Win32_NetworkManagement_WNet", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_Security"] }
 
 [dev-dependencies]
-tempfile = "3.24"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

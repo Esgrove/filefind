@@ -54,7 +54,7 @@ pub struct FileFindCli {
     pub files: bool,
 
     /// Only show directories
-    #[arg(short = 'd', long)]
+    #[arg(short = 'D', long)]
     pub dirs: bool,
 
     /// Move all matching files to the specified directory
