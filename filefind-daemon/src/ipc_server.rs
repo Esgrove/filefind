@@ -801,4 +801,549 @@ mod tests {
         // Uptime should be 0 or very close to 0 immediately after creation
         assert!(status.uptime_seconds < 2);
     }
+
+    #[test]
+    fn test_ipc_server_new() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = mpsc::channel(32);
+
+        let _server = IpcServer::new(Arc::clone(&state), sender, Arc::clone(&shutdown));
+
+        // Server should be constructable without panic
+        assert!(!shutdown.load(Ordering::Relaxed));
+        assert_eq!(state.state.load(), DaemonStateInfo::Stopped);
+    }
+
+    #[test]
+    fn test_handle_command_sync_ping() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = mpsc::channel(32);
+        let server = IpcServer::new(state, sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Ping);
+        assert!(matches!(response, DaemonResponse::Pong));
+    }
+
+    #[test]
+    fn test_handle_command_sync_get_status() {
+        let state = Arc::new(IpcServerState::new());
+        state.state.store(DaemonStateInfo::Running);
+        state.indexed_files.store(42, Ordering::Relaxed);
+        state.indexed_directories.store(7, Ordering::Relaxed);
+        state.monitored_volumes.store(2, Ordering::Relaxed);
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = mpsc::channel(32);
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::GetStatus);
+        match response {
+            DaemonResponse::Status(status) => {
+                assert_eq!(status.state, DaemonStateInfo::Running);
+                assert_eq!(status.indexed_files, 42);
+                assert_eq!(status.indexed_directories, 7);
+                assert_eq!(status.monitored_volumes, 2);
+                assert!(!status.is_paused);
+            }
+            other => panic!("Expected Status response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_command_sync_get_status_paused() {
+        let state = Arc::new(IpcServerState::new());
+        state.state.store(DaemonStateInfo::Running);
+        state.is_paused.store(true, Ordering::Relaxed);
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = mpsc::channel(32);
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::GetStatus);
+        match response {
+            DaemonResponse::Status(status) => {
+                assert!(status.is_paused);
+            }
+            other => panic!("Expected Status response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_command_sync_stop() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let server = IpcServer::new(state, sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Stop);
+        assert!(matches!(response, DaemonResponse::Ok));
+
+        // Verify the command was sent through the channel
+        let command = receiver.try_recv().expect("Should have received a command");
+        assert!(matches!(command, IpcToDaemon::Stop));
+    }
+
+    #[test]
+    fn test_handle_command_sync_rescan() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let server = IpcServer::new(state, sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Rescan);
+        assert!(matches!(response, DaemonResponse::Ok));
+
+        let command = receiver.try_recv().expect("Should have received a command");
+        assert!(matches!(command, IpcToDaemon::Rescan));
+    }
+
+    #[test]
+    fn test_handle_command_sync_pause() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        // Initially not paused
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+
+        let response = server.handle_command_sync(DaemonCommand::Pause);
+        assert!(matches!(response, DaemonResponse::Ok));
+
+        // State should reflect paused
+        assert!(state.is_paused.load(Ordering::Relaxed));
+
+        let command = receiver.try_recv().expect("Should have received a command");
+        assert!(matches!(command, IpcToDaemon::Pause));
+    }
+
+    #[test]
+    fn test_handle_command_sync_resume() {
+        let state = Arc::new(IpcServerState::new());
+        state.is_paused.store(true, Ordering::Relaxed);
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Resume);
+        assert!(matches!(response, DaemonResponse::Ok));
+
+        // State should reflect resumed
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+
+        let command = receiver.try_recv().expect("Should have received a command");
+        assert!(matches!(command, IpcToDaemon::Resume));
+    }
+
+    #[test]
+    fn test_handle_command_sync_prune() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let server = IpcServer::new(state, sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Prune);
+        assert!(matches!(response, DaemonResponse::Ok));
+
+        let command = receiver.try_recv().expect("Should have received a command");
+        assert!(matches!(command, IpcToDaemon::Prune));
+    }
+
+    #[test]
+    fn test_handle_command_sync_stop_with_dropped_receiver() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel(32);
+
+        // Drop the receiver so the sender will fail
+        drop(receiver);
+
+        let server = IpcServer::new(state, sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Stop);
+        match response {
+            DaemonResponse::Error(message) => {
+                assert!(message.contains("Failed to send stop command"), "Got: {message}");
+            }
+            other => panic!("Expected Error response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_command_sync_rescan_with_dropped_receiver() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel(32);
+        drop(receiver);
+
+        let server = IpcServer::new(state, sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Rescan);
+        match response {
+            DaemonResponse::Error(message) => {
+                assert!(message.contains("Failed to send rescan command"), "Got: {message}");
+            }
+            other => panic!("Expected Error response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_command_sync_pause_with_dropped_receiver() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel(32);
+        drop(receiver);
+
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Pause);
+        match response {
+            DaemonResponse::Error(message) => {
+                assert!(message.contains("Failed to send pause command"), "Got: {message}");
+            }
+            other => panic!("Expected Error response, got {other:?}"),
+        }
+
+        // is_paused should NOT have been set because the send failed
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_handle_command_sync_resume_with_dropped_receiver() {
+        let state = Arc::new(IpcServerState::new());
+        state.is_paused.store(true, Ordering::Relaxed);
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel(32);
+        drop(receiver);
+
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Resume);
+        match response {
+            DaemonResponse::Error(message) => {
+                assert!(message.contains("Failed to send resume command"), "Got: {message}");
+            }
+            other => panic!("Expected Error response, got {other:?}"),
+        }
+
+        // is_paused should still be true because the send failed
+        assert!(state.is_paused.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_handle_command_sync_prune_with_dropped_receiver() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel(32);
+        drop(receiver);
+
+        let server = IpcServer::new(state, sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::Prune);
+        match response {
+            DaemonResponse::Error(message) => {
+                assert!(message.contains("Failed to send prune command"), "Got: {message}");
+            }
+            other => panic!("Expected Error response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_command_sync_multiple_commands_sequentially() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        // Send a sequence of commands
+        assert!(matches!(
+            server.handle_command_sync(DaemonCommand::Ping),
+            DaemonResponse::Pong
+        ));
+        assert!(matches!(
+            server.handle_command_sync(DaemonCommand::Pause),
+            DaemonResponse::Ok
+        ));
+        assert!(matches!(
+            server.handle_command_sync(DaemonCommand::GetStatus),
+            DaemonResponse::Status(_)
+        ));
+        assert!(matches!(
+            server.handle_command_sync(DaemonCommand::Resume),
+            DaemonResponse::Ok
+        ));
+        assert!(matches!(
+            server.handle_command_sync(DaemonCommand::Stop),
+            DaemonResponse::Ok
+        ));
+
+        // Verify commands arrived in order (Ping and GetStatus don't send to channel)
+        let cmd1 = receiver.try_recv().expect("Should have Pause");
+        assert!(matches!(cmd1, IpcToDaemon::Pause));
+
+        let cmd2 = receiver.try_recv().expect("Should have Resume");
+        assert!(matches!(cmd2, IpcToDaemon::Resume));
+
+        let cmd3 = receiver.try_recv().expect("Should have Stop");
+        assert!(matches!(cmd3, IpcToDaemon::Stop));
+
+        // No more commands
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_update_from_database() {
+        let state = IpcServerState::new();
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        // Initially zero
+        assert_eq!(state.indexed_files.load(Ordering::Relaxed), 0);
+        assert_eq!(state.indexed_directories.load(Ordering::Relaxed), 0);
+        assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 0);
+
+        // Update from empty database
+        state.update_from_database(&database);
+
+        // Should remain zero for an empty database
+        assert_eq!(state.indexed_files.load(Ordering::Relaxed), 0);
+        assert_eq!(state.indexed_directories.load(Ordering::Relaxed), 0);
+        assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_update_from_database_with_data() {
+        use filefind::{FileEntry, IndexedVolume, VolumeType};
+
+        let state = IpcServerState::new();
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        // Insert a volume
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "TEST-1234".to_string(),
+            label: Some("TestVol".to_string()),
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        // Insert a file entry
+        let file_entry = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "test.txt".to_string(),
+            full_path: "C:\\test.txt".to_string(),
+            size: 100,
+            is_directory: false,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database.insert_file(&file_entry).expect("Failed to insert file");
+
+        // Insert a directory entry
+        let dir_entry = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "docs".to_string(),
+            full_path: "C:\\docs".to_string(),
+            size: 0,
+            is_directory: true,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database.insert_file(&dir_entry).expect("Failed to insert directory");
+
+        state.update_from_database(&database);
+
+        assert_eq!(state.indexed_files.load(Ordering::Relaxed), 1);
+        assert_eq!(state.indexed_directories.load(Ordering::Relaxed), 1);
+        assert_eq!(state.monitored_volumes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_ipc_to_daemon_all_variants_debug() {
+        // Ensure all variants have distinct debug representations
+        let variants = [
+            IpcToDaemon::Stop,
+            IpcToDaemon::Rescan,
+            IpcToDaemon::Pause,
+            IpcToDaemon::Resume,
+            IpcToDaemon::Prune,
+        ];
+
+        let debug_strings: Vec<String> = variants.iter().map(|v| format!("{v:?}")).collect();
+
+        assert!(debug_strings[0].contains("Stop"));
+        assert!(debug_strings[1].contains("Rescan"));
+        assert!(debug_strings[2].contains("Pause"));
+        assert!(debug_strings[3].contains("Resume"));
+        assert!(debug_strings[4].contains("Prune"));
+
+        // All should be unique
+        for (index, debug_str) in debug_strings.iter().enumerate() {
+            for (other_index, other) in debug_strings.iter().enumerate() {
+                if index != other_index {
+                    assert_ne!(debug_str, other, "IpcToDaemon debug strings should be unique");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ipc_server_state_get_status_reflects_updates() {
+        let state = IpcServerState::new();
+
+        // Set various values
+        state.state.store(DaemonStateInfo::Scanning);
+        state.indexed_files.store(5000, Ordering::Relaxed);
+        state.indexed_directories.store(300, Ordering::Relaxed);
+        state.monitored_volumes.store(3, Ordering::Relaxed);
+        state.is_paused.store(true, Ordering::Relaxed);
+
+        let status = state.get_status();
+        assert_eq!(status.state, DaemonStateInfo::Scanning);
+        assert_eq!(status.indexed_files, 5000);
+        assert_eq!(status.indexed_directories, 300);
+        assert_eq!(status.monitored_volumes, 3);
+        assert!(status.is_paused);
+
+        // Update values and verify status changes
+        state.state.store(DaemonStateInfo::Running);
+        state.is_paused.store(false, Ordering::Relaxed);
+
+        let status2 = state.get_status();
+        assert_eq!(status2.state, DaemonStateInfo::Running);
+        assert!(!status2.is_paused);
+    }
+
+    #[test]
+    fn test_handle_command_sync_status_during_scanning() {
+        let state = Arc::new(IpcServerState::new());
+        state.state.store(DaemonStateInfo::Scanning);
+        state.indexed_files.store(10_000, Ordering::Relaxed);
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = mpsc::channel(32);
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        let response = server.handle_command_sync(DaemonCommand::GetStatus);
+        match response {
+            DaemonResponse::Status(status) => {
+                assert_eq!(status.state, DaemonStateInfo::Scanning);
+                assert_eq!(status.indexed_files, 10_000);
+            }
+            other => panic!("Expected Status response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_handle_command_sync_pause_then_resume() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let server = IpcServer::new(Arc::clone(&state), sender, shutdown);
+
+        // Pause
+        let response = server.handle_command_sync(DaemonCommand::Pause);
+        assert!(matches!(response, DaemonResponse::Ok));
+        assert!(state.is_paused.load(Ordering::Relaxed));
+
+        // Verify status reflects paused
+        let status_response = server.handle_command_sync(DaemonCommand::GetStatus);
+        match status_response {
+            DaemonResponse::Status(status) => assert!(status.is_paused),
+            other => panic!("Expected Status response, got {other:?}"),
+        }
+
+        // Resume
+        let response = server.handle_command_sync(DaemonCommand::Resume);
+        assert!(matches!(response, DaemonResponse::Ok));
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+
+        // Verify status reflects resumed
+        let status_response = server.handle_command_sync(DaemonCommand::GetStatus);
+        match status_response {
+            DaemonResponse::Status(status) => assert!(!status.is_paused),
+            other => panic!("Expected Status response, got {other:?}"),
+        }
+
+        // Drain channel
+        let cmd1 = receiver.try_recv().expect("Should have Pause");
+        assert!(matches!(cmd1, IpcToDaemon::Pause));
+        let cmd2 = receiver.try_recv().expect("Should have Resume");
+        assert!(matches!(cmd2, IpcToDaemon::Resume));
+    }
+
+    #[test]
+    fn test_ipc_server_state_update_from_database_multiple_times() {
+        use filefind::{FileEntry, IndexedVolume, VolumeType};
+
+        let state = IpcServerState::new();
+        let mut database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-5678".to_string(),
+            label: None,
+            mount_point: "D:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        // Insert files in batch
+        let entries: Vec<FileEntry> = (0..10)
+            .map(|index| FileEntry {
+                id: None,
+                volume_id,
+                parent_id: None,
+                name: format!("file{index}.txt"),
+                full_path: format!("D:\\file{index}.txt"),
+                size: 50,
+                is_directory: false,
+                created_time: None,
+                modified_time: None,
+                mft_reference: None,
+            })
+            .collect();
+        database.insert_files_batch(&entries).expect("Failed to insert batch");
+
+        state.update_from_database(&database);
+        assert_eq!(state.indexed_files.load(Ordering::Relaxed), 10);
+
+        // Insert more files and update again
+        let more_entries: Vec<FileEntry> = (10..15)
+            .map(|index| FileEntry {
+                id: None,
+                volume_id,
+                parent_id: None,
+                name: format!("file{index}.txt"),
+                full_path: format!("D:\\file{index}.txt"),
+                size: 50,
+                is_directory: false,
+                created_time: None,
+                modified_time: None,
+                mft_reference: None,
+            })
+            .collect();
+        database
+            .insert_files_batch(&more_entries)
+            .expect("Failed to insert more files");
+
+        state.update_from_database(&database);
+        assert_eq!(state.indexed_files.load(Ordering::Relaxed), 15);
+    }
 }

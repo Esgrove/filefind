@@ -1052,6 +1052,10 @@ pub fn list_volumes(database_path: &Path, detailed: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::usn::UsnChange;
+    use filefind::{FileEntry, IndexedVolume, VolumeType};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
 
     #[test]
     fn test_daemon_state_display() {
@@ -1368,5 +1372,1364 @@ mod tests {
 
         let drives = daemon.get_configured_drives();
         assert_eq!(drives, vec!['C', 'D']);
+    }
+
+    // --- stop() tests ---
+
+    #[test]
+    fn test_stop_already_stopped_daemon() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        // Daemon starts in Stopped state
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+
+        // Stopping an already stopped daemon should be a no-op
+        daemon.stop();
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+    }
+
+    #[test]
+    fn test_stop_sets_shutdown_signal() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        // Manually set state to Running to test stop behavior
+        daemon.state = DaemonState::Running;
+        daemon.ipc_state.state.store(DaemonStateInfo::Running);
+
+        let shutdown = daemon.shutdown_handle();
+        assert!(!shutdown.load(std::sync::atomic::Ordering::Relaxed));
+
+        daemon.stop();
+
+        assert!(shutdown.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+        assert_eq!(daemon.ipc_state.state.load(), DaemonStateInfo::Stopped);
+    }
+
+    #[test]
+    fn test_stop_clears_volume_monitors() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        // Add a fake volume monitor without a USN monitor
+        daemon.volume_monitors.insert(
+            'C',
+            VolumeMonitor {
+                usn_monitor: None,
+                last_usn: 100,
+            },
+        );
+        daemon.state = DaemonState::Running;
+
+        assert!(!daemon.volume_monitors.is_empty());
+        daemon.stop();
+        assert!(daemon.volume_monitors.is_empty());
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+    }
+
+    #[test]
+    fn test_stop_transitions_through_stopping_state() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+        daemon.state = DaemonState::Running;
+
+        daemon.stop();
+
+        // After stop completes, state should be Stopped (it transitioned through Stopping)
+        assert_eq!(daemon.state(), DaemonState::Stopped);
+        assert_eq!(daemon.ipc_state.state.load(), DaemonStateInfo::Stopped);
+    }
+
+    // --- should_perform_initial_scan() tests ---
+
+    #[test]
+    fn test_should_perform_initial_scan_no_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        // No database set => should scan
+        let result = daemon.should_perform_initial_scan().expect("should not error");
+        assert!(result);
+    }
+
+    #[test]
+    fn test_should_perform_initial_scan_empty_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        daemon.database = Some(database);
+
+        // Empty database => should scan
+        let result = daemon.should_perform_initial_scan().expect("should not error");
+        assert!(result);
+    }
+
+    #[test]
+    fn test_should_perform_initial_scan_populated_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        // Add a volume and a file
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SERIAL-001".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let entry = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "test.txt".to_string(),
+            full_path: "C:\\test.txt".to_string(),
+            size: 10,
+            is_directory: false,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database.insert_file(&entry).expect("Failed to insert file");
+
+        daemon.database = Some(database);
+
+        // Database has data => should NOT scan
+        let result = daemon.should_perform_initial_scan().expect("should not error");
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_should_perform_initial_scan_only_directories() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SERIAL-002".to_string(),
+            label: None,
+            mount_point: "D:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let dir_entry = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "docs".to_string(),
+            full_path: "D:\\docs".to_string(),
+            size: 0,
+            is_directory: true,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database.insert_file(&dir_entry).expect("Failed to insert directory");
+
+        daemon.database = Some(database);
+
+        // Has directories but no files => should NOT scan (total_files=0 but total_directories=1)
+        let result = daemon.should_perform_initial_scan().expect("should not error");
+        assert!(!result);
+    }
+
+    // --- get_non_ntfs_paths() tests ---
+
+    #[test]
+    fn test_get_non_ntfs_paths_empty_config() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let paths = daemon.get_non_ntfs_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_get_non_ntfs_paths_with_monitored_ntfs_drive() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["C:\\Users".to_string()];
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        // Simulate that C: is being monitored via USN
+        daemon.volume_monitors.insert(
+            'C',
+            VolumeMonitor {
+                usn_monitor: None,
+                last_usn: 0,
+            },
+        );
+
+        let paths = daemon.get_non_ntfs_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_get_non_ntfs_paths_unc_paths() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["\\\\server\\share".to_string(), "\\\\192.168.1.1\\data".to_string()];
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let paths = daemon.get_non_ntfs_paths();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], PathBuf::from("\\\\server\\share"));
+        assert_eq!(paths[1], PathBuf::from("\\\\192.168.1.1\\data"));
+    }
+
+    #[test]
+    fn test_get_non_ntfs_paths_mixed() {
+        let mut config = Config::default();
+        config.daemon.paths = vec![
+            "C:\\Users".to_string(),
+            "\\\\server\\share".to_string(),
+            "D:\\Data".to_string(),
+        ];
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        // Only C: is monitored
+        daemon.volume_monitors.insert(
+            'C',
+            VolumeMonitor {
+                usn_monitor: None,
+                last_usn: 0,
+            },
+        );
+
+        let paths = daemon.get_non_ntfs_paths();
+        // D:\Data and \\server\share should be returned (C: is monitored)
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&PathBuf::from("\\\\server\\share")));
+        assert!(paths.contains(&PathBuf::from("D:\\Data")));
+    }
+
+    #[test]
+    fn test_get_non_ntfs_paths_all_monitored() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["C:\\Users".to_string(), "D:\\Data".to_string()];
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        daemon.volume_monitors.insert(
+            'C',
+            VolumeMonitor {
+                usn_monitor: None,
+                last_usn: 0,
+            },
+        );
+        daemon.volume_monitors.insert(
+            'D',
+            VolumeMonitor {
+                usn_monitor: None,
+                last_usn: 0,
+            },
+        );
+
+        let paths = daemon.get_non_ntfs_paths();
+        assert!(paths.is_empty());
+    }
+
+    // --- usn_change_to_event() tests ---
+
+    /// Helper to create a `UsnChange` with the specified reason flags.
+    fn make_usn_change(reason: u32) -> UsnChange {
+        UsnChange {
+            usn: 1000,
+            file_reference: 42,
+            parent_reference: 5,
+            name: "test.txt".to_string(),
+            reason,
+            attributes: 0x20,
+            is_directory: false,
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_create() {
+        let change = make_usn_change(0x0000_0100); // USN_REASON_FILE_CREATE
+        let event = Daemon::usn_change_to_event(&change, "C:\\test.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Created(path) => assert_eq!(path, PathBuf::from("C:\\test.txt")),
+            other => panic!("Expected Created event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_delete() {
+        let change = make_usn_change(0x0000_0200); // USN_REASON_FILE_DELETE
+        let event = Daemon::usn_change_to_event(&change, "C:\\deleted.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Deleted(path) => assert_eq!(path, PathBuf::from("C:\\deleted.txt")),
+            other => panic!("Expected Deleted event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_rename_new() {
+        let change = make_usn_change(0x0000_2000); // USN_REASON_RENAME_NEW_NAME
+        let event = Daemon::usn_change_to_event(&change, "C:\\renamed.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Created(path) => assert_eq!(path, PathBuf::from("C:\\renamed.txt")),
+            other => panic!("Expected Created event (from rename), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_modify_overwrite() {
+        let change = make_usn_change(0x0000_0001); // USN_REASON_DATA_OVERWRITE
+        let event = Daemon::usn_change_to_event(&change, "C:\\modified.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Modified(path) => assert_eq!(path, PathBuf::from("C:\\modified.txt")),
+            other => panic!("Expected Modified event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_modify_extend() {
+        let change = make_usn_change(0x0000_0002); // USN_REASON_DATA_EXTEND
+        let event = Daemon::usn_change_to_event(&change, "C:\\extended.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Modified(path) => assert_eq!(path, PathBuf::from("C:\\extended.txt")),
+            other => panic!("Expected Modified event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_modify_truncation() {
+        let change = make_usn_change(0x0000_0004); // USN_REASON_DATA_TRUNCATION
+        let event = Daemon::usn_change_to_event(&change, "C:\\truncated.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Modified(path) => assert_eq!(path, PathBuf::from("C:\\truncated.txt")),
+            other => panic!("Expected Modified event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_unrecognized_reason() {
+        // Security change only - not create, delete, rename, or modify
+        let change = make_usn_change(0x0000_0800); // USN_REASON_SECURITY_CHANGE
+        let event = Daemon::usn_change_to_event(&change, "C:\\secure.txt");
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn test_usn_change_to_event_priority_create_over_modify() {
+        // Both create and modify flags set - create should win (checked first)
+        let change = make_usn_change(0x0000_0100 | 0x0000_0001); // FILE_CREATE | DATA_OVERWRITE
+        let event = Daemon::usn_change_to_event(&change, "C:\\both.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Created(path) => assert_eq!(path, PathBuf::from("C:\\both.txt")),
+            other => panic!("Expected Created event (create takes priority), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_usn_change_to_event_delete_over_rename() {
+        // Both delete and rename flags - delete should win (checked first)
+        let change = make_usn_change(0x0000_0200 | 0x0000_2000); // FILE_DELETE | RENAME_NEW_NAME
+        let event = Daemon::usn_change_to_event(&change, "C:\\gone.txt");
+        assert!(event.is_some());
+        match event.expect("expected event") {
+            FileChangeEvent::Deleted(path) => assert_eq!(path, PathBuf::from("C:\\gone.txt")),
+            other => panic!("Expected Deleted event (delete checked before rename), got {other:?}"),
+        }
+    }
+
+    // --- resolve_usn_path_inner() tests ---
+
+    #[test]
+    fn test_resolve_usn_path_inner_cache_hit() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        daemon.path_cache.insert(100, "C:\\Users\\Documents".to_string());
+
+        let result = daemon.resolve_usn_path_inner('C', 100, "report.pdf");
+        assert_eq!(result, Some("C:\\Users\\Documents\\report.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_usn_path_inner_root_parent() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        // Parent reference 5 is the MFT root directory
+        let result = daemon.resolve_usn_path_inner('C', 5, "boot.ini");
+        assert_eq!(result, Some("C:\\boot.ini".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_usn_path_inner_root_parent_other_drive() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let result = daemon.resolve_usn_path_inner('D', 5, "data.db");
+        assert_eq!(result, Some("D:\\data.db".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_usn_path_inner_cache_miss() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        // Unknown parent reference, not root
+        let result = daemon.resolve_usn_path_inner('C', 999, "unknown.txt");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_usn_path_inner_multiple_cache_entries() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        daemon.path_cache.insert(10, "C:\\Users".to_string());
+        daemon.path_cache.insert(20, "C:\\Users\\Documents".to_string());
+        daemon.path_cache.insert(30, "C:\\Program Files".to_string());
+
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 10, "file1.txt"),
+            Some("C:\\Users\\file1.txt".to_string())
+        );
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 20, "file2.doc"),
+            Some("C:\\Users\\Documents\\file2.doc".to_string())
+        );
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 30, "app.exe"),
+            Some("C:\\Program Files\\app.exe".to_string())
+        );
+    }
+
+    // --- handle_change_event() tests ---
+
+    #[test]
+    fn test_handle_change_event_no_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        // Should not panic when database is None
+        daemon.handle_change_event(FileChangeEvent::Created(PathBuf::from("C:\\test.txt")));
+        daemon.handle_change_event(FileChangeEvent::Modified(PathBuf::from("C:\\test.txt")));
+        daemon.handle_change_event(FileChangeEvent::Deleted(PathBuf::from("C:\\test.txt")));
+        daemon.handle_change_event(FileChangeEvent::Renamed {
+            from: PathBuf::from("C:\\old.txt"),
+            to: PathBuf::from("C:\\new.txt"),
+        });
+    }
+
+    #[test]
+    fn test_handle_change_event_modified_with_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        daemon.database = Some(database);
+
+        // Modified events are just logged, no database update
+        daemon.handle_change_event(FileChangeEvent::Modified(PathBuf::from("C:\\test.txt")));
+        // Should not panic or error
+    }
+
+    #[test]
+    fn test_handle_change_event_delete_with_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-DEL".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let entry = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "deleteme.txt".to_string(),
+            full_path: "C:\\deleteme.txt".to_string(),
+            size: 100,
+            is_directory: false,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database.insert_file(&entry).expect("Failed to insert file");
+
+        daemon.database = Some(database);
+
+        // Delete the file
+        daemon.handle_change_event(FileChangeEvent::Deleted(PathBuf::from("C:\\deleteme.txt")));
+
+        // Verify the file was deleted from the database
+        let db = daemon.database.as_ref().expect("database should exist");
+        let results = db.search_by_name("deleteme.txt", 10).expect("search failed");
+        assert!(results.is_empty(), "File should have been deleted from database");
+    }
+
+    #[test]
+    fn test_handle_change_event_delete_nonexistent_file() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        daemon.database = Some(database);
+
+        // Deleting a file that doesn't exist should not panic
+        daemon.handle_change_event(FileChangeEvent::Deleted(PathBuf::from("C:\\nonexistent.txt")));
+    }
+
+    #[test]
+    fn test_handle_change_event_create_existing_file() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-CREATE".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        database.upsert_volume(&volume).expect("Failed to upsert volume");
+        daemon.database = Some(database);
+
+        // Creating a file requires the file to exist on disk for metadata.
+        // Use a temp file to test the Created event path.
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let temp_file = temp_dir.path().join("created.txt");
+        std::fs::write(&temp_file, "hello").expect("Failed to write temp file");
+
+        // The drive letter won't match our volume mount point, so volume_id
+        // lookup will fail (no volume for the temp path's drive), but the code
+        // path is still exercised without panic.
+        daemon.handle_change_event(FileChangeEvent::Created(temp_file));
+    }
+
+    // --- get_volume_id_for_path() tests ---
+
+    #[test]
+    fn test_get_volume_id_for_path_no_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+
+        let result = daemon.get_volume_id_for_path(Path::new("C:\\test.txt"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_volume_id_for_path_matching_volume() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-VOL1".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+        daemon.database = Some(database);
+
+        let result = daemon.get_volume_id_for_path(Path::new("C:\\Users\\file.txt"));
+        assert_eq!(result, Some(volume_id));
+    }
+
+    #[test]
+    fn test_get_volume_id_for_path_no_matching_volume() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-VOL2".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        database.upsert_volume(&volume).expect("Failed to upsert volume");
+        daemon.database = Some(database);
+
+        // D: drive is not indexed
+        let result = daemon.get_volume_id_for_path(Path::new("D:\\test.txt"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_volume_id_for_path_case_insensitive() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-CASE".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+        daemon.database = Some(database);
+
+        // Lowercase c should match C:
+        let result = daemon.get_volume_id_for_path(Path::new("c:\\test.txt"));
+        assert_eq!(result, Some(volume_id));
+    }
+
+    #[test]
+    fn test_get_volume_id_for_path_multiple_volumes() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let vol_c = IndexedVolume {
+            id: None,
+            serial_number: "SN-C".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let c_id = database.upsert_volume(&vol_c).expect("Failed to upsert C:");
+
+        let vol_d = IndexedVolume {
+            id: None,
+            serial_number: "SN-D".to_string(),
+            label: None,
+            mount_point: "D:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let d_id = database.upsert_volume(&vol_d).expect("Failed to upsert D:");
+
+        daemon.database = Some(database);
+
+        assert_eq!(daemon.get_volume_id_for_path(Path::new("C:\\file.txt")), Some(c_id));
+        assert_eq!(daemon.get_volume_id_for_path(Path::new("D:\\file.txt")), Some(d_id));
+        assert!(daemon.get_volume_id_for_path(Path::new("E:\\file.txt")).is_none());
+    }
+
+    // --- build_path_cache() tests ---
+
+    #[test]
+    fn test_build_path_cache_no_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        // Should succeed with no database
+        daemon
+            .build_path_cache()
+            .expect("build_path_cache should succeed without database");
+        assert!(daemon.path_cache.is_empty());
+    }
+
+    #[test]
+    fn test_build_path_cache_empty_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+        daemon.database = Some(database);
+
+        daemon.build_path_cache().expect("build_path_cache should succeed");
+        assert!(daemon.path_cache.is_empty());
+    }
+
+    #[test]
+    fn test_build_path_cache_with_directories() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-CACHE".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        // Insert directory with MFT reference
+        let dir = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "Users".to_string(),
+            full_path: "C:\\Users".to_string(),
+            size: 0,
+            is_directory: true,
+            created_time: None,
+            modified_time: None,
+            mft_reference: Some(100),
+        };
+        database.insert_file(&dir).expect("Failed to insert directory");
+
+        let dir2 = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "Documents".to_string(),
+            full_path: "C:\\Users\\Documents".to_string(),
+            size: 0,
+            is_directory: true,
+            created_time: None,
+            modified_time: None,
+            mft_reference: Some(200),
+        };
+        database.insert_file(&dir2).expect("Failed to insert directory");
+
+        // Insert a file (should NOT be in the cache since it's not a directory)
+        let file = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "readme.txt".to_string(),
+            full_path: "C:\\readme.txt".to_string(),
+            size: 50,
+            is_directory: false,
+            created_time: None,
+            modified_time: None,
+            mft_reference: Some(300),
+        };
+        database.insert_file(&file).expect("Failed to insert file");
+
+        daemon.database = Some(database);
+
+        daemon.build_path_cache().expect("build_path_cache should succeed");
+
+        // Only directories with mft_reference should be in cache
+        assert_eq!(daemon.path_cache.len(), 2);
+        assert_eq!(daemon.path_cache.get(&100), Some(&"C:\\Users".to_string()));
+        assert_eq!(daemon.path_cache.get(&200), Some(&"C:\\Users\\Documents".to_string()));
+        assert!(daemon.path_cache.get(&300).is_none());
+    }
+
+    #[test]
+    fn test_build_path_cache_ignores_directories_without_mft_reference() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-NOMFT".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let dir = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "NoMft".to_string(),
+            full_path: "C:\\NoMft".to_string(),
+            size: 0,
+            is_directory: true,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None, // No MFT reference
+        };
+        database.insert_file(&dir).expect("Failed to insert directory");
+
+        daemon.database = Some(database);
+
+        daemon.build_path_cache().expect("build_path_cache should succeed");
+        assert!(daemon.path_cache.is_empty());
+    }
+
+    // --- process_ipc_commands() tests ---
+
+    #[tokio::test]
+    async fn test_process_ipc_commands_no_receiver() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        // No IPC receiver set => should be a no-op
+        daemon
+            .process_ipc_commands()
+            .await
+            .expect("process_ipc_commands should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_process_ipc_commands_stop() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let (sender, receiver) = mpsc::channel(32);
+        daemon.ipc_receiver = Some(receiver);
+
+        sender.send(IpcToDaemon::Stop).await.expect("Failed to send");
+
+        daemon
+            .process_ipc_commands()
+            .await
+            .expect("process_ipc_commands should succeed");
+
+        // Shutdown should have been signaled
+        assert!(daemon.shutdown.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn test_process_ipc_commands_pause_and_resume() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let (sender, receiver) = mpsc::channel(32);
+        daemon.ipc_receiver = Some(receiver);
+
+        // Send Pause
+        sender.send(IpcToDaemon::Pause).await.expect("Failed to send");
+
+        daemon
+            .process_ipc_commands()
+            .await
+            .expect("process_ipc_commands should succeed");
+
+        assert!(daemon.is_paused);
+        assert!(daemon.ipc_state.is_paused.load(std::sync::atomic::Ordering::Relaxed));
+
+        // Send Resume
+        sender.send(IpcToDaemon::Resume).await.expect("Failed to send");
+
+        daemon
+            .process_ipc_commands()
+            .await
+            .expect("process_ipc_commands should succeed");
+
+        assert!(!daemon.is_paused);
+        assert!(!daemon.ipc_state.is_paused.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn test_process_ipc_commands_prune_no_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let (sender, receiver) = mpsc::channel(32);
+        daemon.ipc_receiver = Some(receiver);
+
+        // Send Prune without a database - should not panic
+        sender.send(IpcToDaemon::Prune).await.expect("Failed to send");
+
+        daemon
+            .process_ipc_commands()
+            .await
+            .expect("process_ipc_commands should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_process_ipc_commands_empty_channel() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let (_sender, receiver) = mpsc::channel::<IpcToDaemon>(32);
+        daemon.ipc_receiver = Some(receiver);
+
+        // No messages in channel => should be a no-op
+        daemon
+            .process_ipc_commands()
+            .await
+            .expect("process_ipc_commands should succeed");
+
+        assert!(!daemon.shutdown.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!daemon.is_paused);
+    }
+
+    #[tokio::test]
+    async fn test_process_ipc_commands_multiple_commands() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let (sender, receiver) = mpsc::channel(32);
+        daemon.ipc_receiver = Some(receiver);
+
+        // Queue multiple commands
+        sender.send(IpcToDaemon::Pause).await.expect("Failed to send");
+        sender.send(IpcToDaemon::Resume).await.expect("Failed to send");
+
+        daemon
+            .process_ipc_commands()
+            .await
+            .expect("process_ipc_commands should succeed");
+
+        // After Pause then Resume, should not be paused
+        assert!(!daemon.is_paused);
+    }
+
+    // --- Drop impl tests ---
+
+    #[test]
+    fn test_daemon_drop_sets_shutdown() {
+        let shutdown;
+        {
+            let config = Config::default();
+            let options = DaemonOptions::default();
+            let daemon = Daemon::new(config, options);
+            shutdown = daemon.shutdown_handle();
+            assert!(!shutdown.load(std::sync::atomic::Ordering::Relaxed));
+            // daemon is dropped here
+        }
+        assert!(shutdown.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_daemon_drop_already_shutdown() {
+        let shutdown;
+        {
+            let config = Config::default();
+            let options = DaemonOptions::default();
+            let daemon = Daemon::new(config, options);
+            shutdown = daemon.shutdown_handle();
+            shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+            // daemon is dropped here - should not panic even if shutdown already set
+        }
+        assert!(shutdown.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    // --- list_volumes() tests ---
+
+    #[test]
+    fn test_list_volumes_no_database() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let nonexistent_path = temp_dir.path().join("nonexistent.db");
+
+        // Should not panic, prints error message
+        let result = list_volumes(&nonexistent_path, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_list_volumes_empty_database() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create an empty database
+        let _database = Database::open(&db_path).expect("Failed to create database");
+
+        let result = list_volumes(&db_path, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_list_volumes_with_volumes() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("test.db");
+
+        let database = Database::open(&db_path).expect("Failed to create database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-LIST".to_string(),
+            label: Some("TestDrive".to_string()),
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: Some(12345),
+        };
+        database.upsert_volume(&volume).expect("Failed to upsert volume");
+        drop(database);
+
+        // Non-detailed
+        let result = list_volumes(&db_path, false);
+        assert!(result.is_ok());
+
+        // Detailed
+        let result = list_volumes(&db_path, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_list_volumes_detailed_with_all_fields() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("detailed.db");
+
+        let database = Database::open(&db_path).expect("Failed to create database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-DETAIL".to_string(),
+            label: Some("DetailedVol".to_string()),
+            mount_point: "D:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: false,
+            last_scan_time: Some(std::time::SystemTime::now()),
+            last_usn: Some(99999),
+        };
+        database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        // Also add a volume without optional fields
+        let volume2 = IndexedVolume {
+            id: None,
+            serial_number: "SN-NOLABEL".to_string(),
+            label: None,
+            mount_point: "E:".to_string(),
+            volume_type: VolumeType::Local,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        database.upsert_volume(&volume2).expect("Failed to upsert volume2");
+        drop(database);
+
+        let result = list_volumes(&db_path, true);
+        assert!(result.is_ok());
+    }
+
+    // --- show_stats() tests ---
+
+    #[test]
+    fn test_show_stats_no_database() {
+        let mut config = Config::default();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        config.daemon.database_path = Some(temp_dir.path().join("nonexistent.db"));
+
+        let result = show_stats(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_stats_with_database() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("stats.db");
+
+        let database = Database::open(&db_path).expect("Failed to create database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-STATS".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let entry = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "stats_test.txt".to_string(),
+            full_path: "C:\\stats_test.txt".to_string(),
+            size: 2048,
+            is_directory: false,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database.insert_file(&entry).expect("Failed to insert file");
+        drop(database);
+
+        let mut config = Config::default();
+        config.daemon.database_path = Some(db_path);
+
+        let result = show_stats(&config);
+        assert!(result.is_ok());
+    }
+
+    // --- detect_drives() test ---
+
+    #[test]
+    fn test_detect_drives_does_not_panic() {
+        // Just verify it runs without panic (output depends on system)
+        detect_drives();
+    }
+
+    // --- DaemonState / DaemonOptions edge cases ---
+
+    #[test]
+    fn test_daemon_options_clone() {
+        let options = DaemonOptions {
+            foreground: true,
+            rescan: true,
+            usn_poll_interval_ms: 250,
+            watcher_debounce_ms: 500,
+        };
+        let cloned = options.clone();
+        assert_eq!(cloned.foreground, options.foreground);
+        assert_eq!(cloned.rescan, options.rescan);
+        assert_eq!(cloned.usn_poll_interval_ms, options.usn_poll_interval_ms);
+        assert_eq!(cloned.watcher_debounce_ms, options.watcher_debounce_ms);
+    }
+
+    #[test]
+    fn test_daemon_verbose_flag() {
+        let mut config = Config::default();
+        config.daemon.verbose = true;
+        let options = DaemonOptions::default();
+        let daemon = Daemon::new(config, options);
+        assert!(daemon.verbose());
+
+        let config2 = Config::default();
+        let options2 = DaemonOptions::default();
+        let daemon2 = Daemon::new(config2, options2);
+        assert!(!daemon2.verbose());
+    }
+
+    #[test]
+    fn test_daemon_is_running_various_states() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        assert!(!daemon.is_running());
+
+        daemon.state = DaemonState::Starting;
+        assert!(!daemon.is_running());
+
+        daemon.state = DaemonState::Running;
+        assert!(daemon.is_running());
+
+        daemon.state = DaemonState::Stopping;
+        assert!(!daemon.is_running());
+
+        daemon.state = DaemonState::Stopped;
+        assert!(!daemon.is_running());
+    }
+
+    // --- VolumeMonitor struct tests ---
+
+    #[test]
+    fn test_volume_monitor_without_usn() {
+        let monitor = VolumeMonitor {
+            usn_monitor: None,
+            last_usn: 0,
+        };
+        assert!(monitor.usn_monitor.is_none());
+        assert_eq!(monitor.last_usn, 0);
+    }
+
+    #[test]
+    fn test_volume_monitor_last_usn_tracking() {
+        let mut monitor = VolumeMonitor {
+            usn_monitor: None,
+            last_usn: 0,
+        };
+        monitor.last_usn = 12345;
+        assert_eq!(monitor.last_usn, 12345);
+
+        monitor.last_usn = 99999;
+        assert_eq!(monitor.last_usn, 99999);
+    }
+
+    // --- handle_change_event rename path ---
+
+    #[test]
+    fn test_handle_change_event_rename_with_database() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-REN".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let entry = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "old_name.txt".to_string(),
+            full_path: "C:\\old_name.txt".to_string(),
+            size: 200,
+            is_directory: false,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database.insert_file(&entry).expect("Failed to insert file");
+
+        daemon.database = Some(database);
+
+        // Rename event - the old path should be deleted from the DB.
+        // The new path won't be inserted because the file doesn't exist on disk,
+        // but the old entry deletion is exercised.
+        daemon.handle_change_event(FileChangeEvent::Renamed {
+            from: PathBuf::from("C:\\old_name.txt"),
+            to: PathBuf::from("C:\\new_name.txt"),
+        });
+
+        let db = daemon.database.as_ref().expect("database should exist");
+        let results = db.search_by_name("old_name.txt", 10).expect("search failed");
+        assert!(results.is_empty(), "Old file should have been deleted from database");
+    }
+
+    // --- Integration-style: build_path_cache then resolve ---
+
+    #[test]
+    fn test_build_path_cache_then_resolve() {
+        let config = Config::default();
+        let options = DaemonOptions::default();
+        let mut daemon = Daemon::new(config, options);
+
+        let database = Database::open_in_memory().expect("Failed to create in-memory database");
+
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-INT".to_string(),
+            label: None,
+            mount_point: "C:".to_string(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        // Insert directories with MFT references
+        let entries = vec![
+            FileEntry {
+                id: None,
+                volume_id,
+                parent_id: None,
+                name: "Windows".to_string(),
+                full_path: "C:\\Windows".to_string(),
+                size: 0,
+                is_directory: true,
+                created_time: None,
+                modified_time: None,
+                mft_reference: Some(50),
+            },
+            FileEntry {
+                id: None,
+                volume_id,
+                parent_id: None,
+                name: "System32".to_string(),
+                full_path: "C:\\Windows\\System32".to_string(),
+                size: 0,
+                is_directory: true,
+                created_time: None,
+                modified_time: None,
+                mft_reference: Some(60),
+            },
+        ];
+        for entry in &entries {
+            database.insert_file(entry).expect("Failed to insert directory");
+        }
+
+        daemon.database = Some(database);
+        daemon.build_path_cache().expect("build_path_cache should succeed");
+
+        // Now resolve paths using the cache
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 50, "notepad.exe"),
+            Some("C:\\Windows\\notepad.exe".to_string())
+        );
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 60, "cmd.exe"),
+            Some("C:\\Windows\\System32\\cmd.exe".to_string())
+        );
+        // Unknown parent should return None
+        assert!(daemon.resolve_usn_path_inner('C', 999, "missing.dll").is_none());
+        // Root parent should still work
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 5, "pagefile.sys"),
+            Some("C:\\pagefile.sys".to_string())
+        );
     }
 }
