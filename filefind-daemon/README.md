@@ -220,12 +220,17 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName "filefind daemon" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
 ```
 
+The `-f` (foreground) flag is important here: it tells the daemon to run directly in the
+calling process rather than spawning a detached child. Since the task scheduler already
+manages the process lifecycle, this ensures proper logging and clean shutdown behavior.
+
 The daemon can still be stopped anytime using `filefindd stop` or the tray application.
 
 ### Logging
 
-In foreground mode, logs are written to stdout.
-In background mode, logs are written to rolling files in `~/logs/filefind/` with daily rotation.
+In interactive foreground mode (terminal attached), logs are written to stdout.
+When no terminal is detected (background mode, scheduled tasks, detached processes),
+logs are written to rolling files in `~/logs/filefind/` with daily rotation.
 
 ## Configuration
 

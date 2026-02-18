@@ -10,6 +10,7 @@ mod scanner;
 mod usn;
 mod watcher;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -164,16 +165,20 @@ fn main() -> Result<()> {
 
 /// Initialize logging based on log level and foreground mode.
 ///
-/// In foreground mode, logs go to stdout.
-/// In background mode, logs go to a file in ~/logs/filefind/.
+/// In foreground mode with a terminal attached, logs go to stdout.
+/// In background mode, or when stdout is not a terminal (e.g. spawned as a
+/// detached process by `spawn_background_daemon` or a scheduled task), logs go
+/// to rolling files in `~/logs/filefind/`.
 fn init_logging(log_level: LogLevel, foreground: bool) -> Result<()> {
     let filter = EnvFilter::new(log_level.as_filter_str());
 
-    if foreground {
-        // Foreground mode: log to stdout
+    let use_stdout = foreground && std::io::stdout().is_terminal();
+
+    if use_stdout {
+        // Interactive foreground mode: log to stdout
         tracing_subscriber::fmt().with_env_filter(filter).init();
     } else {
-        // Background mode: log to file
+        // Background or detached mode: log to file
         let log_dir = get_log_directory()?;
         std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
