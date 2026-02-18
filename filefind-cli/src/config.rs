@@ -556,4 +556,47 @@ mod tests {
         assert!(config.match_all);
         assert!(config.regex);
     }
+
+    // ── From<OutputFormatArg> for OutputFormat ────────────────────
+
+    #[test]
+    fn test_output_format_from_arg_list() {
+        let format: OutputFormat = OutputFormatArg::List.into();
+        assert_eq!(format, OutputFormat::List);
+    }
+
+    #[test]
+    fn test_output_format_from_arg_name() {
+        let format: OutputFormat = OutputFormatArg::Name.into();
+        assert_eq!(format, OutputFormat::Name);
+    }
+
+    #[test]
+    fn test_output_format_from_arg_grouped() {
+        let format: OutputFormat = OutputFormatArg::Grouped.into();
+        assert_eq!(format, OutputFormat::Grouped);
+    }
+
+    #[test]
+    fn test_output_format_from_arg_info() {
+        let format: OutputFormat = OutputFormatArg::Info.into();
+        assert_eq!(format, OutputFormat::Info);
+    }
+
+    #[test]
+    fn test_output_format_from_arg_all_variants() {
+        let cases: Vec<(OutputFormatArg, OutputFormat)> = vec![
+            (OutputFormatArg::List, OutputFormat::List),
+            (OutputFormatArg::Name, OutputFormat::Name),
+            (OutputFormatArg::Grouped, OutputFormat::Grouped),
+            (OutputFormatArg::Info, OutputFormat::Info),
+        ];
+        for (arg, expected) in cases {
+            let result: OutputFormat = arg.into();
+            assert_eq!(
+                result, expected,
+                "OutputFormatArg::{arg:?} should convert to OutputFormat::{expected:?}"
+            );
+        }
+    }
 }

@@ -1283,28 +1283,28 @@ mod tests {
         let drive2 = extract_drive_letter(temp2.path());
 
         // This test is only meaningful if both temps are on the same drive
-        if drive1 == drive2 {
-            if let Some(letter) = drive1 {
-                let path1 = temp1.path().to_string_lossy().to_string();
-                let path2 = temp2.path().to_string_lossy().to_string();
+        if drive1 == drive2
+            && let Some(letter) = drive1
+        {
+            let path1 = temp1.path().to_string_lossy().to_string();
+            let path2 = temp2.path().to_string_lossy().to_string();
 
-                let categorized = categorize_paths(vec![path1.clone(), path2.clone()]);
+            let categorized = categorize_paths(vec![path1.clone(), path2.clone()]);
 
-                // Two dirs on the same drive should be grouped into one entry
-                assert_eq!(
-                    categorized.local_paths_by_drive.len(),
-                    1,
-                    "Two dirs on the same drive should produce one drive group"
-                );
-                let paths = categorized
-                    .local_paths_by_drive
-                    .get(&letter)
-                    .expect("Should have an entry for the drive letter");
-                assert_eq!(paths.len(), 2, "Both paths should be stored under the drive");
-                assert!(paths.contains(&path1), "First path should be in the group");
-                assert!(paths.contains(&path2), "Second path should be in the group");
-                assert_eq!(categorized.task_count(), 1, "Grouped paths count as 1 task");
-            }
+            // Two dirs on the same drive should be grouped into one entry
+            assert_eq!(
+                categorized.local_paths_by_drive.len(),
+                1,
+                "Two dirs on the same drive should produce one drive group"
+            );
+            let paths = categorized
+                .local_paths_by_drive
+                .get(&letter)
+                .expect("Should have an entry for the drive letter");
+            assert_eq!(paths.len(), 2, "Both paths should be stored under the drive");
+            assert!(paths.contains(&path1), "First path should be in the group");
+            assert!(paths.contains(&path2), "Second path should be in the group");
+            assert_eq!(categorized.task_count(), 1, "Grouped paths count as 1 task");
         }
     }
 
@@ -1514,7 +1514,7 @@ mod tests {
         let temp = tempdir().expect("Failed to create temp directory");
         let temp_path = temp.path().to_string_lossy().to_string();
         let mut config = Config::default();
-        config.daemon.paths = vec![temp_path.clone()];
+        config.daemon.paths = vec![temp_path];
         let result = collect_paths_to_scan(&config);
         let categorized = result.expect("Accessible path should return Some(CategorizedPaths)");
         assert_eq!(

@@ -149,7 +149,6 @@ impl FileWatcher {
     ///
     /// Events for the same path within `debounce_ms` milliseconds are coalesced
     /// to avoid processing rapid duplicate events.
-    #[allow(clippy::too_many_lines)]
     pub fn start(self) -> Result<(mpsc::Receiver<FileChangeEvent>, Arc<AtomicBool>)> {
         let (event_tx, event_rx) = mpsc::channel(1000);
         let shutdown = self.shutdown.clone();
@@ -181,26 +180,7 @@ impl FileWatcher {
         .context("Failed to create file watcher")?;
 
         // Add paths to watch
-        let mode = if recursive {
-            RecursiveMode::Recursive
-        } else {
-            RecursiveMode::NonRecursive
-        };
-
-        for path in &watched_paths {
-            if path.exists() {
-                match watcher.watch(path, mode) {
-                    Ok(()) => {
-                        info!("Watching path: {}", path.display());
-                    }
-                    Err(error) => {
-                        warn!("Failed to watch path {}: {}", path.display(), error);
-                    }
-                }
-            } else {
-                warn!("Path does not exist, skipping: {}", path.display());
-            }
-        }
+        Self::watch_configured_paths(&mut watcher, &watched_paths, recursive);
 
         // Spawn async task to process events with debouncing
         let process_shutdown = shutdown.clone();
@@ -211,88 +191,23 @@ impl FileWatcher {
 
             info!("File watcher started (debounce: {}ms)", debounce_ms);
 
-            // Track pending events with their timestamps for debouncing
-            // Key: path, Value: (event_kind, first_seen_time)
             let mut pending_events: HashMap<PathBuf, (FileChangeEvent, std::time::Instant)> = HashMap::new();
             let mut last_flush = std::time::Instant::now();
 
             while !process_shutdown.load(Ordering::Relaxed) {
-                // Wait for events with a timeout proportional to debounce duration
-                // Use half the debounce time (clamped) for responsive flushing
                 let poll_interval = Duration::from_millis((debounce_ms / 2).clamp(50, 1000));
                 match tokio::time::timeout(poll_interval, notify_rx.recv()).await {
                     Ok(Some(event)) => {
-                        let now = std::time::Instant::now();
-
-                        // Convert and filter events
-                        for path in event.paths {
-                            if exclude_patterns.iter().any(|p| {
-                                let path_str = path.to_string_lossy();
-                                path_str.contains(p.as_str())
-                            }) {
-                                continue;
-                            }
-
-                            let change = match event.kind {
-                                EventKind::Create(_) => Some(FileChangeEvent::Created(path.clone())),
-                                EventKind::Modify(_) => Some(FileChangeEvent::Modified(path.clone())),
-                                EventKind::Remove(_) => Some(FileChangeEvent::Deleted(path.clone())),
-                                _ => None,
-                            };
-
-                            if let Some(change) = change {
-                                // Update or insert the pending event
-                                // If an event already exists for this path, keep the original timestamp
-                                // but update to the latest event type (e.g., Create -> Modify -> Delete)
-                                pending_events
-                                    .entry(path)
-                                    .and_modify(|(existing_change, _timestamp)| {
-                                        // Keep Created if file was created then modified
-                                        // (a new file being modified is still "created")
-                                        // Otherwise, update to the latest event type
-                                        if !matches!(
-                                            (&existing_change, &change),
-                                            (FileChangeEvent::Created(_), FileChangeEvent::Modified(_))
-                                        ) {
-                                            *existing_change = change.clone();
-                                        }
-                                    })
-                                    .or_insert((change, now));
-                            }
-                        }
+                        Self::ingest_notify_event(event, &exclude_patterns, &mut pending_events);
                     }
-                    Ok(None) => {
-                        // Channel closed
-                        break;
-                    }
-                    Err(_) => {
-                        // Timeout - check for events to flush
-                    }
+                    Ok(None) => break,
+                    Err(_) => { /* Timeout – check for events to flush */ }
                 }
 
-                // Flush events that have been pending longer than debounce_duration
-                let now = std::time::Instant::now();
-                if now.duration_since(last_flush) >= debounce_duration {
-                    let mut to_send = Vec::new();
-
-                    pending_events.retain(|_path, (change, timestamp)| {
-                        if now.duration_since(*timestamp) >= debounce_duration {
-                            to_send.push(change.clone());
-                            false // Remove from pending
-                        } else {
-                            true // Keep in pending
-                        }
-                    });
-
-                    for change in to_send {
-                        debug!("File change detected (debounced): {}", change);
-                        if event_tx.send(change).await.is_err() {
-                            // Receiver dropped
-                            break;
-                        }
-                    }
-
-                    last_flush = now;
+                if Self::flush_pending_events(&mut pending_events, &mut last_flush, debounce_duration, &event_tx).await
+                    == Err(())
+                {
+                    break;
                 }
             }
 
@@ -305,6 +220,107 @@ impl FileWatcher {
         });
 
         Ok((event_rx, shutdown))
+    }
+
+    /// Register each configured path with the underlying `notify` watcher.
+    fn watch_configured_paths(watcher: &mut RecommendedWatcher, paths: &[PathBuf], recursive: bool) {
+        let mode = if recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
+
+        for path in paths {
+            if path.exists() {
+                match watcher.watch(path, mode) {
+                    Ok(()) => info!("Watching path: {}", path.display()),
+                    Err(error) => warn!("Failed to watch path {}: {}", path.display(), error),
+                }
+            } else {
+                warn!("Path does not exist, skipping: {}", path.display());
+            }
+        }
+    }
+
+    /// Convert a [`notify::EventKind`] into a [`FileChangeEvent`] for the given path.
+    fn convert_notify_event(kind: EventKind, path: PathBuf) -> Option<FileChangeEvent> {
+        match kind {
+            EventKind::Create(_) => Some(FileChangeEvent::Created(path)),
+            EventKind::Modify(_) => Some(FileChangeEvent::Modified(path)),
+            EventKind::Remove(_) => Some(FileChangeEvent::Deleted(path)),
+            _ => None,
+        }
+    }
+
+    /// Filter, convert, and merge a single [`notify::Event`] into the pending-events map.
+    fn ingest_notify_event(
+        event: Event,
+        exclude_patterns: &[String],
+        pending_events: &mut HashMap<PathBuf, (FileChangeEvent, std::time::Instant)>,
+    ) {
+        let now = std::time::Instant::now();
+
+        for path in event.paths {
+            if exclude_patterns.iter().any(|p| {
+                let path_str = path.to_string_lossy();
+                path_str.contains(p.as_str())
+            }) {
+                continue;
+            }
+
+            if let Some(change) = Self::convert_notify_event(event.kind, path.clone()) {
+                pending_events
+                    .entry(path)
+                    .and_modify(|(existing_change, _timestamp)| {
+                        // Keep Created if file was created then modified
+                        // (a new file being modified is still "created")
+                        // Otherwise, update to the latest event type
+                        if !matches!(
+                            (&existing_change, &change),
+                            (FileChangeEvent::Created(_), FileChangeEvent::Modified(_))
+                        ) {
+                            *existing_change = change.clone();
+                        }
+                    })
+                    .or_insert((change, now));
+            }
+        }
+    }
+
+    /// Send debounced events that have aged past `debounce_duration`.
+    ///
+    /// Returns `Err(())` when the receiver has been dropped and the caller
+    /// should stop the event loop.
+    async fn flush_pending_events(
+        pending_events: &mut HashMap<PathBuf, (FileChangeEvent, std::time::Instant)>,
+        last_flush: &mut std::time::Instant,
+        debounce_duration: Duration,
+        event_tx: &mpsc::Sender<FileChangeEvent>,
+    ) -> std::result::Result<(), ()> {
+        let now = std::time::Instant::now();
+        if now.duration_since(*last_flush) < debounce_duration {
+            return Ok(());
+        }
+
+        let mut to_send = Vec::new();
+        pending_events.retain(|_path, (change, timestamp)| {
+            if now.duration_since(*timestamp) >= debounce_duration {
+                to_send.push(change.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        for change in to_send {
+            debug!("File change detected (debounced): {}", change);
+            if event_tx.send(change).await.is_err() {
+                return Err(());
+            }
+        }
+
+        *last_flush = now;
+        Ok(())
     }
 
     /// Stop the file watcher.

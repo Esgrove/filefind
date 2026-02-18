@@ -426,4 +426,91 @@ mod tests {
         assert!(tooltip.contains("Scanning"));
         assert!(tooltip.contains("5,000"));
     }
+
+    // ── format_status_menu_text ───────────────────────────────────
+
+    #[test]
+    fn test_format_status_menu_text_stopped() {
+        let status = DaemonStatus::default();
+        let text = format_status_menu_text(&status);
+        assert_eq!(text, "Status: Stopped");
+    }
+
+    #[test]
+    fn test_format_status_menu_text_running() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Running,
+            indexed_files: 42_000,
+            ..Default::default()
+        };
+        let text = format_status_menu_text(&status);
+        assert!(text.starts_with("Status: Running"));
+        assert!(text.contains("42,000"), "Should contain formatted file count");
+    }
+
+    #[test]
+    fn test_format_status_menu_text_scanning() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Scanning,
+            indexed_files: 1_234_567,
+            ..Default::default()
+        };
+        let text = format_status_menu_text(&status);
+        assert!(text.starts_with("Status: Scanning"));
+        assert!(text.contains("1,234,567"), "Should contain formatted file count");
+    }
+
+    #[test]
+    fn test_format_status_menu_text_starting() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Starting,
+            ..Default::default()
+        };
+        let text = format_status_menu_text(&status);
+        assert_eq!(text, "Status: Starting...");
+    }
+
+    #[test]
+    fn test_format_status_menu_text_stopping() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Stopping,
+            ..Default::default()
+        };
+        let text = format_status_menu_text(&status);
+        assert_eq!(text, "Status: Stopping...");
+    }
+
+    #[test]
+    fn test_format_status_menu_text_running_zero_files() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Running,
+            indexed_files: 0,
+            ..Default::default()
+        };
+        let text = format_status_menu_text(&status);
+        assert!(text.starts_with("Status: Running"));
+        assert!(text.contains("0 files"));
+    }
+
+    // ── format_status_tooltip additional ──────────────────────────
+
+    #[test]
+    fn test_format_status_tooltip_starting() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Starting,
+            ..Default::default()
+        };
+        let tooltip = format_status_tooltip(&status);
+        assert_eq!(tooltip, "Filefind - Starting...");
+    }
+
+    #[test]
+    fn test_format_status_tooltip_stopping() {
+        let status = DaemonStatus {
+            state: DaemonStateInfo::Stopping,
+            ..Default::default()
+        };
+        let tooltip = format_status_tooltip(&status);
+        assert_eq!(tooltip, "Filefind - Stopping...");
+    }
 }

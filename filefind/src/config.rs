@@ -689,4 +689,201 @@ paths = ["\\\\server\\share", "Z:\\", "C:\\Local"]
         assert!(config.daemon.paths.contains(&"Z:\\".to_string()));
         assert!(config.daemon.paths.contains(&"C:\\Local".to_string()));
     }
+
+    // ── LogLevel::as_filter_str ───────────────────────────────────
+
+    #[test]
+    fn test_log_level_as_filter_str() {
+        assert_eq!(LogLevel::Error.as_filter_str(), "error");
+        assert_eq!(LogLevel::Warn.as_filter_str(), "warn");
+        assert_eq!(LogLevel::Info.as_filter_str(), "info");
+        assert_eq!(LogLevel::Debug.as_filter_str(), "debug");
+        assert_eq!(LogLevel::Trace.as_filter_str(), "trace");
+    }
+
+    // ── LogLevel::to_level_filter ─────────────────────────────────
+
+    #[test]
+    fn test_log_level_to_level_filter() {
+        assert_eq!(LogLevel::Error.to_level_filter(), LevelFilter::ERROR);
+        assert_eq!(LogLevel::Warn.to_level_filter(), LevelFilter::WARN);
+        assert_eq!(LogLevel::Info.to_level_filter(), LevelFilter::INFO);
+        assert_eq!(LogLevel::Debug.to_level_filter(), LevelFilter::DEBUG);
+        assert_eq!(LogLevel::Trace.to_level_filter(), LevelFilter::TRACE);
+    }
+
+    // ── From<LogLevel> for LevelFilter ────────────────────────────
+
+    #[test]
+    fn test_log_level_into_level_filter() {
+        let filter: LevelFilter = LogLevel::Error.into();
+        assert_eq!(filter, LevelFilter::ERROR);
+
+        let filter: LevelFilter = LogLevel::Warn.into();
+        assert_eq!(filter, LevelFilter::WARN);
+
+        let filter: LevelFilter = LogLevel::Info.into();
+        assert_eq!(filter, LevelFilter::INFO);
+
+        let filter: LevelFilter = LogLevel::Debug.into();
+        assert_eq!(filter, LevelFilter::DEBUG);
+
+        let filter: LevelFilter = LogLevel::Trace.into();
+        assert_eq!(filter, LevelFilter::TRACE);
+    }
+
+    // ── Display for LogLevel ──────────────────────────────────────
+
+    #[test]
+    fn test_log_level_display() {
+        assert_eq!(LogLevel::Error.to_string(), "error");
+        assert_eq!(LogLevel::Warn.to_string(), "warn");
+        assert_eq!(LogLevel::Info.to_string(), "info");
+        assert_eq!(LogLevel::Debug.to_string(), "debug");
+        assert_eq!(LogLevel::Trace.to_string(), "trace");
+    }
+
+    // ── FromStr for LogLevel ──────────────────────────────────────
+
+    #[test]
+    fn test_log_level_from_str_valid() {
+        assert_eq!("error".parse::<LogLevel>().expect("parse error"), LogLevel::Error);
+        assert_eq!("warn".parse::<LogLevel>().expect("parse warn"), LogLevel::Warn);
+        assert_eq!("warning".parse::<LogLevel>().expect("parse warning"), LogLevel::Warn);
+        assert_eq!("info".parse::<LogLevel>().expect("parse info"), LogLevel::Info);
+        assert_eq!("debug".parse::<LogLevel>().expect("parse debug"), LogLevel::Debug);
+        assert_eq!("trace".parse::<LogLevel>().expect("parse trace"), LogLevel::Trace);
+    }
+
+    #[test]
+    fn test_log_level_from_str_case_insensitive() {
+        assert_eq!("ERROR".parse::<LogLevel>().expect("parse ERROR"), LogLevel::Error);
+        assert_eq!("Warn".parse::<LogLevel>().expect("parse Warn"), LogLevel::Warn);
+        assert_eq!("WARNING".parse::<LogLevel>().expect("parse WARNING"), LogLevel::Warn);
+        assert_eq!("Info".parse::<LogLevel>().expect("parse Info"), LogLevel::Info);
+        assert_eq!("DEBUG".parse::<LogLevel>().expect("parse DEBUG"), LogLevel::Debug);
+        assert_eq!("TRACE".parse::<LogLevel>().expect("parse TRACE"), LogLevel::Trace);
+    }
+
+    #[test]
+    fn test_log_level_from_str_invalid() {
+        let result = "verbose".parse::<LogLevel>();
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("Unknown log level"),
+            "Error should mention 'Unknown log level', got: {error}"
+        );
+        assert!(error.contains("verbose"), "Error should contain the invalid input");
+    }
+
+    #[test]
+    fn test_log_level_from_str_empty() {
+        assert!("".parse::<LogLevel>().is_err());
+    }
+
+    // ── Display for PathMapping ───────────────────────────────────
+
+    #[test]
+    fn test_path_mapping_display() {
+        let mapping = PathMapping {
+            unc: "\\\\server\\share".to_string(),
+            drive: "Z".to_string(),
+        };
+        assert_eq!(mapping.to_string(), "\\\\server\\share -> Z");
+    }
+
+    #[test]
+    fn test_path_mapping_display_long_paths() {
+        let mapping = PathMapping {
+            unc: "\\\\192.168.1.100\\data\\projects".to_string(),
+            drive: "X".to_string(),
+        };
+        assert_eq!(mapping.to_string(), "\\\\192.168.1.100\\data\\projects -> X");
+    }
+
+    // ── Deserialize for PathMapping ───────────────────────────────
+
+    #[test]
+    fn test_path_mapping_deserialize_from_toml() {
+        let toml_content = r#"
+[daemon]
+path_mappings = [
+    ["\\\\server\\share", "Z"],
+    ["\\\\nas\\backup", "Y"],
+]
+"#;
+        let config: UserConfig = toml::from_str(toml_content).expect("Failed to parse TOML");
+        assert_eq!(config.daemon.path_mappings.len(), 2);
+
+        assert_eq!(config.daemon.path_mappings[0].unc, "\\\\server\\share");
+        assert_eq!(config.daemon.path_mappings[0].drive, "Z");
+
+        assert_eq!(config.daemon.path_mappings[1].unc, "\\\\nas\\backup");
+        assert_eq!(config.daemon.path_mappings[1].drive, "Y");
+    }
+
+    #[test]
+    fn test_path_mapping_deserialize_empty_list() {
+        let toml_content = r"
+[daemon]
+path_mappings = []
+";
+        let config: UserConfig = toml::from_str(toml_content).expect("Failed to parse TOML");
+        assert!(config.daemon.path_mappings.is_empty());
+    }
+
+    #[test]
+    fn test_path_mapping_deserialize_single_entry() {
+        let toml_content = r#"
+[daemon]
+path_mappings = [["\\\\mynas\\home", "X"]]
+"#;
+        let config: UserConfig = toml::from_str(toml_content).expect("Failed to parse TOML");
+        assert_eq!(config.daemon.path_mappings.len(), 1);
+        assert_eq!(config.daemon.path_mappings[0].unc, "\\\\mynas\\home");
+        assert_eq!(config.daemon.path_mappings[0].drive, "X");
+    }
+
+    // ── LogLevel roundtrip ────────────────────────────────────────
+
+    #[test]
+    fn test_log_level_display_from_str_roundtrip() {
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            let display = level.to_string();
+            let parsed: LogLevel = display.parse().expect("roundtrip parse failed");
+            assert_eq!(parsed, level, "Roundtrip failed for {level:?}");
+        }
+    }
+
+    // ── LogLevel in TOML config ───────────────────────────────────
+
+    #[test]
+    fn test_log_level_all_variants_in_config() {
+        for (level_str, expected) in [
+            ("error", LogLevel::Error),
+            ("warn", LogLevel::Warn),
+            ("info", LogLevel::Info),
+            ("debug", LogLevel::Debug),
+            ("trace", LogLevel::Trace),
+        ] {
+            let toml_content = format!(
+                r#"
+[daemon]
+log_level = "{level_str}"
+"#
+            );
+            let config: UserConfig = toml::from_str(&toml_content).expect("Failed to parse TOML");
+            assert_eq!(
+                config.daemon.log_level, expected,
+                "Config log_level '{level_str}' should parse to {expected:?}"
+            );
+        }
+    }
 }

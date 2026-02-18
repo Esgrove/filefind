@@ -1541,4 +1541,77 @@ mod tests {
         assert_eq!(result.files_to_move.len(), 2);
         assert!(result.skipped_files.is_empty());
     }
+
+    // --- get_available_space tests ---
+
+    #[test]
+    fn test_get_available_space_temp_dir() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let available = get_available_space(temp_dir.path()).expect("failed to get available space");
+        // Any real filesystem should report some available space
+        assert!(available > 0, "Available space should be greater than 0");
+    }
+
+    #[test]
+    fn test_get_available_space_root_drive() {
+        // The current directory's drive root should always be accessible
+        let current_dir = std::env::current_dir().expect("failed to get current dir");
+        let available = get_available_space(&current_dir).expect("failed to get available space");
+        assert!(
+            available > 0,
+            "Available space on current drive should be greater than 0"
+        );
+    }
+
+    // --- check_disk_space tests ---
+
+    #[test]
+    fn test_check_disk_space_sufficient() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        // Requesting 1 byte should always succeed on a real filesystem
+        let result = check_disk_space(temp_dir.path(), 1);
+        assert!(result.is_ok(), "1 byte should fit on any filesystem");
+    }
+
+    #[test]
+    fn test_check_disk_space_zero_bytes() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let result = check_disk_space(temp_dir.path(), 0);
+        assert!(result.is_ok(), "0 bytes required should always succeed");
+    }
+
+    #[test]
+    fn test_check_disk_space_insufficient() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        // Request an absurdly large amount that no disk could have
+        let result = check_disk_space(temp_dir.path(), u64::MAX);
+        assert!(result.is_err(), "u64::MAX bytes should exceed any disk");
+
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("Not enough disk space"),
+            "Error should mention insufficient disk space, got: {error_message}"
+        );
+        assert!(error_message.contains("Required"), "Error should show required space");
+        assert!(error_message.contains("Available"), "Error should show available space");
+        assert!(error_message.contains("Shortfall"), "Error should show shortfall");
+    }
+
+    #[test]
+    fn test_check_disk_space_exactly_available() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let available = get_available_space(temp_dir.path()).expect("failed to get available space");
+        // Requesting exactly what's available should succeed
+        let result = check_disk_space(temp_dir.path(), available);
+        assert!(result.is_ok(), "Requesting exactly the available space should succeed");
+    }
+
+    #[test]
+    fn test_check_disk_space_one_over_available() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let available = get_available_space(temp_dir.path()).expect("failed to get available space");
+        // Requesting one byte more than available should fail
+        let result = check_disk_space(temp_dir.path(), available + 1);
+        assert!(result.is_err(), "Requesting one byte more than available should fail");
+    }
 }

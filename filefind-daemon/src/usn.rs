@@ -1690,7 +1690,7 @@ mod tests {
     fn test_parse_usn_buffer_truncated_last_record() {
         // A record whose RecordLength would extend past bytes_returned
         let record = build_aligned_v2_record(100, 5, 1000, reason_flags::USN_REASON_FILE_CREATE, 0x20, "complete.txt");
-        let buffer = build_usn_journal_buffer(2000, &[record.clone()]);
+        let buffer = build_usn_journal_buffer(2000, std::slice::from_ref(&record));
 
         // Lie about bytes_returned — cut the last record short
         let truncated_len = 8 + record.len() - 4;

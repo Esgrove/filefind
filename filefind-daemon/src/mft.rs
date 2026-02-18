@@ -1688,7 +1688,7 @@ mod tests {
     #[test]
     fn test_parse_mft_buffer_truncated_last_record() {
         let record = build_aligned_v2_record(100, 5, 0x20, "complete.txt");
-        let buffer = build_mft_enum_buffer(200, &[record.clone()]);
+        let buffer = build_mft_enum_buffer(200, std::slice::from_ref(&record));
 
         // Lie about bytes_returned — cut the record short
         let truncated_len = 8 + record.len() - 4;

@@ -761,7 +761,7 @@ mod tests {
         database
     }
 
-    /// Helper to build a minimal CliConfig for testing searches.
+    /// Helper to build a minimal `CliConfig` for testing searches.
     fn search_config(patterns: Vec<&str>) -> CliConfig {
         CliConfig {
             command: None,
@@ -962,7 +962,11 @@ mod tests {
         config.regex = false;
         let results = search_any_pattern(&config, &database).expect("Search failed");
         assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|e| e.name.ends_with(".json")));
+        assert!(results.iter().all(|e| {
+            std::path::Path::new(&e.name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        }));
     }
 
     #[test]
@@ -1044,11 +1048,12 @@ mod tests {
         config.regex = true;
         let results = search_all_patterns(&config, &database).expect("Search failed");
         assert!(results.len() >= 2);
-        assert!(
-            results
-                .iter()
-                .all(|e| e.name.ends_with(".txt") && e.name.starts_with("re"))
-        );
+        assert!(results.iter().all(|e| {
+            std::path::Path::new(&e.name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+                && e.name.starts_with("re")
+        }));
     }
 
     #[test]
@@ -1143,25 +1148,26 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_list_volumes_multiple_volumes_sorted() {
         let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
-        let vol_b = make_volume("SN_B", "B:");
-        let vol_a = make_volume("SN_A", "A:");
-        let vol_b_id = database.upsert_volume(&vol_b).expect("Failed to upsert B:");
-        let vol_a_id = database.upsert_volume(&vol_a).expect("Failed to upsert A:");
+        let volume_b = make_volume("SN_B", "B:");
+        let volume_a = make_volume("SN_A", "A:");
+        let volume_b_id = database.upsert_volume(&volume_b).expect("Failed to upsert B:");
+        let volume_a_id = database.upsert_volume(&volume_a).expect("Failed to upsert A:");
 
         // Insert different amounts so size sorting is meaningful
         let files_b = vec![FileEntry {
-            volume_id: vol_b_id,
+            volume_id: volume_b_id,
             ..make_file("big.bin", "B:\\big.bin", 9999)
         }];
         let files_a = vec![
             FileEntry {
-                volume_id: vol_a_id,
+                volume_id: volume_a_id,
                 ..make_file("small1.txt", "A:\\small1.txt", 10)
             },
             FileEntry {
-                volume_id: vol_a_id,
+                volume_id: volume_a_id,
                 ..make_file("small2.txt", "A:\\small2.txt", 20)
             },
         ];
@@ -1364,12 +1370,12 @@ mod tests {
             files_only: true,
             ..search_config(vec!["test"])
         };
-        let files_owned = vec![
+        let files_owned = [
             make_file("test.txt", "C:\\test.txt", 100),
             make_file("test2.txt", "C:\\test2.txt", 200),
         ];
         let files: Vec<&FileEntry> = files_owned.iter().collect();
-        let dirs_owned = vec![make_dir("ignored", "C:\\ignored")];
+        let dirs_owned = [make_dir("ignored", "C:\\ignored")];
         let dirs: Vec<&FileEntry> = dirs_owned.iter().collect();
         // With files_only, the dirs are passed but should be ignored by the display
         assert!(config.files_only);
@@ -1388,7 +1394,7 @@ mod tests {
         };
         // The temp dir actually exists on disk, so it should be displayed normally
         assert!(std::path::Path::new(&temp_path).is_dir());
-        let dir_owned = vec![make_dir("testdir", &temp_path)];
+        let dir_owned = [make_dir("testdir", &temp_path)];
         let dirs: Vec<&FileEntry> = dir_owned.iter().collect();
         let files: Vec<&FileEntry> = Vec::new();
         assert!(config.directories_only);
@@ -1402,7 +1408,7 @@ mod tests {
             files_only: true,
             ..search_config(vec!["readme"])
         };
-        let files_owned = vec![make_file("readme.txt", "C:\\Projects\\readme.txt", 100)];
+        let files_owned = [make_file("readme.txt", "C:\\Projects\\readme.txt", 100)];
         let files: Vec<&FileEntry> = files_owned.iter().collect();
         let dirs: Vec<&FileEntry> = Vec::new();
         // In name mode, display uses file.name not file.full_path
@@ -1418,7 +1424,7 @@ mod tests {
             files_only: true,
             ..search_config(vec!["readme"])
         };
-        let files_owned = vec![make_file("readme.txt", "C:\\Projects\\readme.txt", 100)];
+        let files_owned = [make_file("readme.txt", "C:\\Projects\\readme.txt", 100)];
         let files: Vec<&FileEntry> = files_owned.iter().collect();
         let dirs: Vec<&FileEntry> = Vec::new();
         // In list mode, display uses file.full_path
@@ -1433,7 +1439,7 @@ mod tests {
             files_only: true,
             ..search_config(vec!["test"])
         };
-        let files_owned = vec![
+        let files_owned = [
             make_file("small.txt", "C:\\small.txt", 100),
             make_file("big.txt", "C:\\big.txt", 5_000_000),
         ];
@@ -1454,13 +1460,13 @@ mod tests {
             directories_only: true,
             ..search_config(vec!["test"])
         };
-        let dir_owned = vec![make_dir("testdir", &temp_path)];
+        let dir_owned = [make_dir("testdir", &temp_path)];
         let dirs: Vec<&FileEntry> = dir_owned.iter().collect();
         // No files under this dir, so dir size should be None/0
         let files: Vec<&FileEntry> = Vec::new();
         let dir_sizes = utils::calculate_directory_sizes(&files);
         assert!(
-            dir_sizes.get(&temp_path).is_none(),
+            !dir_sizes.contains_key(&temp_path),
             "No files under dir, so size map should have no entry"
         );
         display_info(&dirs, &files, &config, &[], &database);
@@ -1476,7 +1482,7 @@ mod tests {
         };
         // Verbose mode prints header lines before the entries
         assert!(config.verbose);
-        let files_owned = vec![make_file("test.txt", "C:\\test.txt", 100)];
+        let files_owned = [make_file("test.txt", "C:\\test.txt", 100)];
         let files: Vec<&FileEntry> = files_owned.iter().collect();
         let dirs: Vec<&FileEntry> = Vec::new();
         display_info(&dirs, &files, &config, &["test"], &database);
@@ -1537,9 +1543,9 @@ mod tests {
             verbose: true,
             ..search_config(vec!["test"])
         };
-        let dir_owned = vec![make_dir("testdir", &temp_path)];
+        let dir_owned = [make_dir("testdir", &temp_path)];
         let dirs: Vec<&FileEntry> = dir_owned.iter().collect();
-        let file_owned = vec![make_file("inner.txt", &format!("{temp_path}\\inner.txt"), 512)];
+        let file_owned = [make_file("inner.txt", &format!("{temp_path}\\inner.txt"), 512)];
         let files: Vec<&FileEntry> = file_owned.iter().collect();
 
         // Verify directory size calculation picks up files under the dir
@@ -1558,10 +1564,10 @@ mod tests {
     fn test_display_grouped_groups_files_by_parent() {
         let database = setup_database();
         let config = search_config(vec!["file"]);
-        let file1 = make_file("file1.txt", "C:\\DirA\\file1.txt", 100);
-        let file2 = make_file("file2.txt", "C:\\DirA\\file2.txt", 200);
-        let file3 = make_file("file3.txt", "C:\\DirB\\file3.txt", 300);
-        let files_owned = vec![file1, file2, file3];
+        let entry1 = make_file("file1.txt", "C:\\DirA\\file1.txt", 100);
+        let entry2 = make_file("file2.txt", "C:\\DirA\\file2.txt", 200);
+        let entry3 = make_file("file3.txt", "C:\\DirB\\file3.txt", 300);
+        let files_owned = [entry1, entry2, entry3];
         let files: Vec<&FileEntry> = files_owned.iter().collect();
         let dirs: Vec<&FileEntry> = Vec::new();
 
@@ -1659,7 +1665,7 @@ mod tests {
                 output_format: format,
                 ..search_config(vec!["readme"])
             };
-            run_search(&config, &database).expect(&format!("run_search failed for format {format:?}"));
+            run_search(&config, &database).unwrap_or_else(|_| panic!("run_search failed for format {format:?}"));
         }
     }
 
@@ -1686,7 +1692,11 @@ mod tests {
         };
         let results = search_any_pattern(&config, &database).expect("Search failed");
         assert_eq!(results.len(), 2, "Should match config.json and data.json");
-        assert!(results.iter().all(|e| e.name.ends_with(".json")));
+        assert!(results.iter().all(|e| {
+            std::path::Path::new(&e.name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        }));
         run_search(&config, &database).expect("run_search failed");
     }
 
@@ -1782,14 +1792,14 @@ mod tests {
         let database = setup_database();
         let config = search_config(vec!["*.txt"]);
         // Glob patterns contain * so they should be excluded from highlighting
-        let highlight_patterns: Vec<&str> = config
-            .patterns
-            .iter()
-            .filter(|p| !p.contains('*') && !p.contains('?'))
-            .map(String::as_str)
-            .collect();
         assert!(
-            highlight_patterns.is_empty(),
+            config
+                .patterns
+                .iter()
+                .filter(|p| !p.contains('*') && !p.contains('?'))
+                .map(String::as_str)
+                .next()
+                .is_none(),
             "Glob patterns should not be used for highlighting"
         );
         run_search(&config, &database).expect("run_search failed");

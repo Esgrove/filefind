@@ -7,7 +7,7 @@
 //! Uses postcard binary serialization for efficient, compact messages.
 
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -106,6 +106,8 @@ pub enum DaemonStateInfo {
 pub struct IpcClient {
     /// Timeout for operations.
     timeout: Duration,
+    /// Custom pipe/socket path. When `None`, uses the default path.
+    pipe_path: Option<PathBuf>,
 }
 
 impl DaemonCommand {
@@ -192,13 +194,34 @@ impl IpcClient {
     /// Create a new IPC client with default timeout.
     #[must_use]
     pub const fn new() -> Self {
-        Self { timeout: IPC_TIMEOUT }
+        Self {
+            timeout: IPC_TIMEOUT,
+            pipe_path: None,
+        }
     }
 
     /// Create a new IPC client with custom timeout.
     #[must_use]
     pub const fn with_timeout(timeout: Duration) -> Self {
-        Self { timeout }
+        Self {
+            timeout,
+            pipe_path: None,
+        }
+    }
+
+    /// Set a custom pipe/socket path for this client.
+    ///
+    /// This is primarily used for integration testing with isolated pipe names.
+    /// When not set, the default global IPC path is used.
+    #[must_use]
+    pub fn with_pipe_path(mut self, path: PathBuf) -> Self {
+        self.pipe_path = Some(path);
+        self
+    }
+
+    /// Get the effective pipe/socket path for this client.
+    fn pipe_path(&self) -> &Path {
+        self.pipe_path.as_deref().unwrap_or(get_ipc_path())
     }
 
     /// Check if the daemon is running.
@@ -310,7 +333,7 @@ impl IpcClient {
 
         const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 
-        let pipe_path = get_ipc_path();
+        let pipe_path = self.pipe_path();
 
         // Try to connect to the named pipe
         let mut pipe = OpenOptions::new()
@@ -342,10 +365,10 @@ impl IpcClient {
     fn send_command_unix(&self, command: DaemonCommand) -> Result<DaemonResponse> {
         use std::os::unix::net::UnixStream;
 
-        let socket_path = get_ipc_path();
+        let socket_path = self.effective_pipe_path();
 
         // Connect to Unix domain socket
-        let mut stream = UnixStream::connect(&socket_path).context("Failed to connect to daemon - is it running?")?;
+        let mut stream = UnixStream::connect(socket_path).context("Failed to connect to daemon - is it running?")?;
 
         stream.set_read_timeout(Some(self.timeout))?;
         stream.set_write_timeout(Some(self.timeout))?;
@@ -509,10 +532,65 @@ mod tests {
     fn test_ipc_client_creation() {
         let client = IpcClient::new();
         assert_eq!(client.timeout, IPC_TIMEOUT);
+        assert!(client.pipe_path.is_none());
 
         let custom_timeout = Duration::from_secs(10);
         let client_custom = IpcClient::with_timeout(custom_timeout);
         assert_eq!(client_custom.timeout, custom_timeout);
+        assert!(client_custom.pipe_path.is_none());
+    }
+
+    #[test]
+    fn test_ipc_client_with_pipe_path() {
+        let custom_path = PathBuf::from(r"\\.\pipe\filefind-test-custom");
+        let client = IpcClient::new().with_pipe_path(custom_path.clone());
+
+        assert_eq!(
+            client.pipe_path.as_ref().expect("pipe_path should be set"),
+            &custom_path
+        );
+        assert_eq!(client.pipe_path(), custom_path.as_path());
+    }
+
+    #[test]
+    fn test_ipc_client_effective_pipe_path_default() {
+        let client = IpcClient::new();
+        assert_eq!(client.pipe_path(), get_ipc_path().as_path());
+    }
+
+    #[test]
+    fn test_ipc_client_with_pipe_path_and_timeout() {
+        let custom_path = PathBuf::from(r"\\.\pipe\filefind-test-combo");
+        let client = IpcClient::with_timeout(Duration::from_secs(5)).with_pipe_path(custom_path.clone());
+
+        assert_eq!(client.timeout, Duration::from_secs(5));
+        assert_eq!(client.pipe_path(), custom_path.as_path());
+    }
+
+    #[test]
+    fn test_ipc_client_with_pipe_path_overrides_default() {
+        let path_a = PathBuf::from(r"\\.\pipe\filefind-test-a");
+        let path_b = PathBuf::from(r"\\.\pipe\filefind-test-b");
+
+        // Second call to with_pipe_path should override the first.
+        let client = IpcClient::new().with_pipe_path(path_a).with_pipe_path(path_b.clone());
+
+        assert_eq!(client.pipe_path(), path_b.as_path());
+    }
+
+    #[test]
+    fn test_ipc_client_no_server_with_custom_path() {
+        let custom_path = PathBuf::from(r"\\.\pipe\filefind-test-nonexistent-pipe");
+        let client = IpcClient::new().with_pipe_path(custom_path);
+
+        // No server is listening on this path, so operations should fail.
+        assert!(!client.is_daemon_running());
+        assert!(client.get_status().is_err());
+        assert!(client.stop_daemon().is_err());
+        assert!(client.rescan().is_err());
+        assert!(client.pause().is_err());
+        assert!(client.resume().is_err());
+        assert!(client.prune().is_err());
     }
 
     #[test]

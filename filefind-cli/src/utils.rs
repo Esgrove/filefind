@@ -304,8 +304,8 @@ mod tests {
         let file1 = make_file("a.txt", "C:\\Dir\\a.txt", 100);
         let file2 = make_file("b.txt", "C:\\Dir\\b.txt", 200);
         let file3 = make_file("c.txt", "C:\\Dir\\c.txt", 300);
-        let files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
-        let sizes = calculate_directory_sizes(&files);
+        let all_files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
+        let sizes = calculate_directory_sizes(&all_files);
         assert_eq!(sizes.len(), 1);
         assert_eq!(*sizes.get("C:\\Dir").expect("Missing directory"), 600);
     }
@@ -315,8 +315,8 @@ mod tests {
         let file1 = make_file("a.txt", "C:\\DirA\\a.txt", 100);
         let file2 = make_file("b.txt", "C:\\DirB\\b.txt", 200);
         let file3 = make_file("c.txt", "C:\\DirA\\c.txt", 50);
-        let files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
-        let sizes = calculate_directory_sizes(&files);
+        let all_files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
+        let sizes = calculate_directory_sizes(&all_files);
         assert_eq!(sizes.len(), 2);
         assert_eq!(*sizes.get("C:\\DirA").expect("Missing DirA"), 150);
         assert_eq!(*sizes.get("C:\\DirB").expect("Missing DirB"), 200);
@@ -326,8 +326,8 @@ mod tests {
     fn test_calculate_directory_sizes_nested_directories() {
         let file1 = make_file("a.txt", "C:\\Parent\\Child\\a.txt", 100);
         let file2 = make_file("b.txt", "C:\\Parent\\b.txt", 200);
-        let files: Vec<&FileEntry> = vec![&file1, &file2];
-        let sizes = calculate_directory_sizes(&files);
+        let all_files: Vec<&FileEntry> = vec![&file1, &file2];
+        let sizes = calculate_directory_sizes(&all_files);
         assert_eq!(sizes.len(), 2);
         assert_eq!(*sizes.get("C:\\Parent\\Child").expect("Missing Child"), 100);
         assert_eq!(*sizes.get("C:\\Parent").expect("Missing Parent"), 200);
@@ -345,8 +345,8 @@ mod tests {
     fn test_calculate_directory_sizes_large_sizes() {
         let file1 = make_file("big1.bin", "C:\\Dir\\big1.bin", 5_000_000_000);
         let file2 = make_file("big2.bin", "C:\\Dir\\big2.bin", 5_000_000_000);
-        let files: Vec<&FileEntry> = vec![&file1, &file2];
-        let sizes = calculate_directory_sizes(&files);
+        let all_files: Vec<&FileEntry> = vec![&file1, &file2];
+        let sizes = calculate_directory_sizes(&all_files);
         assert_eq!(*sizes.get("C:\\Dir").expect("Missing directory"), 10_000_000_000);
     }
 
@@ -363,8 +363,8 @@ mod tests {
         let file1 = make_file("a.txt", "C:\\Dir\\a.txt", 100);
         let file2 = make_file("b.txt", "C:\\Dir\\b.txt", 200);
         let file3 = make_file("c.txt", "D:\\Other\\c.txt", 300);
-        let files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
-        assert_eq!(count_files_under_directory(&files, "C:\\Dir"), 2);
+        let all_files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
+        assert_eq!(count_files_under_directory(&all_files, "C:\\Dir"), 2);
     }
 
     #[test]
@@ -372,8 +372,8 @@ mod tests {
         let file1 = make_file("a.txt", "C:\\Dir\\sub1\\a.txt", 100);
         let file2 = make_file("b.txt", "C:\\Dir\\sub2\\b.txt", 200);
         let file3 = make_file("c.txt", "C:\\Dir\\c.txt", 300);
-        let files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
-        assert_eq!(count_files_under_directory(&files, "C:\\Dir"), 3);
+        let all_files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
+        assert_eq!(count_files_under_directory(&all_files, "C:\\Dir"), 3);
     }
 
     #[test]

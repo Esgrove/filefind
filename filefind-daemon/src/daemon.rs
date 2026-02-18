@@ -2184,7 +2184,7 @@ mod tests {
         assert_eq!(daemon.path_cache.len(), 2);
         assert_eq!(daemon.path_cache.get(&100), Some(&"C:\\Users".to_string()));
         assert_eq!(daemon.path_cache.get(&200), Some(&"C:\\Users\\Documents".to_string()));
-        assert!(daemon.path_cache.get(&300).is_none());
+        assert!(!daemon.path_cache.contains_key(&300));
     }
 
     #[test]

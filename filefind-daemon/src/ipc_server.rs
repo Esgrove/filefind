@@ -5,6 +5,7 @@
 //!
 //! Uses postcard binary serialization for efficient, compact messages.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -39,6 +40,8 @@ pub struct IpcServer {
     command_sender: mpsc::Sender<IpcToDaemon>,
     /// Shutdown signal.
     shutdown: Arc<AtomicBool>,
+    /// Custom pipe/socket path. When `None`, uses the default from [`get_ipc_path`].
+    pipe_path: Option<PathBuf>,
 }
 
 /// Shared state that the IPC server uses to report daemon status.
@@ -152,7 +155,25 @@ impl IpcServer {
             state,
             command_sender,
             shutdown,
+            pipe_path: None,
         }
+    }
+
+    /// Set a custom pipe/socket path for this server.
+    ///
+    /// When set, the server listens on this path instead of the default.
+    /// Primarily useful for integration testing with isolated pipe names.
+    #[must_use]
+    pub fn with_pipe_path(mut self, path: PathBuf) -> Self {
+        self.pipe_path = Some(path);
+        self
+    }
+
+    /// Get the effective pipe/socket path.
+    ///
+    /// Returns the custom path if set, otherwise the default from [`get_ipc_path`].
+    fn effective_pipe_path(&self) -> &Path {
+        self.pipe_path.as_deref().unwrap_or_else(|| get_ipc_path().as_path())
     }
 
     /// Start the IPC server.
@@ -186,7 +207,7 @@ impl IpcServer {
             PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
         };
 
-        let pipe_path = get_ipc_path();
+        let pipe_path = self.effective_pipe_path();
         let pipe_path_wide: Vec<u16> = OsStr::new(pipe_path.to_str().unwrap_or(r"\\.\pipe\filefind-daemon"))
             .encode_wide()
             .chain(std::iter::once(0))
@@ -367,7 +388,7 @@ impl IpcServer {
     fn run_unix_blocking(&self) {
         use std::os::unix::net::UnixListener;
 
-        let socket_path = get_ipc_path();
+        let socket_path = self.effective_pipe_path();
 
         // Remove existing socket file if it exists
         let _ = std::fs::remove_file(&socket_path);
@@ -519,9 +540,24 @@ impl Default for IpcServerState {
 ///
 /// Returns a channel receiver for commands from clients.
 pub fn spawn_ipc_server(state: Arc<IpcServerState>, shutdown: Arc<AtomicBool>) -> mpsc::Receiver<IpcToDaemon> {
+    spawn_ipc_server_with_path(state, shutdown, None)
+}
+
+/// Spawn the IPC server as a background thread with an optional custom pipe path.
+///
+/// When `pipe_path` is `None`, the server listens on the default path.
+/// Returns a channel receiver for commands from clients.
+pub fn spawn_ipc_server_with_path(
+    state: Arc<IpcServerState>,
+    shutdown: Arc<AtomicBool>,
+    pipe_path: Option<PathBuf>,
+) -> mpsc::Receiver<IpcToDaemon> {
     let (command_sender, command_receiver) = mpsc::channel(32);
 
-    let server = IpcServer::new(state, command_sender, shutdown);
+    let mut server = IpcServer::new(state, command_sender, shutdown);
+    if let Some(path) = pipe_path {
+        server = server.with_pipe_path(path);
+    }
 
     std::thread::Builder::new()
         .name("ipc-server".to_string())
@@ -813,6 +849,29 @@ mod tests {
         // Server should be constructable without panic
         assert!(!shutdown.load(Ordering::Relaxed));
         assert_eq!(state.state.load(), DaemonStateInfo::Stopped);
+    }
+
+    #[test]
+    fn test_ipc_server_with_pipe_path() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = mpsc::channel(32);
+
+        let custom_path = PathBuf::from(r"\\.\pipe\filefind-test-custom");
+        let server =
+            IpcServer::new(Arc::clone(&state), sender, Arc::clone(&shutdown)).with_pipe_path(custom_path.clone());
+
+        assert_eq!(server.effective_pipe_path(), &custom_path);
+    }
+
+    #[test]
+    fn test_ipc_server_effective_pipe_path_default() {
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = mpsc::channel(32);
+
+        let server = IpcServer::new(state, sender, shutdown);
+        assert_eq!(server.effective_pipe_path(), filefind::get_ipc_path());
     }
 
     #[test]
@@ -1285,9 +1344,29 @@ mod tests {
         assert!(matches!(cmd2, IpcToDaemon::Resume));
     }
 
+    /// Generate a batch of test [`FileEntry`] values for a given volume and index range.
+    fn make_test_file_entries(volume_id: i64, range: std::ops::Range<usize>) -> Vec<filefind::FileEntry> {
+        use filefind::FileEntry;
+
+        range
+            .map(|index| FileEntry {
+                id: None,
+                volume_id,
+                parent_id: None,
+                name: format!("file{index}.txt"),
+                full_path: format!("D:\\file{index}.txt"),
+                size: 50,
+                is_directory: false,
+                created_time: None,
+                modified_time: None,
+                mft_reference: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn test_ipc_server_state_update_from_database_multiple_times() {
-        use filefind::{FileEntry, IndexedVolume, VolumeType};
+        use filefind::{IndexedVolume, VolumeType};
 
         let state = IpcServerState::new();
         let mut database = Database::open_in_memory().expect("Failed to create in-memory database");
@@ -1305,45 +1384,502 @@ mod tests {
         let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
 
         // Insert files in batch
-        let entries: Vec<FileEntry> = (0..10)
-            .map(|index| FileEntry {
-                id: None,
-                volume_id,
-                parent_id: None,
-                name: format!("file{index}.txt"),
-                full_path: format!("D:\\file{index}.txt"),
-                size: 50,
-                is_directory: false,
-                created_time: None,
-                modified_time: None,
-                mft_reference: None,
-            })
-            .collect();
+        let entries = make_test_file_entries(volume_id, 0..10);
         database.insert_files_batch(&entries).expect("Failed to insert batch");
 
         state.update_from_database(&database);
         assert_eq!(state.indexed_files.load(Ordering::Relaxed), 10);
 
         // Insert more files and update again
-        let more_entries: Vec<FileEntry> = (10..15)
-            .map(|index| FileEntry {
-                id: None,
-                volume_id,
-                parent_id: None,
-                name: format!("file{index}.txt"),
-                full_path: format!("D:\\file{index}.txt"),
-                size: 50,
-                is_directory: false,
-                created_time: None,
-                modified_time: None,
-                mft_reference: None,
-            })
-            .collect();
+        let more_entries = make_test_file_entries(volume_id, 10..15);
         database
             .insert_files_batch(&more_entries)
             .expect("Failed to insert more files");
 
         state.update_from_database(&database);
         assert_eq!(state.indexed_files.load(Ordering::Relaxed), 15);
+    }
+
+    // ==================== Integration Tests ====================
+    // These tests start a real IPC server and connect real clients through
+    // named pipes (Windows) or Unix domain sockets (other platforms).
+
+    /// Generate a unique pipe/socket path for an integration test.
+    ///
+    /// Each test gets its own path to avoid conflicts when tests run in parallel.
+    fn unique_pipe_path(test_name: &str) -> PathBuf {
+        #[cfg(windows)]
+        {
+            PathBuf::from(format!(r"\\.\pipe\filefind-test-{}-{}", test_name, std::process::id()))
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::temp_dir().join(format!("filefind-test-{}-{}.sock", test_name, std::process::id()))
+        }
+    }
+
+    /// Helper: start an IPC server on a unique pipe and return the pieces needed
+    /// to interact with it from the test.
+    ///
+    /// Returns `(pipe_path, server_state, shutdown_flag, command_receiver)`.
+    fn start_test_server(
+        test_name: &str,
+    ) -> (
+        PathBuf,
+        Arc<IpcServerState>,
+        Arc<AtomicBool>,
+        mpsc::Receiver<IpcToDaemon>,
+    ) {
+        let pipe_path = unique_pipe_path(test_name);
+        let state = Arc::new(IpcServerState::new());
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let receiver = spawn_ipc_server_with_path(Arc::clone(&state), Arc::clone(&shutdown), Some(pipe_path.clone()));
+
+        // Give the server thread a moment to start listening.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        (pipe_path, state, shutdown, receiver)
+    }
+
+    /// Helper: create an `IpcClient` pointed at a test pipe.
+    fn test_client(pipe_path: &Path) -> filefind::IpcClient {
+        filefind::IpcClient::new().with_pipe_path(pipe_path.to_path_buf())
+    }
+
+    /// Send a command with retries to handle the brief window between named pipe
+    /// instances where no pipe exists on Windows.
+    ///
+    /// The server destroys the old pipe and creates a new one after each client,
+    /// so a client connecting during that gap gets "file not found". This helper
+    /// retries with short back-off to tolerate that race.
+    fn send_command_retry(
+        client: &filefind::IpcClient,
+        command: DaemonCommand,
+        max_attempts: u32,
+    ) -> anyhow::Result<DaemonResponse> {
+        let mut last_error = None;
+        for attempt in 0..max_attempts {
+            match client.send_command(command) {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    last_error = Some(error);
+                    // Exponential back-off: 50ms, 100ms, 200ms, …
+                    std::thread::sleep(std::time::Duration::from_millis(50 << attempt));
+                }
+            }
+        }
+        Err(last_error.expect("at least one attempt"))
+    }
+
+    /// Helper: shut down a test server and wait briefly for the thread to exit.
+    fn stop_test_server(shutdown: &Arc<AtomicBool>, pipe_path: &Path) {
+        shutdown.store(true, Ordering::Relaxed);
+        // On Windows the server thread may be blocked in ConnectNamedPipe.
+        // Opening a throwaway connection unblocks it so the thread can see
+        // the shutdown flag and exit.
+        #[cfg(windows)]
+        {
+            let _ = std::fs::OpenOptions::new().read(true).write(true).open(pipe_path);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
+    // --- Ping / Pong ---
+
+    #[test]
+    fn test_integration_server_ping_pong() {
+        let (pipe_path, _state, shutdown, _receiver) = start_test_server("ping_pong");
+
+        let client = test_client(&pipe_path);
+        let response = client.send_command(DaemonCommand::Ping).expect("Ping should succeed");
+
+        assert!(
+            matches!(response, DaemonResponse::Pong),
+            "Expected Pong, got {response:?}"
+        );
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- is_daemon_running ---
+
+    #[test]
+    fn test_integration_is_daemon_running() {
+        let (pipe_path, _state, shutdown, _receiver) = start_test_server("is_running");
+
+        let client = test_client(&pipe_path);
+        assert!(client.is_daemon_running(), "Daemon should appear running");
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- GetStatus ---
+
+    #[test]
+    fn test_integration_get_status() {
+        let (pipe_path, state, shutdown, _receiver) = start_test_server("get_status");
+
+        // Configure some state before querying.
+        state.state.store(DaemonStateInfo::Running);
+        state.indexed_files.store(42_000, Ordering::Relaxed);
+        state.indexed_directories.store(1_234, Ordering::Relaxed);
+        state.monitored_volumes.store(3, Ordering::Relaxed);
+
+        let client = test_client(&pipe_path);
+        let status = client.get_status().expect("get_status should succeed");
+
+        assert_eq!(status.state, DaemonStateInfo::Running);
+        assert_eq!(status.indexed_files, 42_000);
+        assert_eq!(status.indexed_directories, 1_234);
+        assert_eq!(status.monitored_volumes, 3);
+        assert!(!status.is_paused);
+        // Uptime should be tiny (server just started).
+        assert!(status.uptime_seconds < 10);
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Stop command ---
+
+    #[test]
+    fn test_integration_stop_command() {
+        let (pipe_path, _state, shutdown, mut receiver) = start_test_server("stop_cmd");
+
+        let client = test_client(&pipe_path);
+        client.stop_daemon().expect("stop_daemon should succeed");
+
+        // The server should have forwarded the command through the channel.
+        let command = receiver.try_recv().expect("Should have received Stop");
+        assert!(matches!(command, IpcToDaemon::Stop));
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Rescan command ---
+
+    #[test]
+    fn test_integration_rescan_command() {
+        let (pipe_path, _state, shutdown, mut receiver) = start_test_server("rescan_cmd");
+
+        let client = test_client(&pipe_path);
+        client.rescan().expect("rescan should succeed");
+
+        let command = receiver.try_recv().expect("Should have received Rescan");
+        assert!(matches!(command, IpcToDaemon::Rescan));
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Pause / Resume ---
+
+    #[test]
+    fn test_integration_pause_and_resume() {
+        let (pipe_path, state, shutdown, mut receiver) = start_test_server("pause_resume");
+
+        let client = test_client(&pipe_path);
+
+        // Initially not paused.
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+
+        // Pause
+        client.pause().expect("pause should succeed");
+        assert!(state.is_paused.load(Ordering::Relaxed));
+
+        let command = receiver.try_recv().expect("Should have received Pause");
+        assert!(matches!(command, IpcToDaemon::Pause));
+
+        // Confirm status reflects paused (retry to handle pipe recreation gap).
+        let response = send_command_retry(&client, DaemonCommand::GetStatus, 5).expect("get_status after pause");
+        match response {
+            DaemonResponse::Status(status) => assert!(status.is_paused),
+            other => panic!("Expected Status, got {other:?}"),
+        }
+
+        // Resume (retry to handle pipe recreation gap).
+        let response = send_command_retry(&client, DaemonCommand::Resume, 5).expect("resume should succeed");
+        assert!(matches!(response, DaemonResponse::Ok));
+        assert!(!state.is_paused.load(Ordering::Relaxed));
+
+        let command = receiver.try_recv().expect("Should have received Resume");
+        assert!(matches!(command, IpcToDaemon::Resume));
+
+        let response = send_command_retry(&client, DaemonCommand::GetStatus, 5).expect("get_status after resume");
+        match response {
+            DaemonResponse::Status(status) => assert!(!status.is_paused),
+            other => panic!("Expected Status, got {other:?}"),
+        }
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Prune command ---
+
+    #[test]
+    fn test_integration_prune_command() {
+        let (pipe_path, _state, shutdown, mut receiver) = start_test_server("prune_cmd");
+
+        let client = test_client(&pipe_path);
+        client.prune().expect("prune should succeed");
+
+        let command = receiver.try_recv().expect("Should have received Prune");
+        assert!(matches!(command, IpcToDaemon::Prune));
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Multiple sequential commands ---
+
+    #[test]
+    fn test_integration_all_commands_sequence() {
+        let (pipe_path, state, shutdown, mut receiver) = start_test_server("all_cmds");
+
+        state.state.store(DaemonStateInfo::Running);
+        state.indexed_files.store(100, Ordering::Relaxed);
+
+        let client = test_client(&pipe_path);
+
+        // Ping
+        let response = client.send_command(DaemonCommand::Ping).expect("Ping");
+        assert!(matches!(response, DaemonResponse::Pong));
+
+        // GetStatus (retry for pipe gap)
+        let response = send_command_retry(&client, DaemonCommand::GetStatus, 5).expect("GetStatus");
+        match response {
+            DaemonResponse::Status(status) => assert_eq!(status.indexed_files, 100),
+            other => panic!("Expected Status, got {other:?}"),
+        }
+
+        // Pause (retry for pipe gap)
+        let response = send_command_retry(&client, DaemonCommand::Pause, 5).expect("Pause");
+        assert!(matches!(response, DaemonResponse::Ok));
+        let cmd = receiver.try_recv().expect("channel Pause");
+        assert!(matches!(cmd, IpcToDaemon::Pause));
+
+        // Resume (retry for pipe gap)
+        let response = send_command_retry(&client, DaemonCommand::Resume, 5).expect("Resume");
+        assert!(matches!(response, DaemonResponse::Ok));
+        let cmd = receiver.try_recv().expect("channel Resume");
+        assert!(matches!(cmd, IpcToDaemon::Resume));
+
+        // Rescan (retry for pipe gap)
+        let response = send_command_retry(&client, DaemonCommand::Rescan, 5).expect("Rescan");
+        assert!(matches!(response, DaemonResponse::Ok));
+        let cmd = receiver.try_recv().expect("channel Rescan");
+        assert!(matches!(cmd, IpcToDaemon::Rescan));
+
+        // Prune (retry for pipe gap)
+        let response = send_command_retry(&client, DaemonCommand::Prune, 5).expect("Prune");
+        assert!(matches!(response, DaemonResponse::Ok));
+        let cmd = receiver.try_recv().expect("channel Prune");
+        assert!(matches!(cmd, IpcToDaemon::Prune));
+
+        // Stop (retry for pipe gap, last since a real daemon would exit)
+        let response = send_command_retry(&client, DaemonCommand::Stop, 5).expect("Stop");
+        assert!(matches!(response, DaemonResponse::Ok));
+        let cmd = receiver.try_recv().expect("channel Stop");
+        assert!(matches!(cmd, IpcToDaemon::Stop));
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Multiple clients connecting sequentially ---
+
+    #[test]
+    fn test_integration_multiple_clients_sequential() {
+        let (pipe_path, _state, shutdown, _receiver) = start_test_server("multi_client");
+
+        // Five separate clients, each doing a full connect-send-receive cycle.
+        // Use retry to handle the gap between pipe instances.
+        for index in 0..5 {
+            let client = test_client(&pipe_path);
+            let response = send_command_retry(&client, DaemonCommand::Ping, 5)
+                .unwrap_or_else(|error| panic!("Ping from client {index}: {error}"));
+            assert!(
+                matches!(response, DaemonResponse::Pong),
+                "Client {index}: expected Pong, got {response:?}"
+            );
+        }
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Status reflects live state mutations ---
+
+    #[test]
+    fn test_integration_status_reflects_state_changes() {
+        let (pipe_path, state, shutdown, _receiver) = start_test_server("state_changes");
+
+        let client = test_client(&pipe_path);
+
+        // Stopped → Starting → Running → Scanning → Stopping → Stopped
+        let transitions = [
+            DaemonStateInfo::Stopped,
+            DaemonStateInfo::Starting,
+            DaemonStateInfo::Running,
+            DaemonStateInfo::Scanning,
+            DaemonStateInfo::Stopping,
+            DaemonStateInfo::Stopped,
+        ];
+
+        for expected_state in transitions {
+            state.state.store(expected_state);
+            let response = send_command_retry(&client, DaemonCommand::GetStatus, 5).expect("get_status");
+            match response {
+                DaemonResponse::Status(status) => assert_eq!(
+                    status.state, expected_state,
+                    "Expected {expected_state}, got {}",
+                    status.state
+                ),
+                other => panic!("Expected Status, got {other:?}"),
+            }
+        }
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- File/directory counts update between queries ---
+
+    #[test]
+    fn test_integration_status_counts_update_live() {
+        let (pipe_path, state, shutdown, _receiver) = start_test_server("counts_update");
+
+        let client = test_client(&pipe_path);
+
+        // Start with zeroes.
+        let status = client.get_status().expect("initial status");
+        assert_eq!(status.indexed_files, 0);
+        assert_eq!(status.indexed_directories, 0);
+
+        // Simulate indexing progress.
+        state.indexed_files.store(10_000, Ordering::Relaxed);
+        state.indexed_directories.store(500, Ordering::Relaxed);
+
+        let response = send_command_retry(&client, DaemonCommand::GetStatus, 5).expect("mid-scan status");
+        match response {
+            DaemonResponse::Status(status) => {
+                assert_eq!(status.indexed_files, 10_000);
+                assert_eq!(status.indexed_directories, 500);
+            }
+            other => panic!("Expected Status, got {other:?}"),
+        }
+
+        // More progress.
+        state.indexed_files.store(1_000_000, Ordering::Relaxed);
+        state.indexed_directories.store(50_000, Ordering::Relaxed);
+        state.monitored_volumes.store(4, Ordering::Relaxed);
+
+        let response = send_command_retry(&client, DaemonCommand::GetStatus, 5).expect("final status");
+        match response {
+            DaemonResponse::Status(status) => {
+                assert_eq!(status.indexed_files, 1_000_000);
+                assert_eq!(status.indexed_directories, 50_000);
+                assert_eq!(status.monitored_volumes, 4);
+            }
+            other => panic!("Expected Status, got {other:?}"),
+        }
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- Client to non-existent server returns error ---
+
+    #[test]
+    fn test_integration_client_no_server() {
+        let pipe_path = unique_pipe_path("no_server");
+        let client = test_client(&pipe_path);
+
+        // No server is listening, so this should fail.
+        assert!(!client.is_daemon_running());
+        assert!(client.get_status().is_err());
+        assert!(client.stop_daemon().is_err());
+    }
+
+    // --- Server shutdown stops accepting ---
+
+    #[test]
+    fn test_integration_server_shutdown() {
+        let (pipe_path, _state, shutdown, _receiver) = start_test_server("shutdown");
+
+        // Server is alive.
+        let client = test_client(&pipe_path);
+        assert!(client.is_daemon_running());
+
+        // Signal shutdown and wake the server thread.
+        shutdown.store(true, Ordering::Relaxed);
+
+        // On Windows, open a throwaway connection to unblock ConnectNamedPipe.
+        #[cfg(windows)]
+        {
+            let _ = std::fs::OpenOptions::new().read(true).write(true).open(&pipe_path);
+        }
+
+        // Give the server thread time to exit.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Now the server should no longer be reachable.
+        // Retry a few times since the server thread may still be mid-teardown.
+        let client_after = test_client(&pipe_path);
+        let mut stopped = false;
+        for _ in 0..5 {
+            if !client_after.is_daemon_running() {
+                stopped = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert!(stopped, "Server should be unreachable after shutdown");
+    }
+
+    // --- Concurrent clients from multiple threads ---
+
+    #[test]
+    fn test_integration_concurrent_clients() {
+        let (pipe_path, _state, shutdown, _receiver) = start_test_server("concurrent");
+
+        let mut handles = Vec::new();
+
+        for thread_index in 0..4 {
+            let path = pipe_path.clone();
+            let handle = std::thread::spawn(move || {
+                for iteration in 0..3 {
+                    let client = test_client(&path);
+                    let response = send_command_retry(&client, DaemonCommand::Ping, 5)
+                        .unwrap_or_else(|error| panic!("Thread {thread_index} iteration {iteration} failed: {error}"));
+                    assert!(
+                        matches!(response, DaemonResponse::Pong),
+                        "Thread {thread_index} iteration {iteration}: expected Pong"
+                    );
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("Thread should not panic");
+        }
+
+        stop_test_server(&shutdown, &pipe_path);
+    }
+
+    // --- GetStatus with large counter values ---
+
+    #[test]
+    fn test_integration_status_large_values() {
+        let (pipe_path, state, shutdown, _receiver) = start_test_server("large_values");
+
+        state.state.store(DaemonStateInfo::Running);
+        state.indexed_files.store(10_000_000_000, Ordering::Relaxed);
+        state.indexed_directories.store(1_000_000_000, Ordering::Relaxed);
+        state.monitored_volumes.store(26, Ordering::Relaxed);
+
+        let client = test_client(&pipe_path);
+        let status = client.get_status().expect("get_status with large values");
+
+        assert_eq!(status.indexed_files, 10_000_000_000);
+        assert_eq!(status.indexed_directories, 1_000_000_000);
+        assert_eq!(status.monitored_volumes, 26);
+
+        stop_test_server(&shutdown, &pipe_path);
     }
 }
