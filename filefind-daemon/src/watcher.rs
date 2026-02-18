@@ -466,6 +466,21 @@ pub async fn scan_directory_with_concurrency(
 /// - `pattern*` - matches paths starting with "pattern"
 /// - `*pattern*` - matches paths containing "pattern"
 /// - `pattern` - matches paths containing "pattern" anywhere
+///
+/// # Examples
+///
+/// ```ignore
+/// let patterns = vec!["*.tmp".to_string(), "*node_modules*".to_string()];
+///
+/// // Suffix match: path ends with ".tmp"
+/// assert!(matches_exclude_patterns(r"C:\project\build.tmp", &patterns));
+///
+/// // Contains match: path contains "node_modules"
+/// assert!(matches_exclude_patterns(r"C:\project\node_modules\pkg", &patterns));
+///
+/// // No match
+/// assert!(!matches_exclude_patterns(r"C:\project\src\main.rs", &patterns));
+/// ```
 pub fn matches_exclude_patterns(path_str: &str, exclude_patterns: &[String]) -> bool {
     for pattern in exclude_patterns {
         if pattern.starts_with('*') && pattern.ends_with('*') {

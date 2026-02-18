@@ -25,6 +25,7 @@ use crate::config::CliConfig;
     name = env!("CARGO_BIN_NAME"),
     about
 )]
+/// Command-line arguments for the filefind search tool.
 pub struct FileFindCli {
     /// Subcommand to execute
     #[command(subcommand)]

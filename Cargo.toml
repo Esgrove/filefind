@@ -38,6 +38,7 @@ features = [
 path = "filefind"
 
 [workspace.lints.rust]
+missing_docs = "warn"
 unsafe_code = "allow"
 
 [workspace.lints.clippy]

@@ -24,6 +24,7 @@ use filefind::{LogLevel, get_log_directory};
     name = env!("CARGO_BIN_NAME"),
     version,
 )]
+/// Command-line arguments for the filefind tray application.
 pub struct TrayArgs {
     /// Run in foreground with console logging
     #[arg(short, long)]

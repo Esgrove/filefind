@@ -413,12 +413,33 @@ impl Default for IpcClient {
 }
 
 /// Get the path to the IPC socket/pipe.
+///
+/// # Examples
+///
+/// ```
+/// let path = filefind::get_ipc_path();
+/// assert!(!path.as_os_str().is_empty());
+/// ```
 #[must_use]
 pub fn get_ipc_path() -> &'static PathBuf {
     &IPC_PATH
 }
 
 /// Write a length-prefixed message to a writer.
+///
+/// The message is prefixed with a 2-byte little-endian length header
+/// followed by the raw message bytes.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::write_message;
+///
+/// let mut buffer = Vec::new();
+/// write_message(&mut buffer, b"hello").expect("write should succeed");
+/// assert_eq!(&buffer[..2], &5u16.to_le_bytes()); // length prefix
+/// assert_eq!(&buffer[2..], b"hello");             // payload
+/// ```
 ///
 /// # Errors
 ///
@@ -434,6 +455,24 @@ pub fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
 }
 
 /// Read a length-prefixed message from a reader.
+///
+/// Reads a 2-byte little-endian length header followed by that many bytes
+/// of message data.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::{write_message, read_message};
+/// use std::io::Cursor;
+///
+/// // Write a message, then read it back
+/// let mut buffer = Vec::new();
+/// write_message(&mut buffer, b"hello").expect("write should succeed");
+///
+/// let mut cursor = Cursor::new(buffer);
+/// let message = read_message(&mut cursor).expect("read should succeed");
+/// assert_eq!(message, b"hello");
+/// ```
 ///
 /// # Errors
 ///

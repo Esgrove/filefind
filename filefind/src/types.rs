@@ -130,7 +130,12 @@ pub enum FileChangeEvent {
     Deleted(PathBuf),
 
     /// File or directory was renamed.
-    Renamed { from: PathBuf, to: PathBuf },
+    Renamed {
+        /// Original path before the rename.
+        from: PathBuf,
+        /// New path after the rename.
+        to: PathBuf,
+    },
 }
 
 impl VolumeType {

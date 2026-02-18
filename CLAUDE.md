@@ -18,7 +18,7 @@ The project is organized as a Cargo workspace with multiple crates:
 After making code changes, always run:
 
 ```shell
-cargo clippy --fix --allow-dirty
+cargo clippy --all-targets --fix --allow-dirty
 cargo fmt
 cargo test
 ```

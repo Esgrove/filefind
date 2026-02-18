@@ -60,6 +60,16 @@ impl std::fmt::Display for PathType {
 /// - `LocalDirectory`: Uses MFT scanning with path filtering
 /// - `MappedNetworkDrive`: Try MFT first, fall back to directory walking
 /// - `UncPath`: Must use directory walking (no drive letter for MFT)
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use filefind::{classify_path, PathType};
+///
+/// assert_eq!(classify_path(Path::new(r"\\server\share")), PathType::UncPath);
+/// assert_eq!(classify_path(Path::new(r"C:\Users\Documents")), PathType::LocalDirectory);
+/// ```
 #[must_use]
 pub fn classify_path(path: &Path) -> PathType {
     if is_unc_path(path) {
@@ -76,6 +86,16 @@ pub fn classify_path(path: &Path) -> PathType {
 /// Check if a path is a UNC path (e.g., `\\server\share`).
 ///
 /// UNC paths start with `\\` and don't have a drive letter.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use filefind::is_unc_path;
+///
+/// assert!(is_unc_path(Path::new(r"\\server\share\folder")));
+/// assert!(!is_unc_path(Path::new(r"C:\Users")));
+/// ```
 #[must_use]
 pub fn is_unc_path(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
@@ -86,6 +106,19 @@ pub fn is_unc_path(path: &Path) -> bool {
 ///
 /// This detects drive letters that are mapped to network locations,
 /// but NOT UNC paths.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use filefind::is_mapped_network_drive;
+///
+/// // UNC paths are never considered mapped drives
+/// assert!(!is_mapped_network_drive(Path::new(r"\\server\share")));
+///
+/// // Local drives like C: typically return false
+/// // (returns true only if the drive letter is mapped to a network location)
+/// ```
 #[cfg(windows)]
 #[must_use]
 pub fn is_mapped_network_drive(path: &Path) -> bool {
@@ -120,6 +153,19 @@ pub fn is_mapped_network_drive(path: &Path) -> bool {
 }
 
 /// Check if a path is on a mapped network drive (non-Windows stub).
+///
+/// Always returns `false` on non-Windows platforms.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use filefind::is_mapped_network_drive;
+///
+/// // Non-Windows always returns false
+/// assert!(!is_mapped_network_drive(Path::new(r"Z:\")));
+/// assert!(!is_mapped_network_drive(Path::new(r"\\server\share")));
+/// ```
 #[cfg(not(windows))]
 #[must_use]
 pub const fn is_mapped_network_drive(_path: &Path) -> bool {
@@ -129,6 +175,17 @@ pub const fn is_mapped_network_drive(_path: &Path) -> bool {
 /// Check if a path is a drive root (e.g., "C:\", "D:", "E:\").
 ///
 /// Returns true for paths like "C:", "C:\", "D:/", etc.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use filefind::is_drive_root;
+///
+/// assert!(is_drive_root(Path::new(r"C:\")));
+/// assert!(is_drive_root(Path::new("D:")));
+/// assert!(!is_drive_root(Path::new(r"C:\Users")));
+/// ```
 #[must_use]
 pub fn is_drive_root(path: &Path) -> bool {
     let bytes = path.to_string_lossy();
@@ -146,7 +203,17 @@ pub fn is_drive_root(path: &Path) -> bool {
 /// Check if a path is on a network drive (either UNC or mapped).
 ///
 /// On Windows, detects mapped network drives and UNC paths.
-/// On other platforms, always returns false.
+/// On other platforms, only detects UNC paths.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use filefind::is_network_path;
+///
+/// assert!(is_network_path(Path::new(r"\\server\share")));
+/// assert!(!is_network_path(Path::new(r"C:\Users")));
+/// ```
 #[must_use]
 pub fn is_network_path(path: &Path) -> bool {
     is_unc_path(path) || is_mapped_network_drive(path)
@@ -200,6 +267,16 @@ pub fn get_volume_prefix(path: &str) -> Option<String> {
 /// Given a drive letter like 'X', returns the UNC path (e.g., `\\192.168.1.106\Home`)
 /// if the drive is a mapped network drive. Returns `None` for local drives or
 /// if the query fails.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::get_unc_for_drive;
+///
+/// // Local drives return None
+/// let result = get_unc_for_drive('C');
+/// // Returns Some("\\\\server\\share") for mapped network drives, None otherwise
+/// ```
 #[cfg(windows)]
 #[must_use]
 pub fn get_unc_for_drive(drive_letter: char) -> Option<String> {
@@ -231,6 +308,17 @@ pub fn get_unc_for_drive(drive_letter: char) -> Option<String> {
 }
 
 /// Get the UNC path for a mapped network drive letter (non-Windows stub).
+///
+/// Always returns `None` on non-Windows platforms.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::get_unc_for_drive;
+///
+/// // Non-Windows always returns None
+/// assert_eq!(get_unc_for_drive('X'), None);
+/// ```
 #[cfg(not(windows))]
 #[must_use]
 pub fn get_unc_for_drive(_drive_letter: char) -> Option<String> {
@@ -245,6 +333,16 @@ pub fn get_unc_for_drive(_drive_letter: char) -> Option<String> {
 ///
 /// This enables resolving UNC paths to their corresponding mapped drive letters
 /// so that paths stored in the database use drive letters that Windows recognizes.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::get_drive_mappings;
+///
+/// // On a system without mapped network drives, returns an empty map
+/// let mappings = get_drive_mappings(&[]);
+/// assert!(mappings.is_empty());
+/// ```
 #[must_use]
 pub fn get_drive_mappings(drive_letters: &[char]) -> HashMap<String, char> {
     let mut mappings = HashMap::new();
@@ -265,6 +363,19 @@ pub fn get_drive_mappings(drive_letters: &[char]) -> HashMap<String, char> {
 /// Manual mappings take priority over auto-detected ones.
 ///
 /// Returns a map from lowercase UNC prefix to the drive letter prefix (e.g., `"X:"`).
+///
+/// # Examples
+///
+/// ```
+/// use filefind::{build_path_mappings, PathMapping};
+///
+/// let manual = vec![PathMapping {
+///     unc: r"\\server\share".to_string(),
+///     drive: "X:".to_string(),
+/// }];
+/// let mappings = build_path_mappings(&[], &manual);
+/// assert_eq!(mappings.get(r"\\server\share"), Some(&"X:".to_string()));
+/// ```
 #[must_use]
 pub fn build_path_mappings(drive_letters: &[char], manual_mappings: &[PathMapping]) -> HashMap<String, String> {
     // Start with auto-detected mappings for the specified drives
@@ -297,6 +408,22 @@ pub fn build_path_mappings(drive_letters: &[char], manual_mappings: &[PathMappin
 /// For example, with mapping `"\\\\192.168.1.106\\home" → "X:"`:
 /// - `\\192.168.1.106\Home\Data\file.txt` → `X:\Data\file.txt`
 /// - `\\other\share\file.txt` → `None` (no matching mapping)
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use filefind::resolve_unc_to_mapped_path;
+///
+/// let mut mappings = HashMap::new();
+/// mappings.insert(r"\\server\share".to_string(), "X:".to_string());
+///
+/// assert_eq!(
+///     resolve_unc_to_mapped_path(r"\\server\share\docs\file.txt", &mappings),
+///     Some(r"X:\docs\file.txt".to_string()),
+/// );
+/// assert_eq!(resolve_unc_to_mapped_path(r"\\other\path\file.txt", &mappings), None);
+/// ```
 #[must_use]
 pub fn resolve_unc_to_mapped_path<S: BuildHasher>(path: &str, mappings: &HashMap<String, String, S>) -> Option<String> {
     let path_lower = path.to_lowercase();
@@ -309,7 +436,13 @@ pub fn resolve_unc_to_mapped_path<S: BuildHasher>(path: &str, mappings: &HashMap
     None
 }
 
-/// Print an error message in red.
+/// Print an error message in red to stderr.
+///
+/// # Examples
+///
+/// ```
+/// filefind::print_error("something went wrong");
+/// ```
 pub fn print_error(message: &str) {
     eprintln!("{}", message.red());
 }
@@ -322,7 +455,13 @@ macro_rules! print_error {
     };
 }
 
-/// Print a warning message in yellow.
+/// Print a warning message in yellow to stderr.
+///
+/// # Examples
+///
+/// ```
+/// filefind::print_warning("this might be a problem");
+/// ```
 pub fn print_warning(message: &str) {
     eprintln!("{}", message.yellow());
 }
@@ -335,7 +474,13 @@ macro_rules! print_warning {
     };
 }
 
-/// Print a success message in green.
+/// Print a success message in green to stdout.
+///
+/// # Examples
+///
+/// ```
+/// filefind::print_success("operation completed");
+/// ```
 pub fn print_success(message: &str) {
     println!("{}", message.green());
 }
@@ -348,7 +493,13 @@ macro_rules! print_success {
     };
 }
 
-/// Print an info message in cyan.
+/// Print an info message in cyan to stdout.
+///
+/// # Examples
+///
+/// ```
+/// filefind::print_cyan("indexing files...");
+/// ```
 pub fn print_cyan(message: &str) {
     println!("{}", message.cyan());
 }
@@ -361,7 +512,13 @@ macro_rules! print_cyan {
     };
 }
 
-/// Print a message in bold magenta.
+/// Print a message in bold magenta to stdout.
+///
+/// # Examples
+///
+/// ```
+/// filefind::print_bold_magenta("highlighted info");
+/// ```
 pub fn print_bold_magenta(message: &str) {
     println!("{}", message.bold().magenta());
 }
@@ -374,7 +531,13 @@ macro_rules! print_bold_magenta {
     };
 }
 
-/// Print a message in bold yellow.
+/// Print a message in bold yellow to stdout.
+///
+/// # Examples
+///
+/// ```
+/// filefind::print_bold_yellow("important notice");
+/// ```
 pub fn print_bold_yellow(message: &str) {
     println!("{}", message.bold().yellow());
 }
@@ -387,7 +550,13 @@ macro_rules! print_bold_yellow {
     };
 }
 
-/// Print a message in bold red.
+/// Print a message in bold red to stdout.
+///
+/// # Examples
+///
+/// ```
+/// filefind::print_bold_red("critical error");
+/// ```
 pub fn print_bold_red(message: &str) {
     println!("{}", message.bold().red());
 }
@@ -401,6 +570,20 @@ macro_rules! print_bold_red {
 }
 
 /// Format a file size in bytes to a human-readable string.
+///
+/// Uses binary units (1 KB = 1024 bytes).
+///
+/// # Examples
+///
+/// ```
+/// use filefind::format_size;
+///
+/// assert_eq!(format_size(0), "0 B");
+/// assert_eq!(format_size(512), "512 B");
+/// assert_eq!(format_size(1024), "1.00 KB");
+/// assert_eq!(format_size(1_048_576), "1.00 MB");
+/// assert_eq!(format_size(1_073_741_824), "1.00 GB");
+/// ```
 #[must_use]
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -422,6 +605,17 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Format a large number with thousands separators (e.g., 1234567 -> "1,234,567").
+///
+/// # Examples
+///
+/// ```
+/// use filefind::format_number;
+///
+/// assert_eq!(format_number(0), "0");
+/// assert_eq!(format_number(999), "999");
+/// assert_eq!(format_number(1_000), "1,000");
+/// assert_eq!(format_number(1_234_567), "1,234,567");
+/// ```
 #[must_use]
 pub fn format_number(number: u64) -> String {
     let string = number.to_string();
@@ -446,7 +640,14 @@ pub fn format_number(number: u64) -> String {
     result
 }
 
-/// Get the log directory path: ~/logs/filefind/
+/// Get the log directory path: `~/logs/filefind/`.
+///
+/// # Examples
+///
+/// ```
+/// let log_dir = filefind::get_log_directory().expect("should resolve home dir");
+/// assert!(log_dir.ends_with("logs/filefind") || log_dir.ends_with(r"logs\filefind"));
+/// ```
 ///
 /// # Errors
 /// Returns an error if the home directory cannot be determined.
@@ -512,6 +713,22 @@ fn get_shell_completion_dir(shell: Shell, name: &str) -> Result<PathBuf> {
 }
 
 /// Generate a shell completion script for the given shell.
+///
+/// When `install` is `true`, the completion file is written to the appropriate
+/// shell-specific directory. When `false`, the completion script is printed to
+/// stdout.
+///
+/// # Examples
+///
+/// ```no_run
+/// use clap::Command;
+/// use clap_complete::Shell;
+/// use filefind::generate_shell_completion;
+///
+/// let command = Command::new("myapp").about("example app");
+/// // Print the Bash completion script to stdout
+/// generate_shell_completion(Shell::Bash, command, false, "myapp").expect("generation failed");
+/// ```
 ///
 /// # Errors
 /// Returns an error if:

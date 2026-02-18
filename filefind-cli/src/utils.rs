@@ -13,6 +13,26 @@ const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 /// Highlight multiple patterns within the given text (case-insensitive).
 ///
 /// Finds all matches for all patterns, merges overlapping ranges, and highlights them.
+/// Returns a borrowed `Cow` if no matches are found, or an owned `Cow` with ANSI
+/// color codes applied to matched regions.
+///
+/// # Examples
+///
+/// ```ignore
+/// use std::borrow::Cow;
+///
+/// // No patterns returns the original text borrowed
+/// let result = highlight_match("hello world", &[]);
+/// assert!(matches!(result, Cow::Borrowed(_)));
+///
+/// // No match also returns borrowed
+/// let result = highlight_match("hello world", &["xyz"]);
+/// assert!(matches!(result, Cow::Borrowed(_)));
+///
+/// // A match returns an owned string with highlighting
+/// let result = highlight_match("hello world", &["hello"]);
+/// assert!(matches!(result, Cow::Owned(_)));
+/// ```
 pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
     if patterns.is_empty() {
         return Cow::Borrowed(text);
@@ -72,8 +92,22 @@ pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
 }
 
 /// Check if a directory is truly empty on the filesystem.
-/// Returns true if the directory exists and contains no entries.
-/// Returns false if the directory has contents, doesn't exist, or check times out.
+///
+/// Returns `true` if the directory exists and contains no entries.
+/// Returns `false` if the directory has contents, doesn't exist, or the check
+/// times out (250ms).
+///
+/// The check runs in a separate thread to avoid blocking on network paths.
+///
+/// # Examples
+///
+/// ```ignore
+/// // A newly created temp directory is empty
+/// let dir = std::env::temp_dir().join("filefind_test_empty");
+/// std::fs::create_dir_all(&dir).unwrap();
+/// assert!(is_directory_empty_on_disk(&dir.to_string_lossy()));
+/// std::fs::remove_dir(&dir).unwrap();
+/// ```
 pub fn is_directory_empty_on_disk(path: &str) -> bool {
     let path = path.to_string();
     let (sender, receiver) = mpsc::channel();
@@ -90,7 +124,17 @@ pub fn is_directory_empty_on_disk(path: &str) -> bool {
 }
 
 /// Check if a path is accessible with a timeout.
-/// Returns false if the path doesn't exist or if the check takes longer than the timeout time.
+///
+/// Returns `false` if the path doesn't exist or if the check takes longer than
+/// 250ms. The check runs in a separate thread to avoid blocking on unresponsive
+/// network paths.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert!(check_path_accessible(&std::env::temp_dir().to_string_lossy()));
+/// assert!(!check_path_accessible(r"Z:\nonexistent\path"));
+/// ```
 pub fn check_path_accessible(path: &str) -> bool {
     let path = path.to_string();
     let (sender, receiver) = mpsc::channel();
@@ -104,8 +148,18 @@ pub fn check_path_accessible(path: &str) -> bool {
 }
 
 /// Check if a directory exists on disk with a timeout.
-/// Returns true if the directory exists and is a directory.
-/// Returns false if it doesn't exist, is not a directory, or the check times out.
+///
+/// Returns `true` if the path exists and is a directory.
+/// Returns `false` if it doesn't exist, is not a directory, or the check times
+/// out (250ms). The check runs in a separate thread to avoid blocking on
+/// unresponsive network paths.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert!(check_directory_exists(&std::env::temp_dir().to_string_lossy()));
+/// assert!(!check_directory_exists(r"Z:\nonexistent\dir"));
+/// ```
 pub fn check_directory_exists(path: &str) -> bool {
     let path = path.to_string();
     let (sender, receiver) = mpsc::channel();
@@ -120,6 +174,24 @@ pub fn check_directory_exists(path: &str) -> bool {
 }
 
 /// Calculate the total size of files under each directory.
+///
+/// Groups the given file entries by their parent directory and sums the file sizes
+/// for each directory.
+///
+/// # Examples
+///
+/// ```ignore
+/// let file = FileEntry {
+///     name: "readme.md".to_string(),
+///     full_path: r"C:\project\readme.md".to_string(),
+///     size: 1024,
+///     is_directory: false,
+///     ..Default::default()
+/// };
+/// let files = vec![&file];
+/// let sizes = calculate_directory_sizes(&files);
+/// assert_eq!(sizes.get(r"C:\project"), Some(&1024));
+/// ```
 pub fn calculate_directory_sizes(files: &[&FileEntry]) -> HashMap<String, u64> {
     let mut dir_sizes: HashMap<String, u64> = HashMap::new();
 
@@ -134,6 +206,22 @@ pub fn calculate_directory_sizes(files: &[&FileEntry]) -> HashMap<String, u64> {
 }
 
 /// Count all matching files under a directory (including subdirectories).
+///
+/// Matches files whose `full_path` starts with the directory path followed by
+/// a separator (`\` or `/`).
+///
+/// # Examples
+///
+/// ```ignore
+/// let file = FileEntry {
+///     name: "readme.md".to_string(),
+///     full_path: r"C:\project\src\readme.md".to_string(),
+///     ..Default::default()
+/// };
+/// let files = vec![&file];
+/// assert_eq!(count_files_under_directory(&files, r"C:\project"), 1);
+/// assert_eq!(count_files_under_directory(&files, r"D:\other"), 0);
+/// ```
 pub fn count_files_under_directory(files: &[&FileEntry], dir_path: &str) -> usize {
     let dir_prefix_backslash = format!("{dir_path}\\");
     let dir_prefix_forward = format!("{dir_path}/");
