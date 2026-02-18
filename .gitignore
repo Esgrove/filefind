@@ -21,3 +21,6 @@
 # Extra files
 /*.txt
 /*.csv
+
+# Test coverage html
+/coverage
