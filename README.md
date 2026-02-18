@@ -254,6 +254,29 @@ This helps match files regardless of naming convention. Use `-e` (exact) mode to
 - Windows 10/11
 - Administrator privileges (required for MFT and USN Journal access)
 
+## Development
+
+### Code Coverage
+
+Code coverage is generated using [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov)
+with [cargo-nextest](https://nexte.st/) as the test runner.
+
+Install both tools:
+
+```shell
+cargo install cargo-llvm-cov cargo-nextest
+```
+
+Usage:
+
+```shell
+# Run tests with coverage (text summary)
+cargo llvm-cov nextest
+
+# Generate HTML report and open in browser
+cargo llvm-cov nextest --open
+```
+
 ## License
 
 MIT

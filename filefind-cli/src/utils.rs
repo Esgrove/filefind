@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -12,24 +13,26 @@ const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 /// Highlight multiple patterns within the given text (case-insensitive).
 ///
 /// Finds all matches for all patterns, merges overlapping ranges, and highlights them.
-pub fn highlight_match(text: &str, patterns: &[&str]) -> String {
+pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
     if patterns.is_empty() {
-        return text.to_string();
+        return Cow::Borrowed(text);
     }
 
     let text_lower = text.to_lowercase();
 
+    // Pre-lowercase all patterns once instead of per-match
+    let patterns_lower: Vec<String> = patterns.iter().map(|p| p.to_lowercase()).collect();
+
     // Collect all match ranges (start, end) for all patterns
     let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for pattern in patterns {
-        let pattern_lower = pattern.to_lowercase();
-        for (start, matched) in text_lower.match_indices(&pattern_lower) {
+    for pattern_lower in &patterns_lower {
+        for (start, matched) in text_lower.match_indices(pattern_lower.as_str()) {
             ranges.push((start, start + matched.len()));
         }
     }
 
     if ranges.is_empty() {
-        return text.to_string();
+        return Cow::Borrowed(text);
     }
 
     // Sort by start position, then by end position (longer matches first)
@@ -65,7 +68,7 @@ pub fn highlight_match(text: &str, patterns: &[&str]) -> String {
 
     // Add remaining text
     result.push_str(&text[last_end..]);
-    result
+    Cow::Owned(result)
 }
 
 /// Check if a directory is truly empty on the filesystem.
@@ -138,4 +141,93 @@ pub fn count_files_under_directory(files: &[&FileEntry], dir_path: &str) -> usiz
         .iter()
         .filter(|f| f.full_path.starts_with(&dir_prefix_backslash) || f.full_path.starts_with(&dir_prefix_forward))
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::*;
+
+    #[test]
+    fn test_highlight_match_empty_patterns_returns_borrowed() {
+        let text = "C:\\Users\\file.txt";
+        let result = highlight_match(text, &[]);
+        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn test_highlight_match_no_match_returns_borrowed() {
+        let text = "C:\\Users\\file.txt";
+        let result = highlight_match(text, &["nonexistent"]);
+        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn test_highlight_match_with_match_returns_owned() {
+        let text = "C:\\Users\\file.txt";
+        let result = highlight_match(text, &["file"]);
+        assert!(matches!(result, Cow::Owned(_)));
+        // The result should contain the matched text (with or without ANSI codes depending on terminal)
+        assert!(result.contains("file"));
+    }
+
+    #[test]
+    fn test_highlight_match_case_insensitive() {
+        let text = "MyDocument.TXT";
+        let result = highlight_match(text, &["mydocument"]);
+        assert!(matches!(result, Cow::Owned(_)));
+        // Original case should be preserved in the highlighted output
+        assert!(result.contains("MyDocument"));
+    }
+
+    #[test]
+    fn test_highlight_match_multiple_patterns() {
+        let text = "C:\\Users\\Documents\\report.pdf";
+        let result = highlight_match(text, &["Users", "report"]);
+        assert!(matches!(result, Cow::Owned(_)));
+        assert!(result.contains("Users"));
+        assert!(result.contains("report"));
+    }
+
+    #[test]
+    fn test_highlight_match_overlapping_patterns() {
+        let text = "abcdef";
+        // "bcd" and "cde" overlap
+        let result = highlight_match(text, &["bcd", "cde"]);
+        assert!(matches!(result, Cow::Owned(_)));
+        // The merged highlight should cover "bcde"
+        assert!(result.contains("bcde"));
+    }
+
+    #[test]
+    fn test_highlight_match_multiple_occurrences() {
+        let text = "test_test_test";
+        let result = highlight_match(text, &["test"]);
+        assert!(matches!(result, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn test_highlight_match_full_text_match() {
+        let text = "hello";
+        let result = highlight_match(text, &["hello"]);
+        assert!(matches!(result, Cow::Owned(_)));
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_highlight_match_empty_text() {
+        let result = highlight_match("", &["pattern"]);
+        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_highlight_match_empty_text_empty_patterns() {
+        let result = highlight_match("", &[]);
+        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_eq!(result, "");
+    }
 }

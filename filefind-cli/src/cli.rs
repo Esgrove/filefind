@@ -550,7 +550,7 @@ fn print_entry_info(entry: &FileEntry, highlight_patterns: &[&str], status: Entr
         EntryStatus::File => (
             format!("{:>10}", format_size(entry.size)),
             String::new(),
-            utils::highlight_match(&entry.full_path, highlight_patterns),
+            utils::highlight_match(&entry.full_path, highlight_patterns).into_owned(),
         ),
         EntryStatus::Directory { size, file_count } => (
             size.map_or_else(|| format!("{:>10}", "-"), |s| format!("{:>10}", format_size(s))),

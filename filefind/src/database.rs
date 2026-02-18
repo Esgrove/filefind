@@ -2,6 +2,7 @@
 //!
 //! Handles storing and querying the file index.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -304,8 +305,13 @@ impl Database {
     /// # Errors
     /// Returns an error if the database operation fails.
     pub fn delete_files_under_path(&self, path: &str) -> Result<usize> {
-        // Normalize path to use backslash for consistency
-        let normalized_path = path.replace('/', "\\");
+        // Normalize path to use backslash for consistency.
+        // Use Cow to avoid allocation when the path already uses backslashes (common on Windows).
+        let normalized_path: Cow<'_, str> = if path.contains('/') {
+            Cow::Owned(path.replace('/', "\\"))
+        } else {
+            Cow::Borrowed(path)
+        };
         let path_prefix_backslash = format!("{normalized_path}\\%");
         let path_prefix_forward = format!("{normalized_path}/%");
 
@@ -532,7 +538,8 @@ impl Database {
         let mut statement = self.connection.prepare(&sql)?;
 
         // Bind all pattern parameters
-        let sql_patterns: Vec<String> = patterns.iter().map(|p| glob_to_sql_like(p)).collect();
+        // Collect into Vec<String> because rusqlite's ToSql requires Sized types
+        let sql_patterns: Vec<String> = patterns.iter().map(|p| glob_to_sql_like(p).into_owned()).collect();
         let mut params_vec: Vec<&dyn rusqlite::ToSql> =
             sql_patterns.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
         let limit_value = i64::try_from(limit).unwrap_or(i64::MAX);
@@ -679,27 +686,21 @@ impl Database {
     /// # Errors
     /// Returns an error if the database operation fails.
     pub fn get_stats(&self) -> Result<DatabaseStats> {
-        let total_files: i64 =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM files WHERE is_directory = 0", [], |row| {
-                    row.get(0)
-                })?;
-
-        let total_directories: i64 =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM files WHERE is_directory = 1", [], |row| {
-                    row.get(0)
-                })?;
+        let (total_files, total_directories, total_size): (i64, i64, i64) = self.connection.query_row(
+            r"
+            SELECT
+                COUNT(CASE WHEN is_directory = 0 THEN 1 END),
+                COUNT(CASE WHEN is_directory = 1 THEN 1 END),
+                COALESCE(SUM(CASE WHEN is_directory = 0 THEN size END), 0)
+            FROM files
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
 
         let volume_count: i64 = self
             .connection
             .query_row("SELECT COUNT(*) FROM volumes", [], |row| row.get(0))?;
-
-        let total_size: i64 = self.connection.query_row(
-            "SELECT COALESCE(SUM(size), 0) FROM files WHERE is_directory = 0",
-            [],
-            |row| row.get(0),
-        )?;
 
         Ok(DatabaseStats {
             total_files: u64::try_from(total_files).unwrap_or(0),
@@ -714,22 +715,17 @@ impl Database {
     /// # Errors
     /// Returns an error if the database operation fails.
     pub fn get_volume_stats(&self, volume_id: i64) -> Result<VolumeStats> {
-        let file_count: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM files WHERE volume_id = ?1 AND is_directory = 0",
+        let (file_count, directory_count, total_size): (i64, i64, i64) = self.connection.query_row(
+            r"
+            SELECT
+                COUNT(CASE WHEN is_directory = 0 THEN 1 END),
+                COUNT(CASE WHEN is_directory = 1 THEN 1 END),
+                COALESCE(SUM(CASE WHEN is_directory = 0 THEN size END), 0)
+            FROM files
+            WHERE volume_id = ?1
+            ",
             rusqlite::params![volume_id],
-            |row| row.get(0),
-        )?;
-
-        let directory_count: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM files WHERE volume_id = ?1 AND is_directory = 1",
-            rusqlite::params![volume_id],
-            |row| row.get(0),
-        )?;
-
-        let total_size: i64 = self.connection.query_row(
-            "SELECT COALESCE(SUM(size), 0) FROM files WHERE volume_id = ?1 AND is_directory = 0",
-            rusqlite::params![volume_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
 
         Ok(VolumeStats {
@@ -904,6 +900,7 @@ impl Database {
                 CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
                 CREATE INDEX IF NOT EXISTS idx_files_is_directory ON files(is_directory);
                 CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_time);
+                CREATE INDEX IF NOT EXISTS idx_files_volume_mft ON files(volume_id, mft_reference);
 
                 -- Enable foreign keys
                 PRAGMA foreign_keys = ON;
@@ -996,7 +993,15 @@ fn unix_to_system_time(timestamp: i64) -> Option<SystemTime> {
 }
 
 /// Convert a glob pattern to a SQL LIKE pattern.
-fn glob_to_sql_like(pattern: &str) -> String {
+///
+/// Returns `Cow::Borrowed` when the pattern contains no special characters,
+/// avoiding an allocation.
+fn glob_to_sql_like(pattern: &str) -> Cow<'_, str> {
+    // Fast path: if no special chars, return the original string
+    if !pattern.contains(['*', '?', '%', '_', '\\']) {
+        return Cow::Borrowed(pattern);
+    }
+
     let mut result = String::with_capacity(pattern.len() * 2);
 
     for character in pattern.chars() {
@@ -1010,7 +1015,7 @@ fn glob_to_sql_like(pattern: &str) -> String {
         }
     }
 
-    result
+    Cow::Owned(result)
 }
 
 #[cfg(test)]
@@ -1115,6 +1120,48 @@ mod tests {
         assert_eq!(glob_to_sql_like("???"), "___");
         assert_eq!(glob_to_sql_like("file"), "file");
         assert_eq!(glob_to_sql_like(""), "");
+    }
+
+    #[test]
+    fn test_glob_to_sql_like_cow_variants() {
+        // Plain strings without special chars should return Cow::Borrowed (no allocation)
+        assert!(matches!(glob_to_sql_like("file"), Cow::Borrowed(_)));
+        assert!(matches!(glob_to_sql_like(""), Cow::Borrowed(_)));
+        assert!(matches!(glob_to_sql_like("report.txt"), Cow::Borrowed(_)));
+        assert!(matches!(glob_to_sql_like("hello world"), Cow::Borrowed(_)));
+
+        // Strings with glob/special chars should return Cow::Owned (allocation needed)
+        assert!(matches!(glob_to_sql_like("*.txt"), Cow::Owned(_)));
+        assert!(matches!(glob_to_sql_like("file?.txt"), Cow::Owned(_)));
+        assert!(matches!(glob_to_sql_like("test%file"), Cow::Owned(_)));
+        assert!(matches!(glob_to_sql_like("test_file"), Cow::Owned(_)));
+        assert!(matches!(glob_to_sql_like("\\path"), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn test_delete_files_under_path_with_forward_slashes() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume = create_test_volume("FWD_SLASH_VOL", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Insert files with backslash paths (as stored in the database)
+        database
+            .insert_file(&create_test_directory(volume_id, "Docs", "C:\\Docs"))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "a.txt", "C:\\Docs\\a.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "b.txt", "C:\\Docs\\b.txt", 200))
+            .unwrap();
+
+        // Delete using forward slashes — exercises the Cow::Owned normalization branch
+        let deleted = database.delete_files_under_path("C:/Docs").unwrap();
+        assert_eq!(deleted, 3);
+
+        let results = database.search_by_name("Docs", 10).unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]

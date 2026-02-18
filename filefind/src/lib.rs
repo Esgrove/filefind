@@ -131,23 +131,16 @@ pub const fn is_mapped_network_drive(_path: &Path) -> bool {
 /// Returns true for paths like "C:", "C:\", "D:/", etc.
 #[must_use]
 pub fn is_drive_root(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
+    let bytes = path.to_string_lossy();
+    let bytes = bytes.as_bytes();
 
     // Check if it's a drive root like "C:\", "C:", "C:/"
-    if path_str.len() <= 3 {
-        let chars: Vec<char> = path_str.chars().collect();
-        if !chars.is_empty() && chars[0].is_ascii_alphabetic() && chars.len() >= 2 && chars[1] == ':' {
-            // "C:" or "C:\" or "C:/"
-            if chars.len() == 2 {
-                return true;
-            }
-            if chars.len() == 3 && (chars[2] == '\\' || chars[2] == '/') {
-                return true;
-            }
-        }
-    }
-
-    false
+    matches!(
+        bytes,
+        [letter, b':', ..] if letter.is_ascii_alphabetic() && (
+            bytes.len() == 2 || (bytes.len() == 3 && (bytes[2] == b'\\' || bytes[2] == b'/'))
+        )
+    )
 }
 
 /// Check if a path is on a network drive (either UNC or mapped).
@@ -432,13 +425,22 @@ pub fn format_size(bytes: u64) -> String {
 #[must_use]
 pub fn format_number(number: u64) -> String {
     let string = number.to_string();
-    let mut result = String::new();
+    let bytes = string.as_bytes();
+    let len = bytes.len();
 
-    for (count, character) in string.chars().rev().enumerate() {
-        if count > 0 && count % 3 == 0 {
-            result.insert(0, ',');
+    if len <= 3 {
+        return string;
+    }
+
+    // Pre-allocate: original length + number of commas
+    let comma_count = (len - 1) / 3;
+    let mut result = String::with_capacity(len + comma_count);
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if index > 0 && (len - index).is_multiple_of(3) {
+            result.push(',');
         }
-        result.insert(0, character);
+        result.push(byte as char);
     }
 
     result
@@ -481,7 +483,7 @@ fn get_shell_completion_dir(shell: Shell, name: &str) -> Result<PathBuf> {
             }
         }
         Shell::Bash => home.join(".bash_completion.d"),
-        Shell::Elvish => home.join(".elvish"),
+        Shell::Elvish => home.join(".elvish/lib"),
         Shell::Fish => home.join(".config/fish/completions"),
         Shell::Zsh => home.join(".zsh/completions"),
         _ => anyhow::bail!("Unsupported shell"),
@@ -491,22 +493,18 @@ fn get_shell_completion_dir(shell: Shell, name: &str) -> Result<PathBuf> {
         return Ok(user_dir);
     }
 
+    // PowerShell has no separate global directory; skip the global fallback for it.
     let global_dir = match shell {
-        Shell::PowerShell => {
-            if cfg!(windows) {
-                home.join(r"Documents\PowerShell\completions")
-            } else {
-                home.join(".config/powershell/completions")
-            }
-        }
-        Shell::Bash => PathBuf::from("/etc/bash_completion.d"),
-        Shell::Fish => PathBuf::from("/usr/share/fish/completions"),
-        Shell::Zsh => PathBuf::from("/usr/share/zsh/site-functions"),
-        _ => anyhow::bail!("Unsupported shell"),
+        Shell::Bash => Some(PathBuf::from("/etc/bash_completion.d")),
+        Shell::Fish => Some(PathBuf::from("/usr/share/fish/completions")),
+        Shell::Zsh => Some(PathBuf::from("/usr/share/zsh/site-functions")),
+        _ => None,
     };
 
-    if global_dir.exists() {
-        return Ok(global_dir);
+    if let Some(global) = global_dir
+        && global.exists()
+    {
+        return Ok(global);
     }
 
     std::fs::create_dir_all(&user_dir)?;

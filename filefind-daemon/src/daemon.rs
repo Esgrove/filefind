@@ -549,17 +549,19 @@ impl Daemon {
         }
 
         // Process deletions by MFT reference (more reliable than path resolution)
-        if let Some(ref db) = self.database {
+        if let Some(ref db) = self.database
+            && !deletions_by_drive.is_empty()
+        {
+            // Query all volumes once instead of per drive letter
+            let volumes = db.get_all_volumes().unwrap_or_default();
             for (drive_letter, mft_refs) in &deletions_by_drive {
-                // Get volume_id for this drive
-                if let Ok(volumes) = db.get_all_volumes()
-                    && let Some(volume) = volumes.iter().find(|v| {
-                        v.mount_point
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.eq_ignore_ascii_case(drive_letter))
-                    })
-                    && let Some(volume_id) = volume.id
+                // Find volume_id for this drive from the cached list
+                if let Some(volume) = volumes.iter().find(|v| {
+                    v.mount_point
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.eq_ignore_ascii_case(drive_letter))
+                }) && let Some(volume_id) = volume.id
                 {
                     match db.delete_files_by_mft_references(volume_id, mft_refs) {
                         Ok(deleted) => {
