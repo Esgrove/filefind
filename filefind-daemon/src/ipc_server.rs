@@ -6,13 +6,15 @@
 //! Uses postcard binary serialization for efficient, compact messages.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
-use filefind::{DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, Database, get_ipc_path};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+use filefind::{DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, Database, get_ipc_path};
 
 /// Commands that can be sent to the daemon from the IPC server.
 #[derive(Debug)]
@@ -27,6 +29,16 @@ pub enum IpcToDaemon {
     Resume,
     /// Request to prune missing entries from the database.
     Prune,
+}
+
+/// IPC server that handles client connections.
+pub struct IpcServer {
+    /// Shared state for reporting daemon status.
+    state: Arc<IpcServerState>,
+    /// Channel to send commands to the daemon.
+    command_sender: mpsc::Sender<IpcToDaemon>,
+    /// Shutdown signal.
+    shutdown: Arc<AtomicBool>,
 }
 
 /// Shared state that the IPC server uses to report daemon status.
@@ -48,48 +60,45 @@ pub struct IpcServerState {
 /// Atomic wrapper for daemon state.
 pub struct AtomicDaemonState(AtomicU8);
 
-/// Internal representation for atomic state.
-use std::sync::atomic::AtomicU8;
-
 impl AtomicDaemonState {
     /// Create a new atomic daemon state.
     #[must_use]
     pub const fn new(state: DaemonStateInfo) -> Self {
-        Self(AtomicU8::new(state_to_u8(state)))
+        Self(AtomicU8::new(Self::state_to_u8(state)))
     }
 
     /// Load the current state.
     #[must_use]
     pub fn load(&self) -> DaemonStateInfo {
-        u8_to_state(self.0.load(Ordering::Relaxed))
+        Self::u8_to_state(self.0.load(Ordering::Relaxed))
     }
 
     /// Store a new state.
     pub fn store(&self, state: DaemonStateInfo) {
-        self.0.store(state_to_u8(state), Ordering::Relaxed);
+        self.0.store(Self::state_to_u8(state), Ordering::Relaxed);
     }
-}
 
-/// Convert daemon state to u8 for atomic storage.
-const fn state_to_u8(state: DaemonStateInfo) -> u8 {
-    match state {
-        DaemonStateInfo::Stopped => 0,
-        DaemonStateInfo::Starting => 1,
-        DaemonStateInfo::Running => 2,
-        DaemonStateInfo::Scanning => 3,
-        DaemonStateInfo::Stopping => 4,
+    /// Convert daemon state to u8 for atomic storage.
+    const fn state_to_u8(state: DaemonStateInfo) -> u8 {
+        match state {
+            DaemonStateInfo::Stopped => 0,
+            DaemonStateInfo::Starting => 1,
+            DaemonStateInfo::Running => 2,
+            DaemonStateInfo::Scanning => 3,
+            DaemonStateInfo::Stopping => 4,
+        }
     }
-}
 
-/// Convert u8 to daemon state.
-const fn u8_to_state(value: u8) -> DaemonStateInfo {
-    match value {
-        1 => DaemonStateInfo::Starting,
-        2 => DaemonStateInfo::Running,
-        3 => DaemonStateInfo::Scanning,
-        4 => DaemonStateInfo::Stopping,
-        // 0 and any other value default to Stopped
-        _ => DaemonStateInfo::Stopped,
+    /// Convert u8 to daemon state.
+    const fn u8_to_state(value: u8) -> DaemonStateInfo {
+        match value {
+            1 => DaemonStateInfo::Starting,
+            2 => DaemonStateInfo::Running,
+            3 => DaemonStateInfo::Scanning,
+            4 => DaemonStateInfo::Stopping,
+            // 0 and any other value default to Stopped
+            _ => DaemonStateInfo::Stopped,
+        }
     }
 }
 
@@ -131,22 +140,6 @@ impl IpcServerState {
     }
 }
 
-impl Default for IpcServerState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// IPC server that handles client connections.
-pub struct IpcServer {
-    /// Shared state for reporting daemon status.
-    state: Arc<IpcServerState>,
-    /// Channel to send commands to the daemon.
-    command_sender: mpsc::Sender<IpcToDaemon>,
-    /// Shutdown signal.
-    shutdown: Arc<AtomicBool>,
-}
-
 impl IpcServer {
     /// Create a new IPC server.
     #[must_use]
@@ -186,6 +179,7 @@ impl IpcServer {
         use std::os::windows::ffi::OsStrExt;
         use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
         use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows::Win32::Security::{SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR};
         use windows::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
         use windows::Win32::System::Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
@@ -198,6 +192,18 @@ impl IpcServer {
             .chain(std::iter::once(0))
             .collect();
 
+        // Create a permissive security descriptor so non-elevated processes
+        // (CLI, tray app) can connect when the daemon runs elevated.
+        let mut security_descriptor = SECURITY_DESCRIPTOR::default();
+        let security_attributes: SECURITY_ATTRIBUTES =
+            match Self::create_permissive_security_attributes(&mut security_descriptor) {
+                Ok(sa) => sa,
+                Err(error) => {
+                    error!("Failed to create pipe security attributes: {error}");
+                    return;
+                }
+            };
+
         info!("IPC server listening on: {}", pipe_path.display());
 
         loop {
@@ -206,8 +212,9 @@ impl IpcServer {
                 break;
             }
 
-            // Create named pipe instance
-            // SAFETY: CreateNamedPipeW is safe with valid parameters
+            // Create named pipe instance with permissive security so non-elevated
+            // clients can connect when the daemon runs with admin privileges.
+            // SAFETY: CreateNamedPipeW is safe with valid parameters.
             let pipe_handle = unsafe {
                 CreateNamedPipeW(
                     windows::core::PCWSTR(pipe_path_wide.as_ptr()),
@@ -217,7 +224,7 @@ impl IpcServer {
                     4096,
                     4096,
                     0,
-                    None,
+                    Some((&raw const security_attributes).cast()),
                 )
             };
 
@@ -281,6 +288,55 @@ impl IpcServer {
                 let _ = CloseHandle(pipe_handle);
             }
         }
+    }
+
+    /// Create a [`SECURITY_ATTRIBUTES`] with a null DACL.
+    ///
+    /// A null DACL grants full access to everyone, which is acceptable for a
+    /// local-only named pipe used for desktop IPC. This allows non-elevated
+    /// processes (CLI, tray app) to connect when the daemon runs with admin
+    /// privileges (e.g. started by a scheduled task for MFT/USN access).
+    ///
+    /// The returned struct borrows `security_descriptor`, so the caller must
+    /// keep it alive for as long as the attributes are in use.
+    #[cfg(windows)]
+    fn create_permissive_security_attributes(
+        security_descriptor: &mut windows::Win32::Security::SECURITY_DESCRIPTOR,
+    ) -> Result<windows::Win32::Security::SECURITY_ATTRIBUTES> {
+        use windows::Win32::Security::{
+            InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, SetSecurityDescriptorDacl,
+        };
+
+        /// Revision level for `InitializeSecurityDescriptor` (always 1).
+        const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
+
+        // SAFETY: InitializeSecurityDescriptor initializes an allocated descriptor.
+        unsafe {
+            InitializeSecurityDescriptor(
+                PSECURITY_DESCRIPTOR((&raw mut *security_descriptor).cast()),
+                SECURITY_DESCRIPTOR_REVISION,
+            )
+        }
+        .map_err(|error| anyhow::anyhow!("InitializeSecurityDescriptor failed: {error}"))?;
+
+        // Set a null DACL which grants full access to everyone.
+        // SAFETY: The security descriptor was just initialized above.
+        unsafe {
+            SetSecurityDescriptorDacl(
+                PSECURITY_DESCRIPTOR((&raw mut *security_descriptor).cast()),
+                true,
+                None,
+                false,
+            )
+        }
+        .map_err(|error| anyhow::anyhow!("SetSecurityDescriptorDacl failed: {error}"))?;
+
+        Ok(SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+                .expect("SECURITY_ATTRIBUTES size fits u32"),
+            lpSecurityDescriptor: (&raw mut *security_descriptor).cast(),
+            bInheritHandle: false.into(),
+        })
     }
 
     /// Handle a Windows named pipe client synchronously.
@@ -453,6 +509,12 @@ impl IpcServer {
     }
 }
 
+impl Default for IpcServerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Spawn the IPC server as a background thread.
 ///
 /// Returns a channel receiver for commands from clients.
@@ -515,36 +577,36 @@ mod tests {
         ];
 
         for state in states {
-            let value: u8 = state_to_u8(state);
-            let converted: DaemonStateInfo = u8_to_state(value);
+            let value: u8 = AtomicDaemonState::state_to_u8(state);
+            let converted: DaemonStateInfo = AtomicDaemonState::u8_to_state(value);
             assert_eq!(state, converted);
         }
     }
 
     #[test]
     fn test_state_to_u8_values() {
-        assert_eq!(state_to_u8(DaemonStateInfo::Stopped), 0);
-        assert_eq!(state_to_u8(DaemonStateInfo::Starting), 1);
-        assert_eq!(state_to_u8(DaemonStateInfo::Running), 2);
-        assert_eq!(state_to_u8(DaemonStateInfo::Scanning), 3);
-        assert_eq!(state_to_u8(DaemonStateInfo::Stopping), 4);
+        assert_eq!(AtomicDaemonState::state_to_u8(DaemonStateInfo::Stopped), 0);
+        assert_eq!(AtomicDaemonState::state_to_u8(DaemonStateInfo::Starting), 1);
+        assert_eq!(AtomicDaemonState::state_to_u8(DaemonStateInfo::Running), 2);
+        assert_eq!(AtomicDaemonState::state_to_u8(DaemonStateInfo::Scanning), 3);
+        assert_eq!(AtomicDaemonState::state_to_u8(DaemonStateInfo::Stopping), 4);
     }
 
     #[test]
     fn test_u8_to_state_values() {
-        assert_eq!(u8_to_state(0), DaemonStateInfo::Stopped);
-        assert_eq!(u8_to_state(1), DaemonStateInfo::Starting);
-        assert_eq!(u8_to_state(2), DaemonStateInfo::Running);
-        assert_eq!(u8_to_state(3), DaemonStateInfo::Scanning);
-        assert_eq!(u8_to_state(4), DaemonStateInfo::Stopping);
+        assert_eq!(AtomicDaemonState::u8_to_state(0), DaemonStateInfo::Stopped);
+        assert_eq!(AtomicDaemonState::u8_to_state(1), DaemonStateInfo::Starting);
+        assert_eq!(AtomicDaemonState::u8_to_state(2), DaemonStateInfo::Running);
+        assert_eq!(AtomicDaemonState::u8_to_state(3), DaemonStateInfo::Scanning);
+        assert_eq!(AtomicDaemonState::u8_to_state(4), DaemonStateInfo::Stopping);
     }
 
     #[test]
     fn test_u8_to_state_invalid_values() {
         // Invalid values should default to Stopped
-        assert_eq!(u8_to_state(5), DaemonStateInfo::Stopped);
-        assert_eq!(u8_to_state(100), DaemonStateInfo::Stopped);
-        assert_eq!(u8_to_state(255), DaemonStateInfo::Stopped);
+        assert_eq!(AtomicDaemonState::u8_to_state(5), DaemonStateInfo::Stopped);
+        assert_eq!(AtomicDaemonState::u8_to_state(100), DaemonStateInfo::Stopped);
+        assert_eq!(AtomicDaemonState::u8_to_state(255), DaemonStateInfo::Stopped);
     }
 
     #[test]
