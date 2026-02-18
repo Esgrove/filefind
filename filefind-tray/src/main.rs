@@ -142,3 +142,215 @@ fn spawn_background_tray(args: &TrayArgs) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::*;
+
+    /// Helper to parse tray CLI args from a string slice.
+    fn parse(args: &[&str]) -> TrayArgs {
+        let mut full_args = vec!["filefind-tray"];
+        full_args.extend_from_slice(args);
+        TrayArgs::try_parse_from(full_args).expect("Failed to parse args")
+    }
+
+    /// Helper that expects parsing to fail.
+    fn parse_err(args: &[&str]) {
+        let mut full_args = vec!["filefind-tray"];
+        full_args.extend_from_slice(args);
+        assert!(
+            TrayArgs::try_parse_from(full_args).is_err(),
+            "Expected parse to fail for args: {args:?}"
+        );
+    }
+
+    // ── No arguments ──────────────────────────────────────────────
+
+    #[test]
+    fn test_no_args_defaults() {
+        let args = parse(&[]);
+        assert!(!args.foreground);
+        assert!(!args.verbose);
+        assert!(args.log_level.is_none());
+    }
+
+    // ── Foreground flag ───────────────────────────────────────────
+
+    #[test]
+    fn test_foreground_short() {
+        let args = parse(&["-f"]);
+        assert!(args.foreground);
+    }
+
+    #[test]
+    fn test_foreground_long() {
+        let args = parse(&["--foreground"]);
+        assert!(args.foreground);
+    }
+
+    // ── Verbose flag ──────────────────────────────────────────────
+
+    #[test]
+    fn test_verbose_short() {
+        let args = parse(&["-v"]);
+        assert!(args.verbose);
+    }
+
+    #[test]
+    fn test_verbose_long() {
+        let args = parse(&["--verbose"]);
+        assert!(args.verbose);
+    }
+
+    // ── Log level ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_log_level_error() {
+        let args = parse(&["-l", "error"]);
+        assert_eq!(args.log_level, Some(LogLevel::Error));
+    }
+
+    #[test]
+    fn test_log_level_warn() {
+        let args = parse(&["--log", "warn"]);
+        assert_eq!(args.log_level, Some(LogLevel::Warn));
+    }
+
+    #[test]
+    fn test_log_level_info() {
+        let args = parse(&["-l", "info"]);
+        assert_eq!(args.log_level, Some(LogLevel::Info));
+    }
+
+    #[test]
+    fn test_log_level_debug() {
+        let args = parse(&["-l", "debug"]);
+        assert_eq!(args.log_level, Some(LogLevel::Debug));
+    }
+
+    #[test]
+    fn test_log_level_trace() {
+        let args = parse(&["-l", "trace"]);
+        assert_eq!(args.log_level, Some(LogLevel::Trace));
+    }
+
+    #[test]
+    fn test_log_level_invalid() {
+        parse_err(&["-l", "invalid"]);
+    }
+
+    #[test]
+    fn test_log_level_missing_value() {
+        parse_err(&["-l"]);
+    }
+
+    // ── Combined flags ────────────────────────────────────────────
+
+    #[test]
+    fn test_foreground_and_verbose() {
+        let args = parse(&["-f", "-v"]);
+        assert!(args.foreground);
+        assert!(args.verbose);
+    }
+
+    #[test]
+    fn test_foreground_and_log_level() {
+        let args = parse(&["-f", "-l", "debug"]);
+        assert!(args.foreground);
+        assert_eq!(args.log_level, Some(LogLevel::Debug));
+    }
+
+    #[test]
+    fn test_verbose_and_log_level() {
+        let args = parse(&["-v", "-l", "warn"]);
+        assert!(args.verbose);
+        assert_eq!(args.log_level, Some(LogLevel::Warn));
+    }
+
+    #[test]
+    fn test_all_flags_combined() {
+        let args = parse(&["-f", "-v", "-l", "trace"]);
+        assert!(args.foreground);
+        assert!(args.verbose);
+        assert_eq!(args.log_level, Some(LogLevel::Trace));
+    }
+
+    #[test]
+    fn test_all_flags_long_form() {
+        let args = parse(&["--foreground", "--verbose", "--log", "error"]);
+        assert!(args.foreground);
+        assert!(args.verbose);
+        assert_eq!(args.log_level, Some(LogLevel::Error));
+    }
+
+    // ── Flag order independence ───────────────────────────────────
+
+    #[test]
+    fn test_log_level_before_foreground() {
+        let args = parse(&["-l", "info", "-f"]);
+        assert!(args.foreground);
+        assert_eq!(args.log_level, Some(LogLevel::Info));
+    }
+
+    #[test]
+    fn test_verbose_before_foreground() {
+        let args = parse(&["-v", "-f"]);
+        assert!(args.foreground);
+        assert!(args.verbose);
+    }
+
+    // ── Invalid arguments ─────────────────────────────────────────
+
+    #[test]
+    fn test_unknown_flag() {
+        parse_err(&["--nonexistent"]);
+    }
+
+    #[test]
+    fn test_unknown_subcommand() {
+        parse_err(&["start"]);
+    }
+
+    #[test]
+    fn test_positional_arg_rejected() {
+        parse_err(&["somefile.txt"]);
+    }
+
+    // ── Log level resolution logic ────────────────────────────────
+
+    #[test]
+    fn test_log_level_default_is_info() {
+        let args = parse(&[]);
+        let log_level = args
+            .log_level
+            .unwrap_or(if args.verbose { LogLevel::Debug } else { LogLevel::Info });
+        assert_eq!(log_level.to_level_filter(), LogLevel::Info.to_level_filter());
+    }
+
+    #[test]
+    fn test_log_level_verbose_resolves_to_debug() {
+        let args = parse(&["-v"]);
+        let log_level = args
+            .log_level
+            .unwrap_or(if args.verbose { LogLevel::Debug } else { LogLevel::Info });
+        assert_eq!(log_level.to_level_filter(), LogLevel::Debug.to_level_filter());
+    }
+
+    #[test]
+    fn test_log_level_explicit_overrides_verbose() {
+        let args = parse(&["-v", "-l", "error"]);
+        let log_level = args
+            .log_level
+            .unwrap_or(if args.verbose { LogLevel::Debug } else { LogLevel::Info });
+        assert_eq!(log_level.to_level_filter(), LogLevel::Error.to_level_filter());
+    }
+
+    // ── command_factory ───────────────────────────────────────────
+
+    #[test]
+    fn test_command_factory_debug_assert() {
+        TrayArgs::command().debug_assert();
+    }
+}
