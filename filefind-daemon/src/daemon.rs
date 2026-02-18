@@ -1018,8 +1018,7 @@ pub fn list_volumes(database_path: &Path, detailed: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", "Indexed Volumes".bold());
-    println!();
+    println!("{}", "Indexed Volumes:".bold());
 
     for volume in &volumes {
         let status = if volume.is_online {
