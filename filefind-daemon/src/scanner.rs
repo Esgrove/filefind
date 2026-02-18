@@ -1641,4 +1641,776 @@ mod tests {
         // Should have: scan_dir + keep.rs = 2 (skip1.log and skip2.log excluded)
         assert_eq!(count, 2, "Expected 2 entries (dir + keep.rs), log files excluded");
     }
+
+    // ── process_scan_result ───────────────────────────────────────
+
+    #[test]
+    fn test_process_scan_result_failed_returns_zero() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let result = ScanResult::Failed {
+            label: "X:".to_string(),
+            error: "Drive not found".to_string(),
+        };
+        let count = process_scan_result(&mut database, result, false).expect("process_scan_result failed");
+        assert_eq!(count, 0, "Failed scan result should return 0 entries");
+    }
+
+    #[test]
+    fn test_process_scan_result_success_inserts_entries() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let volume_info = IndexedVolume::new("serial_proc".to_string(), "C:".to_string(), VolumeType::Local);
+        let entries = vec![
+            FileEntry {
+                id: None,
+                volume_id: 0,
+                parent_id: None,
+                name: "hello.txt".to_string(),
+                full_path: "C:\\hello.txt".to_string(),
+                is_directory: false,
+                size: 10,
+                created_time: None,
+                modified_time: None,
+                mft_reference: None,
+            },
+            FileEntry {
+                id: None,
+                volume_id: 0,
+                parent_id: None,
+                name: "world.txt".to_string(),
+                full_path: "C:\\world.txt".to_string(),
+                is_directory: false,
+                size: 20,
+                created_time: None,
+                modified_time: None,
+                mft_reference: None,
+            },
+        ];
+        let result = ScanResult::Success {
+            label: "C:".to_string(),
+            volume_info,
+            entries,
+            elapsed: std::time::Duration::from_millis(50),
+            current_usn: None,
+        };
+        let count = process_scan_result(&mut database, result, false).expect("process_scan_result failed");
+        assert_eq!(count, 2, "Should insert 2 entries");
+
+        let found = database.search_by_name("hello", 10).expect("Search failed");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "hello.txt");
+    }
+
+    #[test]
+    fn test_process_scan_result_clean_scan_deletes_existing() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+
+        // First, insert some entries under a volume
+        let volume = IndexedVolume::new("serial_clean".to_string(), "D:".to_string(), VolumeType::Local);
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+        let old_file = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "old_file.txt".to_string(),
+            full_path: "D:\\old_file.txt".to_string(),
+            is_directory: false,
+            size: 100,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database
+            .insert_files_batch(&[old_file])
+            .expect("Failed to insert old file");
+
+        // Verify old file exists
+        let found = database.search_by_name("old_file", 10).expect("Search failed");
+        assert_eq!(found.len(), 1, "Old file should exist before clean scan");
+
+        // Now process a clean scan result with new entries only
+        let volume_info = IndexedVolume::new("serial_clean".to_string(), "D:".to_string(), VolumeType::Local);
+        let new_entries = vec![FileEntry {
+            id: None,
+            volume_id: 0,
+            parent_id: None,
+            name: "new_file.txt".to_string(),
+            full_path: "D:\\new_file.txt".to_string(),
+            is_directory: false,
+            size: 200,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        }];
+        let result = ScanResult::Success {
+            label: "D:".to_string(),
+            volume_info,
+            entries: new_entries,
+            elapsed: std::time::Duration::from_millis(30),
+            current_usn: None,
+        };
+        let count = process_scan_result(&mut database, result, true).expect("process_scan_result failed");
+        assert_eq!(count, 1, "Should insert 1 new entry");
+
+        // Old file should be gone after clean scan
+        let found_old = database.search_by_name("old_file", 10).expect("Search failed");
+        assert!(found_old.is_empty(), "Old file should be deleted by clean scan");
+
+        // New file should exist
+        let found_new = database.search_by_name("new_file", 10).expect("Search failed");
+        assert_eq!(found_new.len(), 1, "New file should be present after clean scan");
+    }
+
+    #[test]
+    fn test_process_scan_result_incremental_no_usn_no_cleanup() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+
+        // Insert an existing entry
+        let volume = IndexedVolume::new("serial_inc".to_string(), "E:".to_string(), VolumeType::Local);
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+        let existing = FileEntry {
+            id: None,
+            volume_id,
+            parent_id: None,
+            name: "existing.txt".to_string(),
+            full_path: "E:\\existing.txt".to_string(),
+            is_directory: false,
+            size: 50,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        };
+        database
+            .insert_files_batch(&[existing])
+            .expect("Failed to insert existing file");
+
+        // Process incremental scan (no USN = no USN-based cleanup)
+        let volume_info = IndexedVolume::new("serial_inc".to_string(), "E:".to_string(), VolumeType::Local);
+        let new_entries = vec![FileEntry {
+            id: None,
+            volume_id: 0,
+            parent_id: None,
+            name: "added.txt".to_string(),
+            full_path: "E:\\added.txt".to_string(),
+            is_directory: false,
+            size: 75,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        }];
+        let result = ScanResult::Success {
+            label: "E:".to_string(),
+            volume_info,
+            entries: new_entries,
+            elapsed: std::time::Duration::from_millis(25),
+            current_usn: None,
+        };
+        let count = process_scan_result(&mut database, result, false).expect("process_scan_result failed");
+        assert_eq!(count, 1, "Should insert 1 new entry");
+
+        // Both old and new files should exist (incremental, no cleanup)
+        let found_existing = database.search_by_name("existing", 10).expect("Search failed");
+        assert_eq!(
+            found_existing.len(),
+            1,
+            "Existing file should remain in incremental mode"
+        );
+
+        let found_added = database.search_by_name("added", 10).expect("Search failed");
+        assert_eq!(found_added.len(), 1, "New file should be added");
+    }
+
+    #[test]
+    fn test_process_scan_result_creates_volume() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+
+        let volume_info = IndexedVolume::new("new_vol_serial".to_string(), "F:".to_string(), VolumeType::Ntfs);
+        let result = ScanResult::Success {
+            label: "F:".to_string(),
+            volume_info,
+            entries: Vec::new(),
+            elapsed: std::time::Duration::from_millis(5),
+            current_usn: None,
+        };
+        process_scan_result(&mut database, result, false).expect("process_scan_result failed");
+
+        let stats = database.get_stats().expect("Failed to get stats");
+        assert_eq!(stats.volume_count, 1, "Volume should be created by process_scan_result");
+    }
+
+    #[test]
+    fn test_process_scan_result_stores_usn() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+
+        let volume_info = IndexedVolume::new("usn_serial".to_string(), "G:".to_string(), VolumeType::Ntfs);
+        let result = ScanResult::Success {
+            label: "G:".to_string(),
+            volume_info,
+            entries: Vec::new(),
+            elapsed: std::time::Duration::from_millis(10),
+            current_usn: Some(99999),
+        };
+        process_scan_result(&mut database, result, false).expect("process_scan_result failed");
+
+        let usn = database.get_volume_last_usn('G').expect("Failed to get USN");
+        assert_eq!(usn, Some(99999), "USN should be stored after scan");
+    }
+
+    #[test]
+    fn test_process_scan_result_sets_volume_id_on_entries() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+
+        let volume_info = IndexedVolume::new("vid_serial".to_string(), "H:".to_string(), VolumeType::Local);
+        let entries = vec![FileEntry {
+            id: None,
+            volume_id: 0, // Will be overwritten
+            parent_id: None,
+            name: "assigned.txt".to_string(),
+            full_path: "H:\\assigned.txt".to_string(),
+            is_directory: false,
+            size: 42,
+            created_time: None,
+            modified_time: None,
+            mft_reference: None,
+        }];
+        let result = ScanResult::Success {
+            label: "H:".to_string(),
+            volume_info,
+            entries,
+            elapsed: std::time::Duration::from_millis(5),
+            current_usn: None,
+        };
+        let count = process_scan_result(&mut database, result, false).expect("process_scan_result failed");
+        assert_eq!(count, 1);
+
+        // The entry should be searchable, which means volume_id was set correctly
+        let found = database.search_by_name("assigned", 10).expect("Search failed");
+        assert_eq!(found.len(), 1, "Entry should be findable after volume_id assignment");
+    }
+
+    #[test]
+    fn test_process_scan_result_empty_entries() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+
+        let volume_info = IndexedVolume::new("empty_serial".to_string(), "I:".to_string(), VolumeType::Ntfs);
+        let result = ScanResult::Success {
+            label: "I:".to_string(),
+            volume_info,
+            entries: Vec::new(),
+            elapsed: std::time::Duration::from_millis(1),
+            current_usn: Some(500),
+        };
+        let count = process_scan_result(&mut database, result, true).expect("process_scan_result failed");
+        assert_eq!(count, 0, "Empty entries should return 0 count");
+    }
+
+    // ── scan_path_directory ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_scan_path_directory_success() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("scan_path_test");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+        fs::write(scan_dir.join("doc.txt"), "hello").expect("Failed to write doc.txt");
+        fs::write(scan_dir.join("image.png"), "fake png").expect("Failed to write image.png");
+
+        let label = scan_dir.to_string_lossy().into_owned();
+        let exclude: Arc<[String]> = Arc::from(Vec::<String>::new().into_boxed_slice());
+
+        let result = scan_path_directory(scan_dir.clone(), label.clone(), exclude).await;
+        match result {
+            ScanResult::Success {
+                label: result_label,
+                volume_info,
+                entries,
+                current_usn,
+                ..
+            } => {
+                assert_eq!(result_label, label);
+                assert!(current_usn.is_none(), "Directory scan should have no USN");
+                // scan_dir + doc.txt + image.png = 3 entries
+                assert_eq!(entries.len(), 3, "Should have 3 entries (1 dir + 2 files)");
+                assert_eq!(volume_info.volume_type, VolumeType::Local);
+            }
+            ScanResult::Failed { error, .. } => panic!("Expected Success, got Failed: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scan_path_directory_with_exclusions() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("scan_path_exclude");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+        fs::write(scan_dir.join("keep.txt"), "keep").expect("Failed to write keep.txt");
+        fs::write(scan_dir.join("skip.bak"), "skip").expect("Failed to write skip.bak");
+
+        let label = scan_dir.to_string_lossy().into_owned();
+        let exclude: Arc<[String]> = Arc::from(vec!["*.bak".to_string()].into_boxed_slice());
+
+        let result = scan_path_directory(scan_dir, label, exclude).await;
+        match result {
+            ScanResult::Success { entries, .. } => {
+                // scan_dir + keep.txt = 2 entries (skip.bak excluded)
+                assert_eq!(entries.len(), 2, "Should have 2 entries (.bak excluded)");
+                let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+                assert!(names.contains(&"keep.txt"), "keep.txt should be present");
+                assert!(!names.contains(&"skip.bak"), "skip.bak should be excluded");
+            }
+            ScanResult::Failed { error, .. } => panic!("Expected Success, got Failed: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scan_path_directory_nonexistent_path() {
+        let path = PathBuf::from("Z:\\NonExistent\\Path\\For\\Testing\\12345");
+        let label = path.to_string_lossy().into_owned();
+        let exclude: Arc<[String]> = Arc::from(Vec::<String>::new().into_boxed_slice());
+
+        let result = scan_path_directory(path, label, exclude).await;
+        match result {
+            ScanResult::Failed { label, error } => {
+                assert!(!label.is_empty(), "Label should be preserved in failed result");
+                assert!(!error.is_empty(), "Error message should describe the failure");
+            }
+            ScanResult::Success { entries, .. } => {
+                // On some platforms scan_directory may succeed with an empty
+                // result instead of returning an error for nonexistent paths.
+                assert!(
+                    entries.is_empty(),
+                    "Nonexistent path should produce no entries if it does not error"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scan_path_directory_empty_dir() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("empty_scan");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+
+        let label = scan_dir.to_string_lossy().into_owned();
+        let exclude: Arc<[String]> = Arc::from(Vec::<String>::new().into_boxed_slice());
+
+        let result = scan_path_directory(scan_dir, label, exclude).await;
+        match result {
+            ScanResult::Success { entries, .. } => {
+                // Just the root directory
+                assert_eq!(entries.len(), 1, "Empty dir should have 1 entry (itself)");
+                assert!(entries[0].is_directory, "Single entry should be the directory");
+            }
+            ScanResult::Failed { error, .. } => panic!("Expected Success, got Failed: {error}"),
+        }
+    }
+
+    // ── prune_non_ntfs_volumes ────────────────────────────────────
+
+    #[test]
+    fn test_prune_non_ntfs_volumes_empty_list() {
+        let database = Database::open_in_memory().expect("Failed to open in-memory database");
+        // Should return immediately without error
+        prune_non_ntfs_volumes(&database, &[], 0, false);
+    }
+
+    #[test]
+    fn test_prune_non_ntfs_volumes_nonexistent_volume_ids() {
+        let database = Database::open_in_memory().expect("Failed to open in-memory database");
+        // Volume IDs that don't exist - should not panic
+        prune_non_ntfs_volumes(&database, &[999, 1000], 0, false);
+    }
+
+    // ── extract_drive_letter edge cases ───────────────────────────
+
+    #[test]
+    fn test_extract_drive_letter_empty_path() {
+        assert_eq!(extract_drive_letter(Path::new("")), None);
+    }
+
+    #[test]
+    fn test_extract_drive_letter_single_char() {
+        assert_eq!(extract_drive_letter(Path::new("C")), None);
+    }
+
+    #[test]
+    fn test_extract_drive_letter_numeric_prefix() {
+        assert_eq!(
+            extract_drive_letter(Path::new("1:")),
+            None,
+            "Numeric prefix should not be a valid drive letter"
+        );
+    }
+
+    #[test]
+    fn test_extract_drive_letter_lowercase_normalized() {
+        assert_eq!(
+            extract_drive_letter(Path::new("d:\\Users")),
+            Some('D'),
+            "Lowercase drive letters should be uppercased"
+        );
+    }
+
+    #[test]
+    fn test_extract_drive_letter_just_colon() {
+        assert_eq!(extract_drive_letter(Path::new(":")), None);
+    }
+
+    // ── is_drive_letter_path edge cases ───────────────────────────
+
+    #[test]
+    fn test_is_drive_letter_path_empty() {
+        assert!(!is_drive_letter_path(Path::new("")));
+    }
+
+    #[test]
+    fn test_is_drive_letter_path_dot() {
+        assert!(!is_drive_letter_path(Path::new(".")));
+    }
+
+    #[test]
+    fn test_is_drive_letter_path_just_letter() {
+        assert!(!is_drive_letter_path(Path::new("C")));
+    }
+
+    // ── is_path_accessible edge cases ─────────────────────────────
+
+    #[test]
+    fn test_is_path_accessible_empty_path() {
+        assert!(!is_path_accessible(Path::new("")));
+    }
+
+    #[test]
+    fn test_is_path_accessible_relative_nonexistent() {
+        assert!(!is_path_accessible(Path::new("definitely_not_a_real_path_xyz123")));
+    }
+
+    #[test]
+    fn test_is_path_accessible_drive_letter_fallback_inaccessible() {
+        // A drive letter path that doesn't exist should exercise the read_dir fallback
+        assert!(!is_path_accessible(Path::new("Q:\\")));
+    }
+
+    // ── create_directory_volume_info edge cases ───────────────────
+
+    #[test]
+    fn test_create_directory_volume_info_local_type() {
+        let path = Path::new("D:\\Projects\\MyApp");
+        let volume = create_directory_volume_info(path);
+
+        assert_eq!(volume.volume_type, VolumeType::Local);
+        assert_eq!(volume.serial_number, "path:D:\\Projects\\MyApp");
+        assert_eq!(volume.mount_point, "D:\\Projects\\MyApp");
+        assert!(volume.is_online);
+        assert!(volume.id.is_none());
+        assert!(volume.last_usn.is_none());
+    }
+
+    #[test]
+    fn test_create_directory_volume_info_unc_is_network() {
+        let path = Path::new("\\\\nas\\share\\docs");
+        let volume = create_directory_volume_info(path);
+
+        assert_eq!(volume.volume_type, VolumeType::Network);
+        assert_eq!(volume.serial_number, "path:\\\\nas\\share\\docs");
+        assert_eq!(volume.mount_point, "\\\\nas\\share\\docs");
+    }
+
+    // ── scan_directory_to_db additional edge cases ────────────────
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_clean_scan_removes_deleted_files() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("clean_delete_test");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+
+        let db_path = temp.path().join("test.db");
+        let mut database = Database::open(&db_path).expect("Failed to open database");
+
+        // First scan with two files
+        fs::write(scan_dir.join("keep.txt"), "keep").expect("Failed to write keep.txt");
+        fs::write(scan_dir.join("remove.txt"), "remove").expect("Failed to write remove.txt");
+        let count1 = scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("First scan failed");
+        assert_eq!(count1, 3, "Expected 3 entries (dir + 2 files)");
+
+        // Delete one file from disk
+        fs::remove_file(scan_dir.join("remove.txt")).expect("Failed to remove file");
+
+        // Clean scan should reflect the deletion
+        let count2 = scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("Second scan failed");
+        assert_eq!(count2, 2, "Expected 2 entries after deleting one file");
+
+        // Verify the removed file is no longer in the database
+        let found = database.search_by_name("remove", 10).expect("Search failed");
+        assert!(
+            found.is_empty(),
+            "Deleted file should not be in database after clean scan"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_multiple_exclusion_patterns() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("multi_exclude");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+
+        fs::write(scan_dir.join("code.rs"), "fn main() {}").expect("Failed to write code.rs");
+        fs::write(scan_dir.join("notes.tmp"), "temp").expect("Failed to write notes.tmp");
+        fs::write(scan_dir.join("debug.log"), "log entry").expect("Failed to write debug.log");
+        fs::write(scan_dir.join("data.bak"), "backup").expect("Failed to write data.bak");
+
+        let db_path = temp.path().join("test.db");
+        let mut database = Database::open(&db_path).expect("Failed to open database");
+
+        let exclusions = vec!["*.tmp".to_string(), "*.log".to_string(), "*.bak".to_string()];
+        let count = scan_directory_to_db(&mut database, &scan_dir, &exclusions, true)
+            .await
+            .expect("Scan failed");
+
+        // Should have: scan_dir + code.rs = 2
+        assert_eq!(
+            count, 2,
+            "Only code.rs and dir should remain after multi-pattern exclusion"
+        );
+
+        let found = database.search_by_name("code", 10).expect("Search failed");
+        assert_eq!(found.len(), 1, "code.rs should be present");
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_preserves_directory_flag() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("dir_flag_test");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+        fs::create_dir(scan_dir.join("child_dir")).expect("Failed to create child_dir");
+        fs::write(scan_dir.join("file.txt"), "content").expect("Failed to write file.txt");
+
+        let db_path = temp.path().join("test.db");
+        let mut database = Database::open(&db_path).expect("Failed to open database");
+
+        scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("Scan failed");
+
+        let dirs = database.search_by_name("child_dir", 10).expect("Search failed");
+        assert_eq!(dirs.len(), 1);
+        assert!(dirs[0].is_directory, "child_dir should be marked as directory");
+
+        let files = database.search_by_name("file.txt", 10).expect("Search failed");
+        assert_eq!(files.len(), 1);
+        assert!(!files[0].is_directory, "file.txt should not be marked as directory");
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_unicode_filenames() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("unicode_test");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+        fs::write(scan_dir.join("日本語.txt"), "japanese").expect("Failed to write unicode file");
+        fs::write(scan_dir.join("café.txt"), "french").expect("Failed to write accented file");
+
+        let db_path = temp.path().join("test.db");
+        let mut database = Database::open(&db_path).expect("Failed to open database");
+
+        let count = scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("Scan failed");
+        assert_eq!(count, 3, "Expected dir + 2 unicode files");
+
+        let found = database.search_by_name("日本語", 10).expect("Search failed");
+        assert_eq!(found.len(), 1, "Should find Japanese filename");
+
+        let found = database.search_by_name("café", 10).expect("Search failed");
+        assert_eq!(found.len(), 1, "Should find accented filename");
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_deeply_nested() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("deep_nest");
+        let deep = scan_dir.join("l1").join("l2").join("l3").join("l4").join("l5");
+        fs::create_dir_all(&deep).expect("Failed to create deeply nested dirs");
+        fs::write(deep.join("leaf.txt"), "leaf").expect("Failed to write leaf.txt");
+
+        let db_path = temp.path().join("test.db");
+        let mut database = Database::open(&db_path).expect("Failed to open database");
+
+        let count = scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("Scan failed");
+        // scan_dir + l1 + l2 + l3 + l4 + l5 + leaf.txt = 7
+        assert_eq!(count, 7, "Expected 6 directories + 1 file");
+
+        let found = database.search_by_name("leaf", 10).expect("Search failed");
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].full_path.contains("l5"),
+            "Leaf file path should contain deepest dir"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_directory_to_db_repeated_scans_idempotent_count() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let scan_dir = temp.path().join("idempotent_test");
+        fs::create_dir(&scan_dir).expect("Failed to create scan directory");
+        fs::write(scan_dir.join("stable.txt"), "stable").expect("Failed to write stable.txt");
+
+        let db_path = temp.path().join("test.db");
+        let mut database = Database::open(&db_path).expect("Failed to open database");
+
+        let count1 = scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("First scan failed");
+        let count2 = scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("Second scan failed");
+        let count3 = scan_directory_to_db(&mut database, &scan_dir, &[], true)
+            .await
+            .expect("Third scan failed");
+
+        assert_eq!(count1, count2, "Repeated clean scans should return same count");
+        assert_eq!(count2, count3, "Repeated clean scans should return same count");
+    }
+
+    // ── collect_paths_to_scan edge cases ──────────────────────────
+
+    #[test]
+    fn test_collect_paths_to_scan_empty_config_paths() {
+        let mut config = Config::default();
+        config.daemon.paths = Vec::new();
+        // With empty paths, it auto-detects NTFS volumes.
+        // We can't predict the result, but it should not panic.
+        let _result = collect_paths_to_scan(&config);
+    }
+
+    #[test]
+    fn test_collect_paths_to_scan_single_nonexistent() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["Q:\\Nonexistent\\Drive\\Path\\12345".to_string()];
+        let result = collect_paths_to_scan(&config);
+        assert!(result.is_none(), "Single nonexistent path should return None");
+    }
+
+    // ── categorize_paths edge cases ───────────────────────────────
+
+    #[test]
+    fn test_categorize_paths_single_accessible_dir() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let temp_path = temp.path().to_string_lossy().to_string();
+        let categorized = categorize_paths(vec![temp_path]);
+        assert_eq!(categorized.task_count(), 1);
+        assert!(categorized.ntfs_drive_roots.is_empty());
+        assert!(categorized.unc_paths.is_empty());
+        assert!(categorized.mapped_network_drives.is_empty());
+    }
+
+    #[test]
+    fn test_categorize_paths_all_nonexistent() {
+        let categorized = categorize_paths(vec![
+            "Q:\\FakePath1".to_string(),
+            "R:\\FakePath2".to_string(),
+            "S:\\FakePath3".to_string(),
+        ]);
+        assert_eq!(categorized.task_count(), 0);
+        assert!(categorized.ntfs_drive_roots.is_empty());
+        assert!(categorized.local_paths_by_drive.is_empty());
+        assert!(categorized.mapped_network_drives.is_empty());
+        assert!(categorized.unc_paths.is_empty());
+    }
+
+    #[test]
+    fn test_categorize_paths_duplicate_paths() {
+        let temp = tempdir().expect("Failed to create temp directory");
+        let temp_path = temp.path().to_string_lossy().to_string();
+        let categorized = categorize_paths(vec![temp_path.clone(), temp_path]);
+
+        // Both paths are on the same drive, so they get grouped together
+        let drive_letter = extract_drive_letter(temp.path());
+        if let Some(letter) = drive_letter {
+            let paths = categorized
+                .local_paths_by_drive
+                .get(&letter)
+                .expect("Should have paths for this drive");
+            assert_eq!(
+                paths.len(),
+                2,
+                "Duplicate paths are both stored (dedup is caller's job)"
+            );
+        }
+    }
+
+    // ── should_clean_scan edge cases ──────────────────────────────
+
+    #[test]
+    fn test_should_clean_scan_with_volumes_only() {
+        let config = Config::default();
+        let database = Database::open_in_memory().expect("Failed to open in-memory database");
+
+        // Create a volume but insert no files or directories
+        let volume = IndexedVolume::new("vol_only".to_string(), "V:".to_string(), VolumeType::Ntfs);
+        database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let result = should_clean_scan(&database, &config).expect("should_clean_scan failed");
+        assert!(
+            result,
+            "Database with volumes but no files or directories should trigger clean scan"
+        );
+    }
+
+    #[test]
+    fn test_should_clean_scan_default_config_empty_db() {
+        let config = Config::default();
+        assert!(
+            !config.daemon.force_clean_scan,
+            "Default config should not force clean scan"
+        );
+        let database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let result = should_clean_scan(&database, &config).expect("should_clean_scan failed");
+        assert!(result, "Empty database always triggers clean scan");
+    }
+
+    // ── CategorizedPaths::task_count edge cases ───────────────────
+
+    #[test]
+    fn test_task_count_all_categories_populated() {
+        let mut local = HashMap::new();
+        local.insert('C', vec!["C:\\Data".to_string()]);
+        local.insert('D', vec!["D:\\Stuff".to_string(), "D:\\More".to_string()]);
+        let paths = CategorizedPaths {
+            ntfs_drive_roots: vec!['E', 'F', 'G'],
+            local_paths_by_drive: local,
+            mapped_network_drives: vec![('X', PathBuf::from("X:\\")), ('Y', PathBuf::from("Y:\\"))],
+            unc_paths: vec![
+                PathBuf::from("\\\\server1\\share"),
+                PathBuf::from("\\\\server2\\share"),
+                PathBuf::from("\\\\server3\\share"),
+            ],
+        };
+        // 3 NTFS roots + 2 local drive groups + 2 mapped drives + 3 UNC = 10
+        assert_eq!(paths.task_count(), 10);
+    }
+
+    #[test]
+    fn test_task_count_only_unc() {
+        let paths = CategorizedPaths {
+            ntfs_drive_roots: Vec::new(),
+            local_paths_by_drive: HashMap::new(),
+            mapped_network_drives: Vec::new(),
+            unc_paths: vec![PathBuf::from("\\\\server\\share")],
+        };
+        assert_eq!(paths.task_count(), 1);
+    }
+
+    #[test]
+    fn test_task_count_only_mapped() {
+        let paths = CategorizedPaths {
+            ntfs_drive_roots: Vec::new(),
+            local_paths_by_drive: HashMap::new(),
+            mapped_network_drives: vec![('Z', PathBuf::from("Z:\\"))],
+            unc_paths: Vec::new(),
+        };
+        assert_eq!(paths.task_count(), 1);
+    }
 }
