@@ -48,6 +48,10 @@ enum Command {
         #[arg(short, long)]
         foreground: bool,
 
+        /// Hide the console window (for use with Task Scheduler)
+        #[arg(short = 'H', long)]
+        hidden: bool,
+
         /// Force a full rescan of all volumes
         #[arg(short, long)]
         rescan: bool,
@@ -112,6 +116,12 @@ fn main() -> Result<()> {
         return filefind::generate_shell_completion(*shell, DaemonCli::command(), *install, env!("CARGO_BIN_NAME"));
     }
 
+    // Hide the console window if requested (must happen before any output)
+    #[cfg(windows)]
+    if matches!(args.command, Some(Command::Start { hidden: true, .. })) {
+        hide_console_window();
+    }
+
     // Determine if we're running in foreground mode
     let foreground = matches!(args.command, Some(Command::Start { foreground: true, .. }) | None)
         || !matches!(args.command, Some(Command::Start { .. }));
@@ -133,7 +143,7 @@ fn main() -> Result<()> {
     tracing::trace!("{config:#?}");
 
     match args.command {
-        Some(Command::Start { foreground, rescan }) => {
+        Some(Command::Start { foreground, rescan, .. }) => {
             let options = daemon::DaemonOptions {
                 foreground,
                 rescan,
@@ -284,6 +294,23 @@ fn run_prune(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Detach from the console window so the process runs silently in the background.
+///
+/// This is intended for use with Task Scheduler or other launchers that would
+/// otherwise spawn a visible terminal window. Calling `FreeConsole` releases the
+/// process's association with its console, which causes Windows to close the
+/// console window.
+#[cfg(windows)]
+fn hide_console_window() {
+    use windows::Win32::System::Console::FreeConsole;
+
+    unsafe {
+        // FreeConsole returns an error if the process is not attached to a console,
+        // which is harmless — just ignore it.
+        let _ = FreeConsole();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -323,8 +350,13 @@ mod tests {
     fn test_start_defaults() {
         let cli = parse(&["start"]);
         match cli.command {
-            Some(Command::Start { foreground, rescan }) => {
+            Some(Command::Start {
+                foreground,
+                hidden,
+                rescan,
+            }) => {
                 assert!(!foreground);
+                assert!(!hidden);
                 assert!(!rescan);
             }
             other => panic!("Expected Start command, got {other:?}"),
@@ -345,6 +377,36 @@ mod tests {
         let cli = parse(&["start", "-f"]);
         match cli.command {
             Some(Command::Start { foreground, .. }) => assert!(foreground),
+            other => panic!("Expected Start command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_start_hidden() {
+        let cli = parse(&["start", "--hidden"]);
+        match cli.command {
+            Some(Command::Start { hidden, .. }) => assert!(hidden),
+            other => panic!("Expected Start command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_start_hidden_short() {
+        let cli = parse(&["start", "-H"]);
+        match cli.command {
+            Some(Command::Start { hidden, .. }) => assert!(hidden),
+            other => panic!("Expected Start command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_start_foreground_and_hidden() {
+        let cli = parse(&["start", "-f", "-H"]);
+        match cli.command {
+            Some(Command::Start { foreground, hidden, .. }) => {
+                assert!(foreground);
+                assert!(hidden);
+            }
             other => panic!("Expected Start command, got {other:?}"),
         }
     }
@@ -371,7 +433,7 @@ mod tests {
     fn test_start_foreground_and_rescan() {
         let cli = parse(&["start", "-f", "-r"]);
         match cli.command {
-            Some(Command::Start { foreground, rescan }) => {
+            Some(Command::Start { foreground, rescan, .. }) => {
                 assert!(foreground);
                 assert!(rescan);
             }

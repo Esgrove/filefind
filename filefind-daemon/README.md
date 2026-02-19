@@ -206,7 +206,7 @@ To have filefind deamon start automatically when you log in, create a scheduled 
 4. Trigger: "When I log on"
 5. Action: "Start a program"
 6. Program: `C:\Users\<username>\.cargo\bin\filefindd.exe`
-7. Arguments: `start -f`
+7. Arguments: `start -f -H`
 8. Finish and optionally check "Open Properties" to:
     - Enable "Run with highest privileges" (required for MFT/USN access)
     - Under Conditions, uncheck "Start only if on AC power"
@@ -214,15 +214,19 @@ To have filefind deamon start automatically when you log in, create a scheduled 
 Or via PowerShell (run as Administrator):
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.cargo\bin\filefindd.exe" -Argument "start -f"
+$action = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.cargo\bin\filefindd.exe" -Argument "start -f -H"
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "filefind daemon" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
 ```
 
-The `-f` (foreground) flag is important here: it tells the daemon to run directly in the
+The `-f` (foreground) flag is important: it tells the daemon to run directly in the
 calling process rather than spawning a detached child. Since the task scheduler already
 manages the process lifecycle, this ensures proper logging and clean shutdown behavior.
+
+The `-H` (hidden) flag detaches the process from its console window so that no terminal
+window is visible when the task runs. Without it, Windows will spawn a console window
+that stays open for the lifetime of the daemon.
 
 The daemon can still be stopped anytime using `filefindd stop` or the tray application.
 
