@@ -22,8 +22,8 @@ use std::time::Instant;
 use anyhow::Result;
 use filefind::types::{IndexedVolume, VolumeType};
 use filefind::{
-    Config, Database, FileEntry, PathType, classify_path, format_number, get_persistent_drive_mapping, is_network_path,
-    is_unc_path,
+    Config, Database, FileEntry, PathType, classify_path, extract_drive_letter, format_number,
+    get_persistent_drive_mapping, is_network_path, is_unc_path,
 };
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -580,17 +580,6 @@ fn collect_paths_to_scan(config: &Config) -> Option<CategorizedPaths> {
     }
 
     Some(categorized)
-}
-
-/// Extract the drive letter from a path.
-///
-/// Returns `None` if the path doesn't start with a drive letter.
-fn extract_drive_letter(path: &Path) -> Option<char> {
-    let path_str = path.to_string_lossy();
-    let mut chars = path_str.chars();
-    let first = chars.next()?;
-    let second = chars.next()?;
-    (first.is_ascii_alphabetic() && second == ':').then_some(first.to_ascii_uppercase())
 }
 
 /// Check if a path looks like a drive letter path (e.g., "X:", "X:\", "X:\Data").

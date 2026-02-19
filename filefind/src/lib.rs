@@ -200,6 +200,53 @@ pub fn is_drive_root(path: &Path) -> bool {
     )
 }
 
+/// Extract the drive letter from a string path like `"C:\Users"` or `"X:"`.
+///
+/// Returns the uppercase drive letter if the string starts with a drive letter
+/// followed by a colon. Returns `None` for UNC paths, relative paths, or any
+/// string that does not begin with a drive letter.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::extract_drive_letter_from_str;
+///
+/// assert_eq!(extract_drive_letter_from_str(r"C:\Users"), Some('C'));
+/// assert_eq!(extract_drive_letter_from_str("x:"), Some('X'));
+/// assert_eq!(extract_drive_letter_from_str(r"\\server\share"), None);
+/// assert_eq!(extract_drive_letter_from_str("relative/path"), None);
+/// ```
+#[must_use]
+pub fn extract_drive_letter_from_str(path: &str) -> Option<char> {
+    let mut chars = path.chars();
+    let first = chars.next()?;
+    let second = chars.next()?;
+    (first.is_ascii_alphabetic() && second == ':').then_some(first.to_ascii_uppercase())
+}
+
+/// Extract the drive letter from a path like `C:\Users` or `X:`.
+///
+/// Returns the uppercase drive letter if the path starts with a drive letter
+/// followed by a colon. Returns `None` for UNC paths, relative paths, or any
+/// path that does not begin with a drive letter.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use filefind::extract_drive_letter;
+///
+/// assert_eq!(extract_drive_letter(Path::new(r"C:\Users")), Some('C'));
+/// assert_eq!(extract_drive_letter(Path::new("x:")), Some('X'));
+/// assert_eq!(extract_drive_letter(Path::new(r"\\server\share")), None);
+/// assert_eq!(extract_drive_letter(Path::new("relative/path")), None);
+/// ```
+#[must_use]
+pub fn extract_drive_letter(path: &Path) -> Option<char> {
+    let path_str = path.to_string_lossy();
+    extract_drive_letter_from_str(&path_str)
+}
+
 /// Check if a path is on a network drive (either UNC or mapped).
 ///
 /// On Windows, detects mapped network drives and UNC paths.

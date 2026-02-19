@@ -14,8 +14,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use filefind::{
-    Config, DaemonStateInfo, Database, FileChangeEvent, FileEntry, IpcClient, format_number, print_cyan, print_error,
-    print_success, print_warning,
+    Config, DaemonStateInfo, Database, FileChangeEvent, FileEntry, IpcClient, extract_drive_letter_from_str,
+    format_number, print_cyan, print_error, print_success, print_warning,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
@@ -451,18 +451,7 @@ impl Daemon {
             .daemon
             .paths
             .iter()
-            .filter_map(|path_str| {
-                let mut chars = path_str.chars();
-                let first = chars.next()?;
-                let second = chars.next()?;
-
-                // Check for drive letter pattern like "C:" or "C:\"
-                if first.is_ascii_alphabetic() && second == ':' {
-                    Some(first.to_ascii_uppercase())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|path_str| extract_drive_letter_from_str(path_str))
             .collect();
 
         drives.sort_unstable();
