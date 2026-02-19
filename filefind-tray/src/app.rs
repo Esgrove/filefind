@@ -3,7 +3,6 @@
 //! This module handles the tray icon, menu creation,
 //! and event loop for the filefind tray application.
 
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -360,23 +359,66 @@ fn format_status_tooltip(status: &DaemonStatus) -> String {
     }
 }
 
-/// Start the daemon process.
+/// Start the daemon process with elevated privileges.
+///
+/// On Windows, uses `ShellExecuteW` with the `runas` verb to request UAC elevation
+/// so the daemon has administrator rights for MFT/USN Journal access.
+/// The daemon is started with `filefindd start` (without `-f`) so it handles its own
+/// background spawning with `CREATE_NO_WINDOW`, avoiding any visible terminal window.
+///
+/// If the tray app is already running as administrator, no UAC prompt is shown.
+#[cfg(windows)]
 fn start_daemon() -> Result<()> {
-    #[cfg(windows)]
-    {
-        Command::new("cmd")
-            .args(["/C", "start", "", "filefindd", "start", "-f"])
-            .spawn()
-            .context("Failed to start daemon process")?;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    /// Encode an `OsStr` as a null-terminated UTF-16 vector for Windows API calls.
+    fn to_wide(s: &OsStr) -> Vec<u16> {
+        s.encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    #[cfg(not(windows))]
-    {
-        Command::new("filefindd")
-            .args(["start", "-f"])
-            .spawn()
-            .context("Failed to start daemon process")?;
+    let exe_path = std::env::current_exe()
+        .context("Failed to get current executable path")?
+        .with_file_name("filefindd.exe");
+
+    let verb = to_wide(OsStr::new("runas"));
+    let file = to_wide(exe_path.as_os_str());
+    let params = to_wide(OsStr::new("start"));
+
+    // SAFETY: `ShellExecuteW` is a standard Windows API call. All string pointers
+    // are valid null-terminated UTF-16 buffers that outlive the call.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(), // hwnd
+            verb.as_ptr(),        // lpOperation ("runas" for elevation)
+            file.as_ptr(),        // lpFile
+            params.as_ptr(),      // lpParameters
+            std::ptr::null(),     // lpDirectory
+            SW_HIDE,              // nShowCmd (hide the intermediate process window)
+        )
+    };
+
+    // ShellExecuteW returns a value > 32 on success
+    if (result as usize) <= 32 {
+        anyhow::bail!("ShellExecuteW failed with code {result:?} — UAC prompt may have been declined");
     }
+
+    Ok(())
+}
+
+/// Start the daemon process (non-Windows).
+#[cfg(not(windows))]
+fn start_daemon() -> Result<()> {
+    use std::process::Command;
+
+    Command::new("filefindd")
+        .arg("start")
+        .spawn()
+        .context("Failed to start daemon process")?;
 
     Ok(())
 }
