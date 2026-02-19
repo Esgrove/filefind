@@ -21,7 +21,10 @@ use std::time::Instant;
 
 use anyhow::Result;
 use filefind::types::{IndexedVolume, VolumeType};
-use filefind::{Config, Database, FileEntry, PathType, classify_path, format_number, is_network_path};
+use filefind::{
+    Config, Database, FileEntry, PathType, classify_path, format_number, get_persistent_drive_mapping, is_network_path,
+    is_unc_path,
+};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tracing::{debug, error, info, warn};
@@ -654,14 +657,7 @@ fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
         let scan_path = PathBuf::from(&path_str);
 
         if !is_path_accessible(&scan_path) {
-            if is_drive_letter_path(&scan_path) {
-                warn!(
-                    "Skipping inaccessible path: {} (if this is a mapped network drive, try using a UNC path instead)",
-                    scan_path.display()
-                );
-            } else {
-                warn!("Skipping inaccessible path: {}", scan_path.display());
-            }
+            log_inaccessible_scan_path(&scan_path);
             continue;
         }
 
@@ -697,6 +693,42 @@ fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
         local_paths_by_drive,
         mapped_network_drives,
         unc_paths,
+    }
+}
+
+/// Log a descriptive warning for a scan path that could not be accessed.
+///
+/// Distinguishes between UNC network paths, mapped network drives (including
+/// offline persistent mappings), and regular local paths so the user gets an
+/// actionable message instead of a generic "inaccessible" warning.
+fn log_inaccessible_scan_path(path: &Path) {
+    if is_unc_path(path) {
+        warn!(
+            "Network path is not reachable (host may be offline), skipping: {}",
+            path.display()
+        );
+        return;
+    }
+
+    if let Some(drive_letter) = extract_drive_letter(path)
+        && let Some(remote_path) = get_persistent_drive_mapping(drive_letter)
+    {
+        warn!(
+            "Mapped network drive is offline ({}: -> {}), skipping: {}",
+            drive_letter,
+            remote_path,
+            path.display()
+        );
+        return;
+    }
+
+    if is_drive_letter_path(path) {
+        warn!(
+            "Skipping inaccessible path: {} (if this is a mapped network drive, try using a UNC path instead)",
+            path.display()
+        );
+    } else {
+        warn!("Skipping inaccessible path: {}", path.display());
     }
 }
 

@@ -325,6 +325,104 @@ pub fn get_unc_for_drive(_drive_letter: char) -> Option<String> {
     None
 }
 
+/// Get the UNC path for a persistent (remembered) mapped network drive, even when offline.
+///
+/// Unlike [`get_unc_for_drive`], which only works when the drive is currently connected,
+/// this function reads the Windows registry at `HKCU\Network\<letter>` where persistent
+/// drive mappings are stored. This allows detecting that a drive letter *is* a mapped
+/// network drive even when the remote host is unreachable.
+///
+/// Returns `None` if the drive letter has no persistent mapping.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::get_persistent_drive_mapping;
+///
+/// // Drive letters without a persistent mapping return None
+/// let result = get_persistent_drive_mapping('C');
+/// // Typically None for local drives
+/// ```
+#[cfg(windows)]
+#[must_use]
+pub fn get_persistent_drive_mapping(drive_letter: char) -> Option<String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, KEY_READ, REG_SZ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
+    };
+
+    let drive_letter = drive_letter.to_ascii_uppercase();
+    let key_path: Vec<u16> = format!("Network\\{drive_letter}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let value_name: Vec<u16> = "RemotePath".encode_utf16().chain(std::iter::once(0)).collect();
+
+    let mut hkey: windows_sys::Win32::System::Registry::HKEY = std::ptr::null_mut();
+
+    // SAFETY: `RegOpenKeyExW` is a safe Windows API call that opens a registry key
+    // for reading. The key handle is closed below with `RegCloseKey`.
+    #[allow(unsafe_code)]
+    let result = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, key_path.as_ptr(), 0, KEY_READ, &raw mut hkey) };
+
+    if result != ERROR_SUCCESS {
+        return None;
+    }
+
+    let mut buffer: Vec<u16> = vec![0u16; 512];
+    let mut buffer_size = u32::try_from(buffer.len() * 2).unwrap_or(1024);
+    let mut value_type: u32 = 0;
+
+    // SAFETY: `RegQueryValueExW` reads a registry value into the provided buffer.
+    // The buffer is sized appropriately and `buffer_size` is set to the byte length.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        RegQueryValueExW(
+            hkey,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &raw mut value_type,
+            buffer.as_mut_ptr().cast(),
+            &raw mut buffer_size,
+        )
+    };
+
+    // SAFETY: `RegCloseKey` releases the registry key handle.
+    #[allow(unsafe_code)]
+    unsafe {
+        RegCloseKey(hkey);
+    }
+
+    if result != ERROR_SUCCESS || value_type != REG_SZ {
+        return None;
+    }
+
+    // buffer_size is in bytes; convert to u16 count and trim null terminator
+    let char_count = (buffer_size as usize) / 2;
+    let len = buffer[..char_count].iter().position(|&c| c == 0).unwrap_or(char_count);
+
+    String::from_utf16(&buffer[..len]).ok()
+}
+
+/// Get the UNC path for a persistent mapped network drive (non-Windows stub).
+///
+/// Always returns `None` on non-Windows platforms.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::get_persistent_drive_mapping;
+///
+/// // Non-Windows always returns None
+/// assert_eq!(get_persistent_drive_mapping('X'), None);
+/// ```
+#[cfg(not(windows))]
+#[must_use]
+pub fn get_persistent_drive_mapping(_drive_letter: char) -> Option<String> {
+    None
+}
+
 /// Get drive letter → UNC path mappings for the specified drive letters.
 ///
 /// Only checks the provided drive letters instead of iterating all A–Z.

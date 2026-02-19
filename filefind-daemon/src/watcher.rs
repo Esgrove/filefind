@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use filefind::types::FileChangeEvent;
+use filefind::{get_persistent_drive_mapping, is_unc_path};
 
 /// Default debounce duration to coalesce rapid file changes.
 const DEFAULT_DEBOUNCE_MS: u64 = 1000;
@@ -237,9 +238,48 @@ impl FileWatcher {
                     Err(error) => warn!("Failed to watch path {}: {}", path.display(), error),
                 }
             } else {
-                warn!("Path does not exist, skipping: {}", path.display());
+                Self::log_inaccessible_path(path);
             }
         }
+    }
+
+    /// Log a descriptive warning for a path that could not be watched.
+    ///
+    /// Distinguishes between UNC network paths, mapped network drives (including
+    /// offline persistent mappings), and regular local paths so the user gets an
+    /// actionable message instead of a generic "does not exist".
+    fn log_inaccessible_path(path: &Path) {
+        if is_unc_path(path) {
+            warn!(
+                "Network path is not reachable (host may be offline), skipping: {}",
+                path.display()
+            );
+            return;
+        }
+
+        // Check for a drive-letter path that is a mapped or persistent network drive
+        if let Some(drive_letter) = Self::extract_drive_letter(path)
+            && let Some(remote_path) = get_persistent_drive_mapping(drive_letter)
+        {
+            warn!(
+                "Mapped network drive is offline ({} -> {}), skipping: {}",
+                drive_letter,
+                remote_path,
+                path.display()
+            );
+            return;
+        }
+
+        warn!("Path does not exist, skipping: {}", path.display());
+    }
+
+    /// Extract a drive letter from a path such as `X:\Data` or `X:`.
+    fn extract_drive_letter(path: &Path) -> Option<char> {
+        let path_str = path.to_string_lossy();
+        let mut chars = path_str.chars();
+        let first = chars.next()?;
+        let second = chars.next()?;
+        (first.is_ascii_alphabetic() && second == ':').then_some(first.to_ascii_uppercase())
     }
 
     /// Convert a [`notify::EventKind`] into a [`FileChangeEvent`] for the given path.
