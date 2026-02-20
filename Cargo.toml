@@ -3,7 +3,7 @@ resolver = "3"
 members = ["filefind", "filefind-cli", "filefind-daemon", "filefind-tray"]
 
 [workspace.package]
-version = "1.0.4"
+version = "1.1.0"
 edition = "2024"
 authors = ["Esgrove <esgrove@outlook.com>"]
 license = "MIT"
