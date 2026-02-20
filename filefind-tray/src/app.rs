@@ -3,7 +3,6 @@
 //! This module handles the tray icon, menu creation,
 //! and event loop for the filefind tray application.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -41,8 +40,7 @@ pub fn run() -> Result<()> {
     let ipc_client = IpcClient::new();
 
     // Track if we should quit
-    let should_quit = Arc::new(AtomicBool::new(false));
-    let quit_flag = should_quit.clone();
+    let should_quit = AtomicBool::new(false);
 
     // Track previous state for change detection
     let mut previous_state: Option<DaemonStateInfo> = None;
@@ -54,14 +52,6 @@ pub fn run() -> Result<()> {
     // Subscribe to menu events
     let menu_channel = MenuEvent::receiver();
 
-    // Spawn a thread to periodically update status
-    let status_quit = should_quit;
-    std::thread::spawn(move || {
-        while !status_quit.load(Ordering::Relaxed) {
-            std::thread::sleep(UPDATE_INTERVAL);
-        }
-    });
-
     // Track last status update time
     let mut last_update = std::time::Instant::now();
 
@@ -69,14 +59,14 @@ pub fn run() -> Result<()> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, MSG, TranslateMessage, WM_QUIT,
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
         };
 
         let mut msg: MSG = unsafe { std::mem::zeroed() };
 
         loop {
             // Check for quit signal
-            if quit_flag.load(Ordering::Relaxed) {
+            if should_quit.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -88,28 +78,32 @@ pub fn run() -> Result<()> {
 
             // Handle menu events (non-blocking)
             if let Ok(event) = menu_channel.try_recv() {
-                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &quit_flag);
+                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &should_quit);
             }
 
-            // Process Windows messages with a timeout
-            // Use PeekMessage-style approach with GetMessage
-            // SAFETY: GetMessageW is safe to call with valid pointers
-            let result = unsafe { GetMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0) };
+            // Process all pending Windows messages without blocking.
+            // Using PeekMessageW instead of GetMessageW so the loop can
+            // continue to poll daemon status even when no messages arrive.
+            // SAFETY: PeekMessageW is safe to call with valid pointers
+            while unsafe { PeekMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+                if msg.message == WM_QUIT {
+                    should_quit.store(true, Ordering::Relaxed);
+                    break;
+                }
 
-            if result == 0 || result == -1 {
-                // WM_QUIT received or error
+                // SAFETY: TranslateMessage and DispatchMessageW are safe with valid MSG
+                unsafe {
+                    TranslateMessage(&raw const msg);
+                    DispatchMessageW(&raw const msg);
+                }
+            }
+
+            if should_quit.load(Ordering::Relaxed) {
                 break;
             }
 
-            if msg.message == WM_QUIT {
-                break;
-            }
-
-            // SAFETY: TranslateMessage and DispatchMessageW are safe with valid MSG
-            unsafe {
-                TranslateMessage(&raw const msg);
-                DispatchMessageW(&raw const msg);
-            }
+            // Sleep briefly to avoid busy-looping
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 
@@ -117,7 +111,7 @@ pub fn run() -> Result<()> {
     {
         // Non-Windows: simple polling loop
         loop {
-            if quit_flag.load(Ordering::Relaxed) {
+            if should_quit.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -129,7 +123,7 @@ pub fn run() -> Result<()> {
 
             // Handle menu events
             if let Ok(event) = menu_channel.try_recv() {
-                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &quit_flag);
+                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &should_quit);
             }
 
             std::thread::sleep(Duration::from_millis(100));
