@@ -12,6 +12,23 @@ if [ -z "$(command -v cargo)" ]; then
     print_error_and_exit "Cargo not found in path. Maybe install rustup?"
 fi
 
+# Check if daemon or tray app are currently running
+is_process_running() {
+    local process_name="$1"
+    if [ "$BASH_PLATFORM" = "windows" ]; then
+        # wmic can see elevated processes unlike tasklist
+        MSYS_NO_PATHCONV=1 wmic process where "name='${process_name}'" get ProcessId 2>/dev/null | grep -q '[0-9]'
+    else
+        pgrep -x "$process_name" > /dev/null 2>&1
+    fi
+}
+
+for executable in $(get_rust_executable_names); do
+    if is_process_running "$executable"; then
+        print_error_and_exit "${executable} is currently running. Stop it before installing."
+    fi
+done
+
 print_magenta "Installing binaries..."
 cd "$REPO_ROOT"
 
