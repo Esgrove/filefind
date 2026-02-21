@@ -8,7 +8,8 @@ use colored::Colorize;
 use filefind::config::OutputFormat;
 use filefind::types::FileEntry;
 use filefind::{
-    Database, IndexedVolume, format_size, print_bold_magenta, print_bold_red, print_bold_yellow, print_error,
+    Database, IndexedVolume, format_number, format_size, print_bold_magenta, print_bold_red, print_bold_yellow,
+    print_error,
 };
 
 use crate::config::CliConfig;
@@ -207,6 +208,75 @@ pub fn show_stats(database: &Database) -> Result<()> {
     println!("Files:       {}", stats.total_files);
     println!("Directories: {}", stats.total_directories);
     println!("Total size:  {}", format_size(stats.total_size));
+
+    Ok(())
+}
+
+/// Show duplicate files grouped by case-insensitive file stem (name without extension).
+///
+/// Queries the database for all non-directory files that share a stem, then displays
+/// each group with the stem as a header and the full paths listed underneath.
+pub fn show_duplicates(database: &Database, drives: &[String], limit: Option<usize>, verbose: bool) -> Result<()> {
+    let start_time = Instant::now();
+
+    let all_groups = database.find_duplicates()?;
+
+    // Filter by drive if specified
+    let groups: Vec<(String, Vec<FileEntry>)> = if drives.is_empty() {
+        all_groups
+    } else {
+        all_groups
+            .into_iter()
+            .filter_map(|(stem, files)| {
+                let filtered = filter_by_drives(files, drives);
+                if filtered.len() >= 2 {
+                    Some((stem, filtered))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let search_duration = start_time.elapsed();
+
+    if groups.is_empty() {
+        if verbose {
+            println!("No duplicate files found");
+        }
+        return Ok(());
+    }
+
+    let total_groups = groups.len();
+    let total_files: usize = groups.iter().map(|(_, files)| files.len()).sum();
+
+    // Apply limit to number of groups shown
+    let display_groups = limit.map_or(groups.as_slice(), |max| &groups[..max.min(groups.len())]);
+
+    for (index, (stem, files)) in display_groups.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        print_bold_magenta!("{} ({})", stem, files.len());
+        for file in files {
+            println!("  {:>10}  {}", format_size(file.size), file.full_path);
+        }
+    }
+
+    if let Some(max) = limit
+        && total_groups > max
+    {
+        println!("\n{} ({} more not shown)", "...".dimmed(), total_groups - max);
+    }
+
+    if verbose {
+        println!(
+            "\n{} duplicate groups, {} total files in {:.2}ms",
+            format_number(total_groups as u64),
+            format_number(total_files as u64),
+            search_duration.as_secs_f64() * 1000.0
+        );
+    }
 
     Ok(())
 }
@@ -1839,5 +1909,182 @@ mod tests {
         let stats_after = database.get_stats().expect("Failed to get stats");
         assert_eq!(stats_before.total_files, stats_after.total_files);
         assert_eq!(stats_before.total_directories, stats_after.total_directories);
+    }
+
+    // ── Duplicates tests ──────────────────────────────────────────────
+
+    /// Helper to set up a database with duplicate files for testing.
+    fn setup_duplicates_database() -> Database {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let volume_c = make_volume("SN_DUP_C", "C:");
+        let volume_id_c = database.upsert_volume(&volume_c).expect("Failed to upsert volume");
+
+        let volume_d = make_volume("SN_DUP_D", "D:");
+        let volume_id_d = database.upsert_volume(&volume_d).expect("Failed to upsert volume");
+
+        let files = vec![
+            // Duplicate group: "report" (3 files)
+            FileEntry {
+                volume_id: volume_id_c,
+                ..make_file("report.txt", "C:\\docs\\report.txt", 1024)
+            },
+            FileEntry {
+                volume_id: volume_id_c,
+                ..make_file("report.pdf", "C:\\output\\report.pdf", 2048)
+            },
+            FileEntry {
+                volume_id: volume_id_d,
+                ..make_file("report.docx", "D:\\archive\\report.docx", 4096)
+            },
+            // Duplicate group: "config" (2 files)
+            FileEntry {
+                volume_id: volume_id_c,
+                ..make_file("config.toml", "C:\\project\\config.toml", 128)
+            },
+            FileEntry {
+                volume_id: volume_id_d,
+                ..make_file("config.yaml", "D:\\project\\config.yaml", 256)
+            },
+            // Unique file: no duplicates
+            FileEntry {
+                volume_id: volume_id_c,
+                ..make_file("readme.md", "C:\\readme.md", 512)
+            },
+            // Directory: should be excluded from duplicates
+            FileEntry {
+                volume_id: volume_id_c,
+                ..make_dir("report", "C:\\report")
+            },
+        ];
+        database.insert_files_batch(&files).expect("Failed to insert files");
+        database
+    }
+
+    #[test]
+    fn test_show_duplicates_empty_database() {
+        let database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let result = show_duplicates(&database, &[], None, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_finds_groups() {
+        let database = setup_duplicates_database();
+        let result = show_duplicates(&database, &[], None, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_with_drive_filter() {
+        let database = setup_duplicates_database();
+        // Filter to only C: drive — "report" group should drop to 2 files (C: only),
+        // "config" group should disappear (only 1 file on C:)
+        let drives = vec!["C".to_string()];
+        let result = show_duplicates(&database, &drives, None, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_with_drive_filter_no_results() {
+        let database = setup_duplicates_database();
+        // Filter to E: drive which has no files — no duplicates
+        let drives = vec!["E".to_string()];
+        let result = show_duplicates(&database, &drives, None, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_with_limit() {
+        let database = setup_duplicates_database();
+        // Limit to 1 group
+        let result = show_duplicates(&database, &[], Some(1), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_with_limit_zero() {
+        let database = setup_duplicates_database();
+        let result = show_duplicates(&database, &[], Some(0), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_with_limit_exceeding_total() {
+        let database = setup_duplicates_database();
+        // Limit higher than total groups — should show all
+        let result = show_duplicates(&database, &[], Some(100), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_verbose() {
+        let database = setup_duplicates_database();
+        let result = show_duplicates(&database, &[], None, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_verbose_with_limit() {
+        let database = setup_duplicates_database();
+        let result = show_duplicates(&database, &[], Some(1), true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_drive_filter_reduces_group_below_two() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let volume = make_volume("SN_FILT1", "C:");
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let other_volume = make_volume("SN_FILT2", "D:");
+        let volume_id_d = database.upsert_volume(&other_volume).expect("Failed to upsert volume");
+
+        // "notes" has one file on C: and one on D:
+        let files = vec![
+            FileEntry {
+                volume_id,
+                ..make_file("notes.txt", "C:\\notes.txt", 100)
+            },
+            FileEntry {
+                volume_id: volume_id_d,
+                ..make_file("notes.pdf", "D:\\notes.pdf", 200)
+            },
+        ];
+        database.insert_files_batch(&files).expect("Failed to insert files");
+
+        // Without filter: 1 duplicate group
+        let result = show_duplicates(&database, &[], None, false);
+        assert!(result.is_ok());
+
+        // With C: filter: group drops to 1 file, so no duplicates shown
+        let drives = vec!["C".to_string()];
+        let result = show_duplicates(&database, &drives, None, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_duplicates_no_duplicate_files() {
+        let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let volume = make_volume("SN_NODUP", "C:");
+        let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
+
+        let files = vec![
+            FileEntry {
+                volume_id,
+                ..make_file("alpha.txt", "C:\\alpha.txt", 100)
+            },
+            FileEntry {
+                volume_id,
+                ..make_file("beta.pdf", "C:\\beta.pdf", 200)
+            },
+            FileEntry {
+                volume_id,
+                ..make_file("gamma.docx", "C:\\gamma.docx", 300)
+            },
+        ];
+        database.insert_files_batch(&files).expect("Failed to insert files");
+
+        let result = show_duplicates(&database, &[], None, false);
+        assert!(result.is_ok());
     }
 }

@@ -3,6 +3,7 @@
 //! Handles storing and querying the file index.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -859,7 +860,61 @@ impl Database {
         &self.connection
     }
 
-    /// Initialize the database schema.
+    /// Find all duplicate files grouped by case-insensitive file stem (name without extension).
+    ///
+    /// Returns groups of files that share the same stem, ordered alphabetically by stem.
+    /// Only non-directory entries are considered, and only groups with 2 or more files
+    /// are returned.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn find_duplicates(&self) -> Result<Vec<(String, Vec<FileEntry>)>> {
+        self.register_file_stem_function()?;
+
+        // First, find all stems that have duplicates
+        let mut stem_statement = self.connection.prepare(
+            r"
+            SELECT file_stem(name) as stem, COUNT(*) as cnt
+            FROM files
+            WHERE is_directory = 0
+            GROUP BY stem COLLATE NOCASE
+            HAVING cnt >= 2
+            ORDER BY stem COLLATE NOCASE
+            ",
+        )?;
+
+        let stems: Vec<String> = stem_statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to query duplicate stems")?;
+
+        // Then fetch all files for each duplicate stem
+        let mut file_statement = self.connection.prepare(
+            r"
+            SELECT id, volume_id, parent_id, name, full_path, is_directory, size, created_time, modified_time, mft_reference
+            FROM files
+            WHERE is_directory = 0 AND file_stem(name) = ?1 COLLATE NOCASE
+            ORDER BY full_path
+            ",
+        )?;
+
+        // Use BTreeMap to maintain alphabetical order by lowercase stem
+        let mut groups: BTreeMap<String, Vec<FileEntry>> = BTreeMap::new();
+
+        for stem in &stems {
+            let files = file_statement
+                .query_map(rusqlite::params![stem], row_to_file_entry)?
+                .collect::<Result<Vec<_>, _>>()
+                .context("Failed to query files for duplicate stem")?;
+
+            if files.len() >= 2 {
+                groups.entry(stem.to_lowercase()).or_default().extend(files);
+            }
+        }
+
+        Ok(groups.into_iter().collect())
+    }
+
     fn initialize(&self) -> Result<()> {
         self.register_regexp_function()?;
 
@@ -914,6 +969,41 @@ impl Database {
             .context("Failed to initialize database schema")?;
 
         debug!("Database schema initialized");
+        Ok(())
+    }
+
+    /// Register the `file_stem` scalar function for extracting file name without extension.
+    ///
+    /// This enables SQL queries like: `SELECT file_stem(name) FROM files`
+    ///
+    /// Behavior matches Rust's `Path::file_stem()`:
+    /// - `"file.txt"` → `"file"`
+    /// - `"archive.tar.gz"` → `"archive.tar"`
+    /// - `"file"` → `"file"`
+    /// - `".gitignore"` → `".gitignore"`
+    fn register_file_stem_function(&self) -> Result<()> {
+        self.connection.create_scalar_function(
+            "file_stem",
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                let name = ctx
+                    .get_raw(0)
+                    .as_str()
+                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+
+                let stem = match name.rfind('.') {
+                    // No dot or dot is the first character (dotfile like .gitignore)
+                    None | Some(0) => name.to_string(),
+                    // Has a dot: take everything before the last dot
+                    Some(pos) => name[..pos].to_string(),
+                };
+
+                Ok(stem)
+            },
+        )?;
+
+        trace!("Registered file_stem function");
         Ok(())
     }
 
@@ -3545,5 +3635,383 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "new_name.txt");
         assert_eq!(results[0].full_path, "D:\\archive\\new_name.txt");
+    }
+
+    #[test]
+    fn test_find_duplicates_empty_database() {
+        let database = Database::open_in_memory().unwrap();
+        let groups = database.find_duplicates().unwrap();
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_find_duplicates_no_duplicates() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP1", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id, "alpha.txt", "C:\\alpha.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "beta.pdf", "C:\\beta.pdf", 200))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "gamma.docx", "C:\\gamma.docx", 300))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_find_duplicates_same_stem_different_extensions() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP2", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id, "report.txt", "C:\\report.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "report.pdf", "C:\\docs\\report.pdf", 200))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "unique.txt", "C:\\unique.txt", 50))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "report");
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_case_insensitive() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP3", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id, "Report.txt", "C:\\Report.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "REPORT.pdf", "C:\\docs\\REPORT.pdf", 200))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "report.docx",
+                "C:\\other\\report.docx",
+                300,
+            ))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "report");
+        assert_eq!(groups[0].1.len(), 3);
+    }
+
+    #[test]
+    fn test_find_duplicates_excludes_directories() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP4", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // File with name "src"
+        database
+            .insert_file(&create_test_file(volume_id, "src.txt", "C:\\src.txt", 100))
+            .unwrap();
+
+        // Directory with name "src" - should NOT be considered
+        database
+            .insert_file(&create_test_directory(volume_id, "src", "C:\\projects\\src"))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        // Only one file with stem "src", directory excluded, so no duplicates
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_find_duplicates_no_extension() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP5", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Files without extensions share the whole name as stem
+        database
+            .insert_file(&create_test_file(volume_id, "Makefile", "C:\\project1\\Makefile", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "Makefile", "C:\\project2\\Makefile", 200))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "makefile");
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_dotfile_stem() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP6", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Dotfiles like .gitignore have the whole name as stem (dot at position 0)
+        database
+            .insert_file(&create_test_file(volume_id, ".gitignore", "C:\\repo1\\.gitignore", 50))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, ".gitignore", "C:\\repo2\\.gitignore", 60))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, ".gitignore");
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_multiple_dots_uses_last() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP7", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // "archive.tar.gz" has stem "archive.tar"
+        // "archive.tar.bz2" has stem "archive.tar"
+        // These should be duplicates
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "archive.tar.gz",
+                "C:\\archive.tar.gz",
+                1000,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "archive.tar.bz2",
+                "C:\\backup\\archive.tar.bz2",
+                900,
+            ))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "archive.tar");
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_multiple_groups() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP8", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Group 1: "report" stem
+        database
+            .insert_file(&create_test_file(volume_id, "report.txt", "C:\\report.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "report.pdf", "C:\\report.pdf", 200))
+            .unwrap();
+
+        // Group 2: "data" stem
+        database
+            .insert_file(&create_test_file(volume_id, "data.csv", "C:\\data.csv", 300))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "data.json", "C:\\data.json", 400))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "data.xml", "C:\\data.xml", 500))
+            .unwrap();
+
+        // No group: unique file
+        database
+            .insert_file(&create_test_file(volume_id, "readme.md", "C:\\readme.md", 10))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 2);
+
+        // Groups should be ordered alphabetically by stem
+        assert_eq!(groups[0].0, "data");
+        assert_eq!(groups[0].1.len(), 3);
+        assert_eq!(groups[1].0, "report");
+        assert_eq!(groups[1].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_ordered_by_full_path_within_group() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP9", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "config.yaml",
+                "C:\\z_project\\config.yaml",
+                100,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "config.toml",
+                "C:\\a_project\\config.toml",
+                200,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "config.json",
+                "C:\\m_project\\config.json",
+                300,
+            ))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1.len(), 3);
+
+        // Files within a group should be sorted by full_path
+        assert_eq!(groups[0].1[0].full_path, "C:\\a_project\\config.toml");
+        assert_eq!(groups[0].1[1].full_path, "C:\\m_project\\config.json");
+        assert_eq!(groups[0].1[2].full_path, "C:\\z_project\\config.yaml");
+    }
+
+    #[test]
+    fn test_find_duplicates_across_volumes() {
+        let database = Database::open_in_memory().unwrap();
+
+        let volume1 = create_test_volume("SERIAL_DUP10A", "C:");
+        let volume_id1 = database.upsert_volume(&volume1).unwrap();
+
+        let volume2 = create_test_volume("SERIAL_DUP10B", "D:");
+        let volume_id2 = database.upsert_volume(&volume2).unwrap();
+
+        database
+            .insert_file(&create_test_file(volume_id1, "notes.txt", "C:\\notes.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id2, "notes.md", "D:\\notes.md", 200))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "notes");
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_exact_same_name() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP11", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Same exact filename in different directories
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "readme.md",
+                "C:\\project1\\readme.md",
+                100,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "readme.md",
+                "C:\\project2\\readme.md",
+                200,
+            ))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "readme");
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_unicode_stems() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP12", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "\u{00e9}tude.txt",
+                "C:\\\u{00e9}tude.txt",
+                100,
+            ))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(
+                volume_id,
+                "\u{00e9}tude.pdf",
+                "C:\\docs\\\u{00e9}tude.pdf",
+                200,
+            ))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "\u{00e9}tude");
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_find_duplicates_single_file_not_duplicate() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP13", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        // Each stem appears only once - no duplicates
+        database
+            .insert_file(&create_test_file(volume_id, "alpha.txt", "C:\\alpha.txt", 100))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "beta.txt", "C:\\beta.txt", 200))
+            .unwrap();
+        database
+            .insert_file(&create_test_file(volume_id, "gamma.txt", "C:\\gamma.txt", 300))
+            .unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_find_duplicates_preserves_file_entry_fields() {
+        let database = Database::open_in_memory().unwrap();
+        let volume = create_test_volume("SERIAL_DUP14", "C:");
+        let volume_id = database.upsert_volume(&volume).unwrap();
+
+        let mut file1 = create_test_file(volume_id, "photo.jpg", "C:\\photos\\photo.jpg", 5000);
+        file1.mft_reference = Some(99999);
+        database.insert_file(&file1).unwrap();
+
+        let file2 = create_test_file(volume_id, "photo.png", "C:\\images\\photo.png", 8000);
+        database.insert_file(&file2).unwrap();
+
+        let groups = database.find_duplicates().unwrap();
+        assert_eq!(groups.len(), 1);
+
+        let entries = &groups[0].1;
+        // Sorted by full_path, so images comes before photos
+        assert_eq!(entries[0].name, "photo.png");
+        assert_eq!(entries[0].size, 8000);
+        assert_eq!(entries[1].name, "photo.jpg");
+        assert_eq!(entries[1].size, 5000);
+        assert_eq!(entries[1].mft_reference, Some(99999));
     }
 }

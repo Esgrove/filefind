@@ -112,6 +112,21 @@ pub enum Command {
         sort: Option<VolumeSortBy>,
     },
 
+    /// Find duplicate files (same name ignoring extension, case-insensitive)
+    Duplicates {
+        /// Search only in specific drives. Accepts: "C", "C:", or "C:\"
+        #[arg(short = 'd', long, name = "DRIVE", action = clap::ArgAction::Append)]
+        drive: Vec<String>,
+
+        /// Maximum number of duplicate groups to show
+        #[arg(short = 'n', long, name = "COUNT")]
+        limit: Option<usize>,
+
+        /// Print verbose output
+        #[arg(short = 'v', long)]
+        verbose: bool,
+    },
+
     /// Generate shell completion scripts
     Completion {
         /// Shell to generate completion for
@@ -181,6 +196,7 @@ fn main() -> Result<()> {
     match &config.command {
         Some(Command::Stats) => cli::show_stats(&database),
         Some(Command::Volumes { sort }) => cli::list_volumes(&database, sort.unwrap_or(VolumeSortBy::Name)),
+        Some(Command::Duplicates { drive, limit, verbose }) => cli::show_duplicates(&database, drive, *limit, *verbose),
         Some(Command::Completion { .. }) => unreachable!("Handled above"),
         None => cli::run_search(&config, &database),
     }
@@ -554,6 +570,115 @@ mod tests {
                 assert!(install);
             }
             other => panic!("Expected Completion command, got {other:?}"),
+        }
+    }
+
+    // ── Duplicates subcommand ─────────────────────────────────────
+
+    #[test]
+    fn test_duplicates_subcommand() {
+        let cli = parse(&["duplicates"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Duplicates {
+                drive,
+                limit: None,
+                verbose: false
+            }) if drive.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_duplicates_with_drive_filter() {
+        let cli = parse(&["duplicates", "-d", "C"]);
+        match &cli.command {
+            Some(Command::Duplicates { drive, limit, verbose }) => {
+                assert_eq!(drive, &["C"]);
+                assert!(limit.is_none());
+                assert!(!verbose);
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicates_with_multiple_drives() {
+        let cli = parse(&["duplicates", "-d", "C", "-d", "D"]);
+        match &cli.command {
+            Some(Command::Duplicates { drive, .. }) => {
+                assert_eq!(drive, &["C", "D"]);
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicates_with_limit() {
+        let cli = parse(&["duplicates", "-n", "10"]);
+        match &cli.command {
+            Some(Command::Duplicates { limit, .. }) => {
+                assert_eq!(*limit, Some(10));
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicates_with_long_limit() {
+        let cli = parse(&["duplicates", "--limit", "50"]);
+        match &cli.command {
+            Some(Command::Duplicates { limit, .. }) => {
+                assert_eq!(*limit, Some(50));
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicates_with_verbose() {
+        let cli = parse(&["duplicates", "-v"]);
+        match &cli.command {
+            Some(Command::Duplicates { verbose, .. }) => {
+                assert!(verbose);
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicates_with_all_options() {
+        let cli = parse(&["duplicates", "-d", "C", "-n", "5", "-v"]);
+        match &cli.command {
+            Some(Command::Duplicates { drive, limit, verbose }) => {
+                assert_eq!(drive, &["C"]);
+                assert_eq!(*limit, Some(5));
+                assert!(verbose);
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicates_with_long_flags() {
+        let cli = parse(&["duplicates", "--drive", "D", "--limit", "20", "--verbose"]);
+        match &cli.command {
+            Some(Command::Duplicates { drive, limit, verbose }) => {
+                assert_eq!(drive, &["D"]);
+                assert_eq!(*limit, Some(20));
+                assert!(verbose);
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicates_default_limit_is_none() {
+        let cli = parse(&["duplicates"]);
+        match &cli.command {
+            Some(Command::Duplicates { limit, .. }) => {
+                assert!(limit.is_none());
+            }
+            other => panic!("Expected Duplicates command, got {other:?}"),
         }
     }
 

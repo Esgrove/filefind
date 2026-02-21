@@ -216,6 +216,10 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
 - **Regex search**: Full regex support with `-r` flag
 - **Exact matching**: Disable pattern expansion with `-e` flag
 - **File moving**: Move matching files to a directory with `--move <DIR>`
+- **Duplicates**: `filefind duplicates` finds all files sharing the same case-insensitive
+  stem (filename without extension) and displays them as groups. Uses a custom `file_stem`
+  SQLite scalar function (matches Rust's `Path::file_stem()` behavior). Supports `--drive`
+  filtering, `--limit` to cap the number of groups shown, and `--verbose` for stats.
 
 ### System Tray Application
 

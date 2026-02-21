@@ -16,6 +16,7 @@ This is the main user-facing tool for searching files indexed by the filefind da
 - **Multiple display modes**: Grouped, list, name-only, and info output formats
 - **Sorting**: Sort results by name or file size
 - **File moving**: Move matching files to a directory with `--move`, with progress bar, disk space checks, and graceful abort
+- **Duplicate detection**: Find files sharing the same name (ignoring extension, case-insensitive) with `filefind duplicates`
 
 ## Usage
 
@@ -27,6 +28,7 @@ Usage: filefind.exe [OPTIONS] [PATTERNS]... [COMMAND]
 Commands:
   stats       Show index statistics
   volumes     List all indexed volumes
+  duplicates  Find duplicate files (same name ignoring extension, case-insensitive)
   completion  Generate shell completion scripts
   help        Print this message or the help of the given subcommand(s)
 
@@ -76,6 +78,23 @@ Usage: filefind.exe volumes [OPTIONS]
 Options:
   -s, --sort [<SORT>]  Sort volumes by this field [possible values: name, size, files]
   -h, --help           Print help (see more with '--help')
+```
+
+#### duplicates
+
+Find duplicate files that share the same name (ignoring file extension, case-insensitive).
+Files are grouped by their stem (filename without extension):
+
+```
+Find duplicate files (same name ignoring extension, case-insensitive)
+
+Usage: filefind.exe duplicates [OPTIONS]
+
+Options:
+  -d, --drive <DRIVE>  Search only in specific drives. Accepts: "C", "C:", or "C:\"
+  -n, --limit <COUNT>  Maximum number of duplicate groups to show
+  -v, --verbose        Print verbose output
+  -h, --help           Print help
 ```
 
 #### completion
@@ -168,6 +187,18 @@ filefind "*.mp4" --move D:\Videos
 # Move with force overwrite
 filefind "*.mp4" --move D:\Videos --force
 
+# Find duplicate files (same stem, different extensions)
+filefind duplicates
+
+# Find duplicates on specific drives
+filefind duplicates -d C -d D
+
+# Limit to first 10 duplicate groups
+filefind duplicates -n 10
+
+# Show duplicates with timing stats
+filefind duplicates -v
+
 # Show index statistics
 filefind stats
 
@@ -214,6 +245,42 @@ specified destination directory after displaying the normal search results.
 - **File already exists** at the destination: skipped unless `--force` is given.
 - **File already in the destination directory**: silently counted, not moved or
   reported as a skip.
+
+## Duplicates Feature
+
+The `duplicates` subcommand scans the entire file index for files that share the
+same **stem** (filename without extension), compared case-insensitively.
+
+For example, `report.txt`, `Report.pdf`, and `REPORT.docx` all share the stem
+"report" and would be shown as a duplicate group.
+
+### Stem extraction rules
+
+Stem extraction matches Rust's `Path::file_stem()` behavior:
+
+| Filename         | Stem          |
+| ---------------- | ------------- |
+| `report.txt`     | `report`      |
+| `archive.tar.gz` | `archive.tar` |
+| `Makefile`       | `Makefile`    |
+| `.gitignore`     | `.gitignore`  |
+
+### Example output
+
+```
+report (3)
+      1.0 KB  C:\docs\report.txt
+      2.0 KB  C:\output\report.pdf
+      4.0 KB  D:\archive\report.docx
+
+config (2)
+       128 B  C:\project\config.toml
+       256 B  D:\project\config.yaml
+```
+
+Each group header shows the stem and the number of files. Each file shows its
+size and full path. Groups are sorted alphabetically by stem; files within a
+group are sorted by full path.
 
 ## Pattern Expansion
 
