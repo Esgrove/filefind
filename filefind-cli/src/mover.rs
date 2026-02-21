@@ -20,7 +20,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use filefind::database::Database;
 use filefind::types::FileEntry;
-use filefind::{format_size, get_volume_prefix, print_error, print_success, print_warning};
+use filefind::{
+    extract_drive_letter, format_size, get_unc_for_drive, get_volume_prefix, print_error, print_success, print_warning,
+};
 
 /// Size of the buffer used for chunked file copying (256 KB).
 const COPY_BUFFER_SIZE: usize = 256 * 1024;
@@ -150,21 +152,27 @@ pub fn move_files(files: &[FileEntry], destination: &Path, database: &Database, 
         );
     }
 
-    // Canonicalize destination for reliable path comparison
+    // Canonicalize destination for reliable path comparison, then normalize
+    // back to drive-letter form so comparisons match database paths.
+    let original_destination = destination;
     let destination = destination
         .canonicalize()
         .with_context(|| format!("Failed to resolve destination path: {}", destination.display()))?;
+    let destination = normalize_destination(&destination, original_destination);
 
     // Filter out files already in the destination directory and detect name conflicts
     let filter_result = filter_files(files, &destination, force_overwrite);
 
     if filter_result.files_to_move.is_empty() {
-        if filter_result.skipped_files.is_empty() {
+        if filter_result.already_at_destination > 0 {
             println!(
                 "{}",
-                "All matching files are already in the destination directory.".yellow()
+                format!("{} files already in destination", filter_result.already_at_destination).yellow()
             );
-        } else {
+        }
+        if filter_result.skipped_files.is_empty() && filter_result.already_at_destination == 0 {
+            println!("{}", "No files to move.".yellow());
+        } else if !filter_result.skipped_files.is_empty() {
             println!("{}", "No files to move after filtering.".yellow());
             print_skipped_files(&filter_result.skipped_files);
         }
@@ -248,11 +256,10 @@ pub fn move_files(files: &[FileEntry], destination: &Path, database: &Database, 
 /// Returns a `FilterResult` with the files to move, a count of files already
 /// at the destination, and a list of files that were skipped with reasons.
 fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite: bool) -> FilterResult<'a> {
-    let dest_str = destination.to_string_lossy().to_lowercase();
-    // Also handle the \\?\ prefix that canonicalize adds on Windows
-    let dest_str_prefixed = dest_str
-        .strip_prefix(r"\\?\")
-        .map_or_else(|| dest_str.clone(), str::to_string);
+    let dest_normalized = normalize_extended_prefix(&destination.to_string_lossy());
+    // Lazily resolved canonical destination for fallback same-file detection.
+    // Only computed when the fast string comparison fails and a name conflict exists.
+    let mut dest_canonical: Option<std::path::PathBuf> = None;
 
     let mut files_to_move = Vec::new();
     let mut already_at_destination: u64 = 0;
@@ -263,14 +270,12 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
         // Check if file is already in the destination directory
         let file_parent = Path::new(&file.full_path)
             .parent()
-            .map(|p| p.to_string_lossy().to_lowercase())
+            .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let file_parent_clean = file_parent
-            .strip_prefix(r"\\?\")
-            .map_or_else(|| file_parent.clone(), str::to_string);
+        let parent_normalized = normalize_extended_prefix(&file_parent);
 
-        if file_parent_clean == dest_str_prefixed || file_parent == dest_str {
+        if parent_normalized == dest_normalized {
             already_at_destination += 1;
             continue;
         }
@@ -290,9 +295,18 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
         }
 
         // Check if a file with this name already exists at the destination
-        if !force_overwrite {
-            let dest_file = destination.join(Path::new(&file.full_path).file_name().unwrap_or_default());
-            if dest_file.exists() {
+        let dest_file = destination.join(Path::new(&file.full_path).file_name().unwrap_or_default());
+        if dest_file.exists() {
+            // The source and destination might be the same file reached via
+            // different path representations (e.g., drive letter vs UNC).
+            // Canonicalize both to detect this; if they match, the file is
+            // already in the destination — not a real conflict.
+            if is_same_file(Path::new(&file.full_path), &dest_file, &mut dest_canonical) {
+                already_at_destination += 1;
+                continue;
+            }
+
+            if !force_overwrite {
                 skipped_files.push(SkippedFile {
                     path: file.full_path.clone(),
                     reason: SkipReason::ExistsAtDestination,
@@ -728,6 +742,84 @@ fn is_cross_device_error(error: &io::Error) -> bool {
     // Windows: ERROR_NOT_SAME_DEVICE = 17
     // Unix: EXDEV = 18
     error.raw_os_error() == Some(17) || error.raw_os_error() == Some(18)
+}
+
+/// Check whether two paths refer to the same file by comparing canonical paths.
+///
+/// The `dest_canonical_cache` parameter caches the canonical form of the
+/// destination file's parent directory to avoid repeated syscalls.
+/// Returns `false` if either path cannot be canonicalized (e.g., file not found).
+fn is_same_file(source: &Path, dest_file: &Path, dest_canonical_cache: &mut Option<std::path::PathBuf>) -> bool {
+    let Some(source_canonical) = source.canonicalize().ok() else {
+        return false;
+    };
+    let dest_canonical = dest_canonical_cache.get_or_insert_with(|| {
+        dest_file
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .unwrap_or_default()
+    });
+    let dest_file_canonical = dest_file
+        .file_name()
+        .map(|name| dest_canonical.join(name))
+        .unwrap_or_default();
+    source_canonical == dest_file_canonical
+}
+
+/// Normalize a canonicalized destination path back to drive-letter form.
+///
+/// On Windows, [`std::path::Path::canonicalize`] converts mapped network drives
+/// to their UNC form with a `\\?\UNC\` prefix (e.g., `Z:\DATA` becomes
+/// `\\?\UNC\192.168.1.107\NAS\DATA`). This breaks string comparisons against
+/// database paths which use drive letters.
+///
+/// This function converts the canonicalized path back to the drive-letter form
+/// by looking up the original path's drive mapping. If no mapping is found, it
+/// at least normalizes the `\\?\UNC\` prefix to `\\` and strips plain `\\?\`.
+fn normalize_destination(canonical: &Path, original: &Path) -> std::path::PathBuf {
+    let canonical_str = canonical.to_string_lossy();
+
+    // Handle \\?\UNC\server\share\path → \\server\share\path
+    if let Some(unc_rest) = canonical_str.strip_prefix(r"\\?\UNC\") {
+        let unc_path = format!(r"\\{unc_rest}");
+
+        // Try to resolve back to the original drive letter
+        if let Some(drive) = extract_drive_letter(original)
+            && let Some(unc_root) = get_unc_for_drive(drive)
+        {
+            let unc_lower = unc_path.to_lowercase();
+            let root_lower = unc_root.to_lowercase();
+            if unc_lower.starts_with(&root_lower) {
+                let remainder = &unc_path[unc_root.len()..];
+                return std::path::PathBuf::from(format!("{drive}:{remainder}"));
+            }
+        }
+
+        return std::path::PathBuf::from(unc_path);
+    }
+
+    // Handle \\?\C:\path → C:\path for local drives
+    if let Some(rest) = canonical_str.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(rest.to_string());
+    }
+
+    canonical.to_path_buf()
+}
+
+/// Normalize a path string by stripping the `\\?\` or `\\?\UNC\` extended-length
+/// prefix and lowercasing for case-insensitive comparison.
+///
+/// - `\\?\UNC\server\share\path` → `\\server\share\path`
+/// - `\\?\C:\path` → `c:\path`
+/// - `C:\path` → `c:\path`
+fn normalize_extended_prefix(path: &str) -> String {
+    path.strip_prefix(r"\\?\UNC\").map_or_else(
+        || {
+            path.strip_prefix(r"\\?\")
+                .map_or_else(|| path.to_lowercase(), str::to_lowercase)
+        },
+        |unc_rest| format!(r"\\{}", unc_rest.to_lowercase()),
+    )
 }
 
 /// Print the list of skipped files grouped by reason.
@@ -1613,5 +1705,297 @@ mod tests {
         // Requesting one byte more than available should fail
         let result = check_disk_space(temp_dir.path(), available + 1);
         assert!(result.is_err(), "Requesting one byte more than available should fail");
+    }
+
+    // --- normalize_extended_prefix tests ---
+
+    #[test]
+    fn test_normalize_extended_prefix_unc_path() {
+        let result = normalize_extended_prefix(r"\\?\UNC\192.168.1.107\NAS\DATA");
+        assert_eq!(result, r"\\192.168.1.107\nas\data");
+    }
+
+    #[test]
+    fn test_normalize_extended_prefix_local_drive() {
+        let result = normalize_extended_prefix(r"\\?\C:\Users\Documents");
+        assert_eq!(result, r"c:\users\documents");
+    }
+
+    #[test]
+    fn test_normalize_extended_prefix_plain_drive() {
+        let result = normalize_extended_prefix(r"C:\Users\Documents");
+        assert_eq!(result, r"c:\users\documents");
+    }
+
+    #[test]
+    fn test_normalize_extended_prefix_plain_unc() {
+        let result = normalize_extended_prefix(r"\\server\share\path");
+        assert_eq!(result, r"\\server\share\path");
+    }
+
+    #[test]
+    fn test_normalize_extended_prefix_case_insensitive() {
+        let result = normalize_extended_prefix(r"\\?\UNC\Server\Share\Path");
+        assert_eq!(result, r"\\server\share\path");
+    }
+
+    #[test]
+    fn test_normalize_extended_prefix_empty() {
+        let result = normalize_extended_prefix("");
+        assert_eq!(result, "");
+    }
+
+    // --- normalize_destination tests ---
+
+    #[test]
+    fn test_normalize_destination_local_drive_strips_prefix() {
+        let canonical = PathBuf::from(r"\\?\C:\Users\Documents");
+        let original = PathBuf::from(r"C:\Users\Documents");
+        let result = normalize_destination(&canonical, &original);
+        assert_eq!(result, PathBuf::from(r"C:\Users\Documents"));
+    }
+
+    #[test]
+    fn test_normalize_destination_plain_path_unchanged() {
+        let canonical = PathBuf::from(r"C:\Users\Documents");
+        let original = PathBuf::from(r"C:\Users\Documents");
+        let result = normalize_destination(&canonical, &original);
+        assert_eq!(result, PathBuf::from(r"C:\Users\Documents"));
+    }
+
+    #[test]
+    fn test_normalize_destination_unc_without_drive_mapping() {
+        // When no drive mapping exists, should at least convert \\?\UNC\ to \\
+        let canonical = PathBuf::from(r"\\?\UNC\unknown.server\share\path");
+        let original = PathBuf::from(r"\\unknown.server\share\path");
+        let result = normalize_destination(&canonical, &original);
+        assert_eq!(result, PathBuf::from(r"\\unknown.server\share\path"));
+    }
+
+    #[test]
+    fn test_normalize_destination_unc_no_drive_letter_in_original() {
+        // Original path is already UNC, no drive letter to resolve
+        let canonical = PathBuf::from(r"\\?\UNC\server\share\data");
+        let original = PathBuf::from(r"\\server\share\data");
+        let result = normalize_destination(&canonical, &original);
+        // No drive letter in original, so can't resolve back, but \\?\UNC\ is fixed
+        assert_eq!(result, PathBuf::from(r"\\server\share\data"));
+    }
+
+    // --- filter_files with normalized paths tests ---
+
+    #[test]
+    fn test_filter_files_unc_destination_matches_drive_letter_source() {
+        // Simulates what happens after normalize_destination resolves back to Z:
+        let destination = PathBuf::from(r"Z:\DATA");
+        let files = vec![
+            make_file_entry("file1.txt", r"Z:\DATA\file1.txt", 100),
+            make_file_entry("file2.txt", r"C:\source\file2.txt", 200),
+        ];
+
+        let result = filter_files(&files, &destination, false);
+
+        assert_eq!(
+            result.already_at_destination, 1,
+            "file1 should be detected as already at destination"
+        );
+        assert_eq!(result.files_to_move.len(), 1);
+        assert_eq!(result.files_to_move[0].full_path, r"C:\source\file2.txt");
+        assert!(result.skipped_files.is_empty(), "no files should be skipped");
+    }
+
+    #[test]
+    fn test_filter_files_extended_unc_prefix_handled() {
+        // Even if somehow \\?\UNC\ path reaches filter_files, the normalization handles it
+        let destination = PathBuf::from(r"\\?\UNC\192.168.1.107\NAS\DATA");
+        let files = vec![
+            make_file_entry("file1.txt", r"\\192.168.1.107\NAS\DATA\file1.txt", 100),
+            make_file_entry("file2.txt", r"C:\source\file2.txt", 200),
+        ];
+
+        let result = filter_files(&files, &destination, false);
+
+        assert_eq!(
+            result.already_at_destination, 1,
+            "file1 should match after \\\\?\\UNC\\ is normalized to \\\\"
+        );
+        assert_eq!(result.files_to_move.len(), 1);
+        assert_eq!(result.files_to_move[0].full_path, r"C:\source\file2.txt");
+    }
+
+    #[test]
+    fn test_filter_files_extended_prefix_on_both_sides() {
+        let destination = PathBuf::from(r"\\?\C:\dest");
+        let files = vec![
+            make_file_entry("file1.txt", r"\\?\C:\dest\file1.txt", 100),
+            make_file_entry("file2.txt", r"C:\dest\file2.txt", 200),
+        ];
+
+        let result = filter_files(&files, &destination, false);
+
+        assert_eq!(
+            result.already_at_destination, 2,
+            "both files should match after prefix normalization"
+        );
+        assert!(result.files_to_move.is_empty());
+    }
+
+    // --- is_same_file tests ---
+
+    #[test]
+    fn test_is_same_file_identical_paths() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "content").expect("failed to write file");
+
+        let mut cache = None;
+        assert!(
+            is_same_file(&file_path, &file_path, &mut cache),
+            "identical paths should be the same file"
+        );
+    }
+
+    #[test]
+    fn test_is_same_file_different_files() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let file_a = temp_dir.path().join("a.txt");
+        let file_b = temp_dir.path().join("b.txt");
+        fs::write(&file_a, "aaa").expect("failed to write file a");
+        fs::write(&file_b, "bbb").expect("failed to write file b");
+
+        let mut cache = None;
+        assert!(
+            !is_same_file(&file_a, &file_b, &mut cache),
+            "different files should not be the same"
+        );
+    }
+
+    #[test]
+    fn test_is_same_file_source_not_found() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let existing = temp_dir.path().join("exists.txt");
+        let missing = temp_dir.path().join("missing.txt");
+        fs::write(&existing, "content").expect("failed to write file");
+
+        let mut cache = None;
+        assert!(
+            !is_same_file(&missing, &existing, &mut cache),
+            "non-existent source should return false"
+        );
+    }
+
+    #[test]
+    fn test_is_same_file_cache_is_populated() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "content").expect("failed to write file");
+
+        let mut cache = None;
+        is_same_file(&file_path, &file_path, &mut cache);
+        assert!(cache.is_some(), "cache should be populated after first call");
+    }
+
+    #[test]
+    fn test_is_same_file_with_extended_prefix() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "content").expect("failed to write file");
+
+        // Canonicalize adds \\?\ prefix on Windows
+        let canonical_path = file_path.canonicalize().expect("failed to canonicalize");
+        let mut cache = None;
+        assert!(
+            is_same_file(&file_path, &canonical_path, &mut cache),
+            "plain path and \\\\?\\ prefixed path should resolve to the same file"
+        );
+    }
+
+    // --- filter_files same-file fallback tests ---
+
+    #[test]
+    fn test_filter_files_same_file_different_path_form_detected_as_already_at_dest() {
+        // Use real filesystem so is_same_file can canonicalize
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let dest = temp_dir.path().join("dest");
+        fs::create_dir(&dest).expect("failed to create dest dir");
+        let file_path = dest.join("report.txt");
+        fs::write(&file_path, "hello").expect("failed to write file");
+
+        // Canonicalize the destination (adds \\?\ prefix on Windows)
+        let canonical_dest = dest.canonicalize().expect("failed to canonicalize");
+
+        // File entry uses the plain path, destination uses the canonical form.
+        // The string comparison will fail, but is_same_file should catch it.
+        let files = vec![make_file_entry("report.txt", &file_path.to_string_lossy(), 5)];
+
+        let result = filter_files(&files, &canonical_dest, false);
+
+        assert_eq!(
+            result.already_at_destination, 1,
+            "same file via different path form should be 'already at destination'"
+        );
+        assert!(result.files_to_move.is_empty());
+        assert!(
+            result.skipped_files.is_empty(),
+            "same file should NOT appear in skipped list"
+        );
+    }
+
+    #[test]
+    fn test_filter_files_same_name_different_file_is_skipped() {
+        // Use real filesystem so is_same_file can canonicalize
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let dest = temp_dir.path().join("dest");
+        let source = temp_dir.path().join("source");
+        fs::create_dir(&dest).expect("failed to create dest dir");
+        fs::create_dir(&source).expect("failed to create source dir");
+
+        // Two DIFFERENT files with the same name
+        fs::write(dest.join("report.txt"), "destination version").expect("failed to write dest file");
+        let source_file = source.join("report.txt");
+        fs::write(&source_file, "source version").expect("failed to write source file");
+
+        let files = vec![make_file_entry("report.txt", &source_file.to_string_lossy(), 14)];
+
+        let result = filter_files(&files, &dest, false);
+
+        assert_eq!(
+            result.already_at_destination, 0,
+            "different file with same name should NOT be 'already at destination'"
+        );
+        assert!(result.files_to_move.is_empty());
+        assert_eq!(
+            result.skipped_files.len(),
+            1,
+            "different file with same name should be skipped"
+        );
+        assert!(matches!(
+            result.skipped_files[0].reason,
+            SkipReason::ExistsAtDestination
+        ));
+    }
+
+    #[test]
+    fn test_filter_files_same_file_not_moved_even_with_force() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let dest = temp_dir.path().join("dest");
+        fs::create_dir(&dest).expect("failed to create dest dir");
+        let file_path = dest.join("data.bin");
+        fs::write(&file_path, "important data").expect("failed to write file");
+
+        let canonical_dest = dest.canonicalize().expect("failed to canonicalize");
+        let files = vec![make_file_entry("data.bin", &file_path.to_string_lossy(), 14)];
+
+        // Even with force=true, same file should be detected and not moved
+        let result = filter_files(&files, &canonical_dest, true);
+
+        assert_eq!(
+            result.already_at_destination, 1,
+            "same file should be 'already at destination' even with force"
+        );
+        assert!(
+            result.files_to_move.is_empty(),
+            "same file must never be added to files_to_move (risk of data loss)"
+        );
     }
 }
