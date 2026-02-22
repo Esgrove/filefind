@@ -113,7 +113,13 @@ fn main() -> Result<()> {
     let args = DaemonCli::parse();
 
     if let Some(Command::Completion { shell, install }) = &args.command {
-        return filefind::generate_shell_completion(*shell, DaemonCli::command(), *install, env!("CARGO_BIN_NAME"));
+        return filefind::generate_shell_completion(
+            *shell,
+            DaemonCli::command(),
+            *install,
+            args.verbose,
+            env!("CARGO_BIN_NAME"),
+        );
     }
 
     // Hide the console window if requested (must happen before any output)

@@ -91,7 +91,7 @@ pub struct FileFindCli {
     pub info: bool,
 
     /// Print verbose output.
-    #[arg(short = 'v', long)]
+    #[arg(short = 'v', long, global = true)]
     pub verbose: bool,
 
     /// Exact pattern matches only
@@ -121,10 +121,6 @@ pub enum Command {
         /// Maximum number of duplicate groups to show
         #[arg(short = 'n', long, name = "COUNT")]
         limit: Option<usize>,
-
-        /// Print verbose output
-        #[arg(short = 'v', long)]
-        verbose: bool,
     },
 
     /// Generate shell completion scripts
@@ -178,7 +174,13 @@ fn main() -> Result<()> {
     let args = FileFindCli::parse();
 
     if let Some(Command::Completion { shell, install }) = &args.command {
-        return generate_shell_completion(*shell, FileFindCli::command(), *install, env!("CARGO_BIN_NAME"));
+        return generate_shell_completion(
+            *shell,
+            FileFindCli::command(),
+            *install,
+            args.verbose,
+            env!("CARGO_BIN_NAME"),
+        );
     }
 
     // Build the final config from user config and CLI args
@@ -196,7 +198,7 @@ fn main() -> Result<()> {
     match &config.command {
         Some(Command::Stats) => cli::show_stats(&database),
         Some(Command::Volumes { sort }) => cli::list_volumes(&database, sort.unwrap_or(VolumeSortBy::Name)),
-        Some(Command::Duplicates { drive, limit, verbose }) => cli::show_duplicates(&database, drive, *limit, *verbose),
+        Some(Command::Duplicates { drive, limit }) => cli::show_duplicates(&database, drive, *limit, config.verbose),
         Some(Command::Completion { .. }) => unreachable!("Handled above"),
         None => cli::run_search(&config, &database),
     }
@@ -583,7 +585,6 @@ mod tests {
             Some(Command::Duplicates {
                 drive,
                 limit: None,
-                verbose: false
             }) if drive.is_empty()
         ));
     }
@@ -592,10 +593,9 @@ mod tests {
     fn test_duplicates_with_drive_filter() {
         let cli = parse(&["duplicates", "-d", "C"]);
         match &cli.command {
-            Some(Command::Duplicates { drive, limit, verbose }) => {
+            Some(Command::Duplicates { drive, limit }) => {
                 assert_eq!(drive, &["C"]);
                 assert!(limit.is_none());
-                assert!(!verbose);
             }
             other => panic!("Expected Duplicates command, got {other:?}"),
         }
@@ -637,22 +637,18 @@ mod tests {
     #[test]
     fn test_duplicates_with_verbose() {
         let cli = parse(&["duplicates", "-v"]);
-        match &cli.command {
-            Some(Command::Duplicates { verbose, .. }) => {
-                assert!(verbose);
-            }
-            other => panic!("Expected Duplicates command, got {other:?}"),
-        }
+        assert!(cli.verbose);
+        assert!(matches!(cli.command, Some(Command::Duplicates { .. })));
     }
 
     #[test]
     fn test_duplicates_with_all_options() {
         let cli = parse(&["duplicates", "-d", "C", "-n", "5", "-v"]);
+        assert!(cli.verbose);
         match &cli.command {
-            Some(Command::Duplicates { drive, limit, verbose }) => {
+            Some(Command::Duplicates { drive, limit }) => {
                 assert_eq!(drive, &["C"]);
                 assert_eq!(*limit, Some(5));
-                assert!(verbose);
             }
             other => panic!("Expected Duplicates command, got {other:?}"),
         }
@@ -661,14 +657,27 @@ mod tests {
     #[test]
     fn test_duplicates_with_long_flags() {
         let cli = parse(&["duplicates", "--drive", "D", "--limit", "20", "--verbose"]);
+        assert!(cli.verbose);
         match &cli.command {
-            Some(Command::Duplicates { drive, limit, verbose }) => {
+            Some(Command::Duplicates { drive, limit }) => {
                 assert_eq!(drive, &["D"]);
                 assert_eq!(*limit, Some(20));
-                assert!(verbose);
             }
             other => panic!("Expected Duplicates command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_verbose_after_completion_subcommand() {
+        let cli = parse(&["completion", "bash", "--verbose"]);
+        assert!(cli.verbose);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Completion {
+                shell: Shell::Bash,
+                install: false
+            })
+        ));
     }
 
     #[test]

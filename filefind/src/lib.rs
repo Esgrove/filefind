@@ -872,18 +872,26 @@ fn get_shell_completion_dir(shell: Shell, name: &str) -> Result<PathBuf> {
 ///
 /// let command = Command::new("myapp").about("example app");
 /// // Print the Bash completion script to stdout
-/// generate_shell_completion(Shell::Bash, command, false, "myapp").expect("generation failed");
+/// generate_shell_completion(Shell::Bash, command, false, false, "myapp").expect("generation failed");
 /// ```
 ///
 /// # Errors
 /// Returns an error if:
 /// - The shell completion directory cannot be determined or created
 /// - The completion file cannot be generated or written
-pub fn generate_shell_completion(shell: Shell, mut command: Command, install: bool, command_name: &str) -> Result<()> {
+pub fn generate_shell_completion(
+    shell: Shell,
+    mut command: Command,
+    install: bool,
+    verbose: bool,
+    command_name: &str,
+) -> Result<()> {
     if install {
         let out_dir = get_shell_completion_dir(shell, command_name)?;
         let path = clap_complete::generate_to(shell, &mut command, command_name, out_dir)?;
-        println!("Completion file generated to: {}", path.display());
+        if verbose {
+            println!("Completion file generated to: {}", path.display());
+        }
     } else {
         clap_complete::generate(shell, &mut command, command_name, &mut std::io::stdout());
     }

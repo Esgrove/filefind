@@ -40,7 +40,7 @@ pub struct TrayArgs {
     log_level: Option<LogLevel>,
 
     /// Enable verbose logging (shortcut for --log debug)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     verbose: bool,
 }
 
@@ -63,7 +63,13 @@ fn main() -> Result<()> {
     let args = TrayArgs::parse();
 
     if let Some(TrayCommand::Completion { shell, install }) = &args.command {
-        return generate_shell_completion(*shell, TrayArgs::command(), *install, env!("CARGO_BIN_NAME"));
+        return generate_shell_completion(
+            *shell,
+            TrayArgs::command(),
+            *install,
+            args.verbose,
+            env!("CARGO_BIN_NAME"),
+        );
     }
 
     let log_level = args

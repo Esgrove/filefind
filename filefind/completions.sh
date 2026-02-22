@@ -79,8 +79,11 @@ esac
 print_magenta "Installing shell completions for: ${SHELLS[*]}"
 echo "Binaries: ${COMPLETION_BINARIES[*]}"
 
-# Build completion command args: pass --install
+# Build completion command args: pass --verbose unless in silent mode
 COMPLETION_ARGS=(--install)
+if [ "$SILENT" = false ]; then
+    COMPLETION_ARGS+=("--verbose")
+fi
 
 FAILED_BINARIES=()
 INSTALLED_COUNT=0
