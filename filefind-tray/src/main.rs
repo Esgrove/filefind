@@ -9,13 +9,14 @@ mod icons;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use filefind::{LogLevel, get_log_directory};
+use filefind::{LogLevel, generate_shell_completion, get_log_directory};
 
 #[derive(Parser)]
 #[command(
@@ -26,6 +27,10 @@ use filefind::{LogLevel, get_log_directory};
 )]
 /// Command-line arguments for the filefind tray application.
 pub struct TrayArgs {
+    /// Subcommand to run
+    #[command(subcommand)]
+    command: Option<TrayCommand>,
+
     /// Run in foreground with console logging
     #[arg(short, long)]
     foreground: bool,
@@ -39,8 +44,27 @@ pub struct TrayArgs {
     verbose: bool,
 }
 
+/// Subcommands for the filefind tray application.
+#[derive(Debug, Subcommand)]
+pub enum TrayCommand {
+    /// Generate shell completion scripts
+    Completion {
+        /// Shell to generate completion for
+        #[arg(value_enum)]
+        shell: Shell,
+
+        /// Install the completion script to the appropriate location
+        #[arg(short = 'I', long)]
+        install: bool,
+    },
+}
+
 fn main() -> Result<()> {
     let args = TrayArgs::parse();
+
+    if let Some(TrayCommand::Completion { shell, install }) = &args.command {
+        return generate_shell_completion(*shell, TrayArgs::command(), *install, env!("CARGO_BIN_NAME"));
+    }
 
     let log_level = args
         .log_level
@@ -146,7 +170,7 @@ fn spawn_background_tray(args: &TrayArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory, Parser};
+    use clap::Parser;
 
     use super::*;
 
@@ -346,6 +370,65 @@ mod tests {
             .log_level
             .unwrap_or(if args.verbose { LogLevel::Debug } else { LogLevel::Info });
         assert_eq!(log_level.to_level_filter(), LogLevel::Error.to_level_filter());
+    }
+
+    // ── Completion subcommand ─────────────────────────────────────
+
+    #[test]
+    fn test_completion_bash() {
+        let args = parse(&["completion", "bash"]);
+        match args.command {
+            Some(TrayCommand::Completion { shell, install }) => {
+                assert!(matches!(shell, Shell::Bash));
+                assert!(!install);
+            }
+            other => panic!("Expected Completion command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_completion_powershell() {
+        let args = parse(&["completion", "powershell"]);
+        match args.command {
+            Some(TrayCommand::Completion { shell, .. }) => {
+                assert!(matches!(shell, Shell::PowerShell));
+            }
+            other => panic!("Expected Completion command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_completion_with_install() {
+        let args = parse(&["completion", "bash", "--install"]);
+        match args.command {
+            Some(TrayCommand::Completion { shell, install }) => {
+                assert!(matches!(shell, Shell::Bash));
+                assert!(install);
+            }
+            other => panic!("Expected Completion command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_completion_install_short() {
+        let args = parse(&["completion", "zsh", "-I"]);
+        match args.command {
+            Some(TrayCommand::Completion { shell, install }) => {
+                assert!(matches!(shell, Shell::Zsh));
+                assert!(install);
+            }
+            other => panic!("Expected Completion command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_completion_missing_shell_arg() {
+        parse_err(&["completion"]);
+    }
+
+    #[test]
+    fn test_completion_invalid_shell() {
+        parse_err(&["completion", "invalid"]);
     }
 
     // ── command_factory ───────────────────────────────────────────
