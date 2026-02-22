@@ -15,6 +15,23 @@ This application provides a convenient graphical interface for managing the file
 
 ## Usage
 
+```
+Filefind system tray application
+
+Usage: filefind-tray.exe [OPTIONS] [COMMAND]
+
+Commands:
+  completion  Generate shell completion scripts
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+  -f, --foreground   Run in foreground with console logging
+  -l, --log <LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
+  -v, --verbose      Enable verbose logging (shortcut for --log debug)
+  -h, --help         Print help (see more with '--help')
+  -V, --version      Print version
+```
+
 Simply run the application:
 
 ```shell
@@ -22,6 +39,26 @@ filefind-tray
 ```
 
 The application will appear in the system tray. Right-click the icon to access the menu.
+
+### Subcommands
+
+#### completion
+
+Generate shell completion scripts:
+
+```
+Generate shell completion scripts
+
+Usage: filefind-tray.exe completion [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>  Shell to generate completion for [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -I, --install  Install the completion script to the appropriate location
+  -v, --verbose  Enable verbose logging (shortcut for --log debug)
+  -h, --help     Print help
+```
 
 ### Menu Options
 
@@ -55,6 +92,20 @@ $action = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.cargo\bin\filefind
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "filefind tray" -Action $action -Trigger $trigger -Settings $settings
+```
+
+## Examples
+
+```shell
+# Run in foreground with console logging
+filefind-tray --foreground
+
+# Run with verbose logging
+filefind-tray --verbose
+
+# Generate shell completion
+filefind-tray completion powershell
+filefind-tray completion bash --install
 ```
 
 ## Architecture

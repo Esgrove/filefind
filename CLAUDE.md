@@ -82,6 +82,16 @@ Within implementation blocks:
 - Public methods before private methods
 - Associated functions (those without `self` parameter) last
 
+## Updating CLI Usage
+
+After changing CLI arguments, flags, or subcommands in any binary crate:
+
+1. Run the binary with `-h` to get the short help output
+2. Update the corresponding `README.md` usage sections with the new output
+3. Also update subcommand help sections by running `<binary> <subcommand> -h`
+
+Use the short help flag (`-h`), not the long help flag (`--help`).
+
 ## Code Style and Conventions
 
 - Uses Rust 2024 edition

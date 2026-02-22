@@ -56,6 +56,7 @@ Usage: filefindd.exe start [OPTIONS]
 
 Options:
   -f, --foreground       Run in foreground instead of daemonizing
+  -H, --hidden           Hide the console window (for use with Task Scheduler)
   -r, --rescan           Force a full rescan of all volumes
   -l, --log <LOG_LEVEL>  Set the log level [possible values: error, warn, info, debug, trace]
   -v, --verbose          Print verbose output

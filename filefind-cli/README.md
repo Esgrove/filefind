@@ -63,7 +63,13 @@ Options:
 Show index statistics:
 
 ```
-Usage: filefind.exe stats
+Show index statistics
+
+Usage: filefind.exe stats [OPTIONS]
+
+Options:
+  -v, --verbose  Print verbose output
+  -h, --help     Print help
 ```
 
 #### volumes
@@ -77,6 +83,7 @@ Usage: filefind.exe volumes [OPTIONS]
 
 Options:
   -s, --sort [<SORT>]  Sort volumes by this field [possible values: name, size, files]
+  -v, --verbose        Print verbose output
   -h, --help           Print help (see more with '--help')
 ```
 
@@ -111,6 +118,7 @@ Arguments:
 
 Options:
   -I, --install  Install the completion script to the appropriate location
+  -v, --verbose  Print verbose output
   -h, --help     Print help
 ```
 
