@@ -21,7 +21,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 ctrlc = "3.5"
 indicatif = "0.18"
-tempfile = "3.24"
+tempfile = "3.27"
 
 [workspace.dependencies.windows]
 version = "0.62.2"
