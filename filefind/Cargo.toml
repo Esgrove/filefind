@@ -19,7 +19,7 @@ tracing-subscriber = { workspace = true }
 
 postcard = { version = "1.1", features = ["use-std"] }
 regex = { workspace = true }
-rusqlite = { version = "0.38.0", features = ["bundled", "functions"] }
+rusqlite = { version = "0.39.0", features = ["bundled", "functions"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.0"
 
