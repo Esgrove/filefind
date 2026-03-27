@@ -365,7 +365,7 @@ impl IpcClient {
     fn send_command_unix(&self, command: DaemonCommand) -> Result<DaemonResponse> {
         use std::os::unix::net::UnixStream;
 
-        let socket_path = self.effective_pipe_path();
+        let socket_path = self.pipe_path();
 
         // Connect to Unix domain socket
         let mut stream = UnixStream::connect(socket_path).context("Failed to connect to daemon - is it running?")?;
