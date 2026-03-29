@@ -151,9 +151,13 @@ impl CliConfig {
 
     /// Expand patterns by adding variants for dot-separated and space-separated patterns.
     ///
-    /// For example:
+    /// For individual patterns:
     /// - `some.name` becomes `["some.name", "some name", "somename"]`
     /// - `some name` becomes `["some name", "some.name", "somename"]`
+    ///
+    /// When multiple simple patterns are given (no dots, spaces, or globs),
+    /// also adds combined forms:
+    /// - `["some", "name"]` becomes `["some", "name", "somename", "some.name"]`
     ///
     /// This helps match different naming conventions (dots, spaces, or no separator).
     fn expand_patterns(patterns: &[String]) -> Vec<String> {
@@ -190,6 +194,26 @@ impl CliConfig {
                 if !empty_variant.is_empty() && empty_variant != *pattern {
                     expanded.push(empty_variant);
                 }
+            }
+        }
+
+        // When multiple simple patterns are given (no dots, spaces, or globs),
+        // also add combined forms so e.g. "some name" also matches "somename" and "some.name"
+        let simple_patterns: Vec<&str> = patterns
+            .iter()
+            .filter(|p| !p.contains('*') && !p.contains('?') && !p.contains('.') && !p.contains(' '))
+            .map(String::as_str)
+            .collect();
+
+        if simple_patterns.len() > 1 {
+            let concatenated: String = simple_patterns.concat();
+            if !expanded.contains(&concatenated) {
+                expanded.push(concatenated);
+            }
+
+            let dot_joined = simple_patterns.join(".");
+            if !expanded.contains(&dot_joined) {
+                expanded.push(dot_joined);
             }
         }
 
@@ -306,6 +330,63 @@ mod tests {
         let patterns: Vec<String> = Vec::new();
         let expanded = CliConfig::expand_patterns(&patterns);
         assert!(expanded.is_empty());
+    }
+
+    #[test]
+    fn test_expand_patterns_combines_simple_patterns() {
+        let patterns = vec!["some".to_string(), "name".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(expanded, vec!["some", "name", "somename", "some.name"]);
+    }
+
+    #[test]
+    fn test_expand_patterns_combines_three_simple_patterns() {
+        let patterns = vec!["some".to_string(), "long".to_string(), "name".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(expanded, vec!["some", "long", "name", "somelongname", "some.long.name"]);
+    }
+
+    #[test]
+    fn test_expand_patterns_no_combine_with_glob() {
+        let patterns = vec!["some".to_string(), "*.txt".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        // Only one simple pattern, so no combining
+        assert_eq!(expanded, vec!["some", "*.txt"]);
+    }
+
+    #[test]
+    fn test_expand_patterns_no_combine_single_simple() {
+        let patterns = vec!["somename".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(expanded, vec!["somename"]);
+    }
+
+    #[test]
+    fn test_expand_patterns_combine_skips_dot_patterns() {
+        // "some.name" has a dot so it's not simple; only "other" is simple (1 pattern = no combine)
+        let patterns = vec!["some.name".to_string(), "other".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(expanded, vec!["some.name", "some name", "somename", "other"]);
+    }
+
+    #[test]
+    fn test_expand_patterns_combine_mixed_with_enough_simple() {
+        // "some.name" is not simple, but "foo" and "bar" are -> combines foo+bar
+        let patterns = vec!["some.name".to_string(), "foo".to_string(), "bar".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(
+            expanded,
+            vec!["some.name", "some name", "somename", "foo", "bar", "foobar", "foo.bar"]
+        );
+    }
+
+    #[test]
+    fn test_expand_patterns_combine_ignores_space_and_glob_patterns() {
+        // "some name" has a space (not simple), "*.log" is a glob (not simple),
+        // only "config" is simple (1 pattern = no combine)
+        let patterns = vec!["some name".to_string(), "config".to_string(), "*.log".to_string()];
+        let expanded = CliConfig::expand_patterns(&patterns);
+        assert_eq!(expanded, vec!["some name", "some.name", "somename", "config", "*.log"]);
     }
 
     #[test]
