@@ -570,16 +570,54 @@ fn move_single_file(
             progress_bar.inc(expected_size);
             return Ok(());
         }
-        Err(error) => {
-            // Check if it's a cross-device error
-            if !is_cross_device_error(&error) {
-                return Err(MoveError::Failed(anyhow::Error::new(error).context(format!(
-                    "Failed to rename {} -> {}",
+        Err(rename_error) => {
+            // Verify file state after a failed rename. On network drives
+            // (SMB), the server can complete the rename but the client
+            // receives an error (e.g., timeout or dropped response).
+            // Without this check, the file appears "lost" — gone from
+            // the source but the code never checks the destination.
+            if !source.exists() {
+                if destination.exists() {
+                    // Rename appears to have succeeded despite the error.
+                    // Verify the file size as a sanity check.
+                    if let Ok(meta) = fs::metadata(destination)
+                        && meta.len() == expected_size
+                    {
+                        progress_bar.inc(expected_size);
+                        return Ok(());
+                    }
+                    // Destination exists but size is wrong or unreadable
+                    return Err(MoveError::Failed(anyhow::anyhow!(
+                        "Rename of {} -> {} reported an error but moved the file. \
+                         Destination exists but size verification failed \
+                         (expected {expected_size} bytes). Original error: {rename_error}",
+                        source.display(),
+                        destination.display(),
+                    )));
+                }
+                // Source gone, destination not created: file is lost
+                return Err(MoveError::Failed(anyhow::anyhow!(
+                    "File lost during rename of {} -> {}: source no longer exists \
+                     and destination was not created. The file may have been moved \
+                     or deleted by another process. Original error: {rename_error}",
                     source.display(),
-                    destination.display()
-                ))));
+                    destination.display(),
+                )));
             }
-            // Cross-device: fall through to copy+delete
+
+            // Source still exists — no data lost. For cross-device errors
+            // we always fall through to copy+delete. For other errors
+            // (e.g., network drives returning unexpected error codes) we
+            // also fall through, since the copy path is a safe fallback.
+            if !is_cross_device_error(&rename_error) {
+                progress_bar.suspend(|| {
+                    print_warning!(
+                        "Rename failed for {} -> {} (error: {rename_error}), falling back to copy",
+                        source.display(),
+                        destination.display(),
+                    );
+                });
+            }
         }
     }
 
@@ -1996,6 +2034,153 @@ mod tests {
         assert!(
             result.files_to_move.is_empty(),
             "same file must never be added to files_to_move (risk of data loss)"
+        );
+    }
+
+    #[test]
+    fn test_move_single_file_rename_recovery_dest_exists() {
+        // Simulates a rename that secretly succeeded on a network drive:
+        // source is gone, destination exists with the correct size.
+        // The code should detect this and return Ok instead of an error.
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let dest_dir = temp_dir.path().join("dest");
+        fs::create_dir_all(&dest_dir).expect("failed to create dest dir");
+
+        let content = b"recovered file content";
+        let dest_file = dest_dir.join("recovered.bin");
+        fs::write(&dest_file, content).expect("failed to write dest file");
+
+        // Source does not exist — simulates rename having moved it
+        let source_file = temp_dir.path().join("source").join("recovered.bin");
+
+        let abort_flag = AtomicBool::new(false);
+        let progress_bar = ProgressBar::hidden();
+
+        let result = move_single_file(
+            &source_file,
+            &dest_file,
+            content.len() as u64,
+            &progress_bar,
+            &abort_flag,
+        );
+
+        assert!(result.is_ok(), "should recover when dest exists with correct size");
+        assert!(dest_file.exists(), "destination should still exist");
+        assert_eq!(
+            fs::read(&dest_file).expect("failed to read dest"),
+            content,
+            "destination content should be intact"
+        );
+    }
+
+    #[test]
+    fn test_move_single_file_rename_recovery_wrong_size() {
+        // Source is gone, destination exists but with wrong size.
+        // The code should report an error about the size mismatch.
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let dest_dir = temp_dir.path().join("dest");
+        fs::create_dir_all(&dest_dir).expect("failed to create dest dir");
+
+        let dest_file = dest_dir.join("bad.bin");
+        fs::write(&dest_file, b"short").expect("failed to write dest file");
+
+        let source_file = temp_dir.path().join("source").join("bad.bin");
+
+        let abort_flag = AtomicBool::new(false);
+        let progress_bar = ProgressBar::hidden();
+
+        let result = move_single_file(
+            &source_file,
+            &dest_file,
+            99999, // expected size doesn't match the 5-byte dest
+            &progress_bar,
+            &abort_flag,
+        );
+
+        let Err(MoveError::Failed(error)) = result else {
+            panic!("expected MoveError::Failed");
+        };
+        let error_msg = format!("{error}");
+        assert!(
+            error_msg.contains("size verification failed"),
+            "error should mention size verification, got: {error_msg}"
+        );
+    }
+
+    #[test]
+    fn test_move_single_file_file_lost() {
+        // Source is gone and destination does not exist either.
+        // The code should report a clear "file lost" error.
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let source_file = temp_dir.path().join("vanished.txt");
+        let dest_file = temp_dir.path().join("dest").join("vanished.txt");
+
+        let abort_flag = AtomicBool::new(false);
+        let progress_bar = ProgressBar::hidden();
+
+        let result = move_single_file(&source_file, &dest_file, 100, &progress_bar, &abort_flag);
+
+        let Err(MoveError::Failed(error)) = result else {
+            panic!("expected MoveError::Failed");
+        };
+        let error_msg = format!("{error}");
+        assert!(
+            error_msg.contains("File lost during rename"),
+            "error should mention file lost, got: {error_msg}"
+        );
+        assert!(
+            error_msg.contains("source no longer exists"),
+            "error should mention source is gone, got: {error_msg}"
+        );
+    }
+
+    #[test]
+    fn test_move_single_file_rename_fallback_to_copy() {
+        // When rename fails with a non-cross-device error but the source
+        // still exists, the code should fall through to copy+delete.
+        // We simulate this by making the destination directory not exist
+        // at first (so rename fails), then creating it before the copy.
+        //
+        // Since we can't inject code between rename and copy, we instead
+        // verify the end-to-end behavior: create source in one temp dir
+        // and destination dir in another. On the same filesystem rename
+        // succeeds, so we make rename fail by targeting a non-existent
+        // intermediate directory, then verify the source is preserved.
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let source_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&source_dir).expect("failed to create source dir");
+
+        let content = b"important data that must not be lost";
+        let source_file = source_dir.join("safe.bin");
+        fs::write(&source_file, content).expect("failed to write source");
+
+        // Destination parent directory does NOT exist — rename will fail
+        // with a non-cross-device error, and the copy will also fail,
+        // but the source must remain intact.
+        let dest_file = temp_dir.path().join("nonexistent_dir").join("safe.bin");
+
+        let abort_flag = AtomicBool::new(false);
+        let progress_bar = ProgressBar::hidden();
+
+        let result = move_single_file(
+            &source_file,
+            &dest_file,
+            content.len() as u64,
+            &progress_bar,
+            &abort_flag,
+        );
+
+        // The move should fail (both rename and copy fail because dest dir
+        // doesn't exist), but the critical thing is source is preserved.
+        assert!(matches!(result, Err(MoveError::Failed(_))));
+        assert!(
+            source_file.exists(),
+            "source must still exist after failed rename + failed copy fallback"
+        );
+        assert_eq!(
+            fs::read(&source_file).expect("failed to read source"),
+            content,
+            "source content must be intact"
         );
     }
 }
