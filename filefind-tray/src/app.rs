@@ -27,6 +27,14 @@ mod menu_ids {
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const WAIT_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Holds references to menu items that need dynamic state updates.
+struct MenuItems {
+    status: MenuItem,
+    start: MenuItem,
+    stop: MenuItem,
+    rescan: MenuItem,
+}
+
 /// Run the tray application.
 ///
 /// This function does not return under normal operation as it runs the event loop.
@@ -34,7 +42,7 @@ pub fn run() -> Result<()> {
     info!("Starting tray application");
 
     // Create the tray icon (must be done on the thread with the event loop)
-    let (tray_icon, status_item) = create_tray_icon()?;
+    let (tray_icon, menu_items) = create_tray_icon()?;
 
     // Create IPC client for daemon communication
     let ipc_client = IpcClient::new();
@@ -47,7 +55,7 @@ pub fn run() -> Result<()> {
 
     // Initial status update
     info!("Checking initial daemon status...");
-    previous_state = update_tray_status(&tray_icon, &status_item, &ipc_client, previous_state);
+    previous_state = update_tray_status(&tray_icon, &menu_items, &ipc_client, previous_state);
 
     // Subscribe to menu events
     let menu_channel = MenuEvent::receiver();
@@ -72,13 +80,13 @@ pub fn run() -> Result<()> {
 
             // Periodically update status
             if last_update.elapsed() >= UPDATE_INTERVAL {
-                previous_state = update_tray_status(&tray_icon, &status_item, &ipc_client, previous_state);
+                previous_state = update_tray_status(&tray_icon, &menu_items, &ipc_client, previous_state);
                 last_update = std::time::Instant::now();
             }
 
             // Handle menu events (non-blocking)
             if let Ok(event) = menu_channel.try_recv() {
-                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &should_quit);
+                handle_menu_event(&event.id.0, &tray_icon, &menu_items, &ipc_client, &should_quit);
             }
 
             // Process all pending Windows messages without blocking.
@@ -117,13 +125,13 @@ pub fn run() -> Result<()> {
 
             // Periodically update status
             if last_update.elapsed() >= UPDATE_INTERVAL {
-                previous_state = update_tray_status(&tray_icon, &status_item, &ipc_client, previous_state);
+                previous_state = update_tray_status(&tray_icon, &menu_items, &ipc_client, previous_state);
                 last_update = std::time::Instant::now();
             }
 
             // Handle menu events
             if let Ok(event) = menu_channel.try_recv() {
-                handle_menu_event(&event.id.0, &tray_icon, &status_item, &ipc_client, &should_quit);
+                handle_menu_event(&event.id.0, &tray_icon, &menu_items, &ipc_client, &should_quit);
             }
 
             std::thread::sleep(Duration::from_millis(100));
@@ -137,7 +145,7 @@ pub fn run() -> Result<()> {
 fn handle_menu_event(
     menu_id: &str,
     tray_icon: &TrayIcon,
-    status_item: &MenuItem,
+    menu_items: &MenuItems,
     ipc_client: &IpcClient,
     quit_flag: &AtomicBool,
 ) {
@@ -149,7 +157,7 @@ fn handle_menu_event(
             }
             // Update status after a short delay
             std::thread::sleep(WAIT_INTERVAL);
-            update_tray_status(tray_icon, status_item, ipc_client, None);
+            update_tray_status(tray_icon, menu_items, ipc_client, None);
         }
         menu_ids::STOP => {
             info!("Stopping daemon...");
@@ -159,7 +167,7 @@ fn handle_menu_event(
             }
             // Update status after a short delay
             std::thread::sleep(WAIT_INTERVAL);
-            update_tray_status(tray_icon, status_item, ipc_client, None);
+            update_tray_status(tray_icon, menu_items, ipc_client, None);
         }
         menu_ids::RESCAN => {
             info!("Triggering rescan...");
@@ -187,9 +195,9 @@ fn handle_menu_event(
 }
 
 /// Create the tray icon with menu.
-fn create_tray_icon() -> Result<(TrayIcon, MenuItem)> {
+fn create_tray_icon() -> Result<(TrayIcon, MenuItems)> {
     let icon = icons::create_stopped_icon()?;
-    let (menu, status_item) = create_menu()?;
+    let (menu, menu_items) = create_menu()?;
 
     let tray_icon = TrayIconBuilder::new()
         .with_icon(icon)
@@ -198,22 +206,22 @@ fn create_tray_icon() -> Result<(TrayIcon, MenuItem)> {
         .build()
         .context("Failed to build tray icon")?;
 
-    Ok((tray_icon, status_item))
+    Ok((tray_icon, menu_items))
 }
 
 /// Create the tray menu.
 ///
-/// Returns the menu and the status menu item so it can be updated later.
-fn create_menu() -> Result<(Menu, MenuItem)> {
+/// Returns the menu and the menu items that need dynamic state updates.
+fn create_menu() -> Result<(Menu, MenuItems)> {
     let menu = Menu::new();
 
     // Status item (disabled, shows current state)
     let status_item = MenuItem::with_id(menu_ids::STATUS, "Status: Unknown", false, None);
 
-    // Control items
+    // Control items (initial state: daemon assumed stopped)
     let start_item = MenuItem::with_id(menu_ids::START, "Start daemon", true, None);
-    let stop_item = MenuItem::with_id(menu_ids::STOP, "Stop daemon", true, None);
-    let rescan_item = MenuItem::with_id(menu_ids::RESCAN, "Rescan", true, None);
+    let stop_item = MenuItem::with_id(menu_ids::STOP, "Stop daemon", false, None);
+    let rescan_item = MenuItem::with_id(menu_ids::RESCAN, "Rescan", false, None);
 
     // Quit item
     let quit_item = MenuItem::with_id(menu_ids::QUIT, "Quit", true, None);
@@ -244,7 +252,14 @@ fn create_menu() -> Result<(Menu, MenuItem)> {
     menu.append(&about_item)?;
     menu.append(&quit_item)?;
 
-    Ok((menu, status_item))
+    let menu_items = MenuItems {
+        status: status_item,
+        start: start_item,
+        stop: stop_item,
+        rescan: rescan_item,
+    };
+
+    Ok((menu, menu_items))
 }
 
 /// Update the tray icon, tooltip, and menu status based on daemon status.
@@ -253,7 +268,7 @@ fn create_menu() -> Result<(Menu, MenuItem)> {
 #[allow(clippy::unnecessary_wraps)]
 fn update_tray_status(
     tray_icon: &TrayIcon,
-    status_item: &MenuItem,
+    menu_items: &MenuItems,
     ipc_client: &IpcClient,
     previous_state: Option<DaemonStateInfo>,
 ) -> Option<DaemonStateInfo> {
@@ -304,7 +319,18 @@ fn update_tray_status(
 
     // Update menu status item
     let status_text = format_status_menu_text(&status);
-    status_item.set_text(status_text);
+    menu_items.status.set_text(status_text);
+
+    // Enable/disable menu items based on daemon state
+    let (start_enabled, stop_enabled, rescan_enabled) = match current_state {
+        DaemonStateInfo::Stopped => (true, false, false),
+        DaemonStateInfo::Running => (false, true, true),
+        DaemonStateInfo::Scanning => (false, true, false),
+        DaemonStateInfo::Starting | DaemonStateInfo::Stopping => (false, false, false),
+    };
+    menu_items.start.set_enabled(start_enabled);
+    menu_items.stop.set_enabled(stop_enabled);
+    menu_items.rescan.set_enabled(rescan_enabled);
 
     Some(current_state)
 }
