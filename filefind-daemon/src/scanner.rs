@@ -1097,9 +1097,9 @@ mod tests {
 
     #[test]
     fn test_is_path_accessible_non_existent() {
-        assert!(!is_path_accessible(Path::new(
-            "Z:\\NonExistent\\Path\\That\\Should\\Not\\Exist"
-        )));
+        let temp = tempdir().expect("Failed to create temp directory");
+        let missing_path = temp.path().join("missing_path_that_should_not_exist");
+        assert!(!is_path_accessible(&missing_path));
     }
 
     #[test]
@@ -1195,11 +1195,11 @@ mod tests {
 
     #[test]
     fn test_categorize_paths_inaccessible_skipped() {
-        // Non-existent paths should be skipped entirely
-        let categorized = categorize_paths(vec![
-            "Z:\\NonExistent\\Path\\AbcXyz123".to_string(),
-            "Y:\\Another\\Fake\\Path".to_string(),
-        ]);
+        // Non-existent local paths should be skipped entirely.
+        let temp = tempdir().expect("Failed to create temp directory");
+        let missing_path_one = temp.path().join("missing_one").to_string_lossy().to_string();
+        let missing_path_two = temp.path().join("missing_two").to_string_lossy().to_string();
+        let categorized = categorize_paths(vec![missing_path_one, missing_path_two]);
         assert_eq!(categorized.task_count(), 0, "Inaccessible paths should produce 0 tasks");
         assert!(
             categorized.ntfs_drive_roots.is_empty(),
@@ -1218,8 +1218,9 @@ mod tests {
 
     #[test]
     fn test_categorize_paths_unc_path_inaccessible() {
-        // UNC paths that don't exist should be skipped
-        let categorized = categorize_paths(vec!["\\\\nonexistent_server_xyz\\share".to_string()]);
+        // Use an invalid UNC-like path so the check fails immediately without
+        // depending on network name resolution timing.
+        let categorized = categorize_paths(vec![r"\\invalid|server\share".to_string()]);
         assert!(
             categorized.unc_paths.is_empty(),
             "Inaccessible UNC path should be skipped"
@@ -1521,7 +1522,11 @@ mod tests {
     #[test]
     fn test_collect_paths_to_scan_all_inaccessible_returns_none() {
         let mut config = Config::default();
-        config.daemon.paths = vec!["Z:\\NonExistent1".to_string(), "Y:\\NonExistent2".to_string()];
+        let temp = tempdir().expect("Failed to create temp directory");
+        config.daemon.paths = vec![
+            temp.path().join("missing_one").to_string_lossy().to_string(),
+            temp.path().join("missing_two").to_string_lossy().to_string(),
+        ];
         let result = collect_paths_to_scan(&config);
         assert!(
             result.is_none(),
@@ -1568,7 +1573,13 @@ mod tests {
         let temp = tempdir().expect("Failed to create temp directory");
         let temp_path = temp.path().to_string_lossy().to_string();
         let mut config = Config::default();
-        config.daemon.paths = vec![temp_path, "Z:\\NonExistent\\AbcXyz123".to_string()];
+        config.daemon.paths = vec![
+            temp_path,
+            temp.path()
+                .join("missing_inaccessible_path")
+                .to_string_lossy()
+                .to_string(),
+        ];
         let categorized =
             collect_paths_to_scan(&config).expect("Should return Some when at least one path is accessible");
         assert_eq!(
@@ -1982,7 +1993,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_path_directory_nonexistent_path() {
-        let path = PathBuf::from("Z:\\NonExistent\\Path\\For\\Testing\\12345");
+        let temp = tempdir().expect("Failed to create temp directory");
+        let path = temp.path().join("missing_directory_for_testing");
         let label = path.to_string_lossy().into_owned();
         let exclude: Arc<[String]> = Arc::from(Vec::<String>::new().into_boxed_slice());
 
@@ -2309,7 +2321,8 @@ mod tests {
     #[test]
     fn test_collect_paths_to_scan_single_nonexistent() {
         let mut config = Config::default();
-        config.daemon.paths = vec!["Q:\\Nonexistent\\Drive\\Path\\12345".to_string()];
+        let temp = tempdir().expect("Failed to create temp directory");
+        config.daemon.paths = vec![temp.path().join("missing_single_path").to_string_lossy().to_string()];
         let result = collect_paths_to_scan(&config);
         assert!(result.is_none(), "Single nonexistent path should return None");
     }
@@ -2329,10 +2342,11 @@ mod tests {
 
     #[test]
     fn test_categorize_paths_all_nonexistent() {
+        let temp = tempdir().expect("Failed to create temp directory");
         let categorized = categorize_paths(vec![
-            "Q:\\FakePath1".to_string(),
-            "R:\\FakePath2".to_string(),
-            "S:\\FakePath3".to_string(),
+            temp.path().join("fake_path_one").to_string_lossy().to_string(),
+            temp.path().join("fake_path_two").to_string_lossy().to_string(),
+            temp.path().join("fake_path_three").to_string_lossy().to_string(),
         ]);
         assert_eq!(categorized.task_count(), 0);
         assert!(categorized.ntfs_drive_roots.is_empty());

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use colored::Colorize;
 use filefind::FileEntry;
+use filefind::is_network_path;
 
 const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -109,7 +110,12 @@ pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
 /// std::fs::remove_dir(&dir).unwrap();
 /// ```
 pub fn is_directory_empty_on_disk(path: &str) -> bool {
-    let path = path.to_string();
+    let path = Path::new(path);
+    if !is_network_path(path) {
+        return path.read_dir().is_ok_and(|mut entries| entries.next().is_none());
+    }
+
+    let path = path.to_string_lossy().into_owned();
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -132,10 +138,16 @@ pub fn is_directory_empty_on_disk(path: &str) -> bool {
 ///
 /// ```ignore
 /// assert!(check_path_accessible(&std::env::temp_dir().to_string_lossy()));
-/// assert!(!check_path_accessible(r"Z:\nonexistent\path"));
+/// let missing_path = std::env::temp_dir().join("filefind_missing_path_example");
+/// assert!(!check_path_accessible(&missing_path.to_string_lossy()));
 /// ```
 pub fn check_path_accessible(path: &str) -> bool {
-    let path = path.to_string();
+    let path = Path::new(path);
+    if !is_network_path(path) {
+        return path.exists();
+    }
+
+    let path = path.to_string_lossy().into_owned();
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -157,10 +169,16 @@ pub fn check_path_accessible(path: &str) -> bool {
 ///
 /// ```ignore
 /// assert!(check_directory_exists(&std::env::temp_dir().to_string_lossy()));
-/// assert!(!check_directory_exists(r"Z:\nonexistent\dir"));
+/// let missing_dir = std::env::temp_dir().join("filefind_missing_dir_example");
+/// assert!(!check_directory_exists(&missing_dir.to_string_lossy()));
 /// ```
 pub fn check_directory_exists(path: &str) -> bool {
-    let path = path.to_string();
+    let path = Path::new(path);
+    if !is_network_path(path) {
+        return path.is_dir();
+    }
+
+    let path = path.to_string_lossy().into_owned();
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -515,7 +533,9 @@ mod tests {
 
     #[test]
     fn test_is_directory_empty_on_disk_nonexistent() {
-        assert!(!is_directory_empty_on_disk("Z:\\NonExistent\\Path\\AbcXyz123"));
+        let temp = tempdir().expect("Failed to create temp directory");
+        let missing_dir = temp.path().join("missing_subdir");
+        assert!(!is_directory_empty_on_disk(&missing_dir.to_string_lossy()));
     }
 
     #[test]
@@ -545,7 +565,9 @@ mod tests {
 
     #[test]
     fn test_check_path_accessible_nonexistent() {
-        assert!(!check_path_accessible("Z:\\NonExistent\\Path\\AbcXyz123"));
+        let temp = tempdir().expect("Failed to create temp directory");
+        let missing_path = temp.path().join("missing_entry");
+        assert!(!check_path_accessible(&missing_path.to_string_lossy()));
     }
 
     #[test]
@@ -573,7 +595,9 @@ mod tests {
 
     #[test]
     fn test_check_directory_exists_nonexistent() {
-        assert!(!check_directory_exists("Z:\\NonExistent\\Path\\AbcXyz123"));
+        let temp = tempdir().expect("Failed to create temp directory");
+        let missing_dir = temp.path().join("missing_subdir");
+        assert!(!check_directory_exists(&missing_dir.to_string_lossy()));
     }
 
     #[test]

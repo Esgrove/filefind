@@ -1235,8 +1235,21 @@ mod tests {
     #[allow(clippy::similar_names)]
     fn test_list_volumes_multiple_volumes_sorted() {
         let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
-        let volume_b = make_volume("SN_B", "B:");
-        let volume_a = make_volume("SN_A", "A:");
+        let temp_root = tempfile::tempdir().expect("Failed to create temp directory root");
+        let volume_a_dir = temp_root.path().join("A_volume");
+        let volume_b_dir = temp_root.path().join("B_volume");
+        std::fs::create_dir(&volume_a_dir).expect("Failed to create volume A directory");
+        std::fs::create_dir(&volume_b_dir).expect("Failed to create volume B directory");
+        let volume_b_mount = volume_b_dir.to_string_lossy().to_string();
+        let volume_a_mount = volume_a_dir.to_string_lossy().to_string();
+        let volume_b = IndexedVolume {
+            label: None,
+            ..make_volume("SN_B", &volume_b_mount)
+        };
+        let volume_a = IndexedVolume {
+            label: None,
+            ..make_volume("SN_A", &volume_a_mount)
+        };
         let volume_b_id = database.upsert_volume(&volume_b).expect("Failed to upsert B:");
         let volume_a_id = database.upsert_volume(&volume_a).expect("Failed to upsert A:");
 
@@ -1264,17 +1277,17 @@ mod tests {
 
         // Sort by name: A: should come first
         data.sort_by_key(|volume| volume.mount_label.clone());
-        assert!(data[0].mount_label.contains("A:"));
-        assert!(data[1].mount_label.contains("B:"));
+        assert_eq!(data[0].mount_label, volume_a_mount);
+        assert_eq!(data[1].mount_label, volume_b_mount);
 
         // Sort by size: B: (9999) should come first
         data.sort_by_key(|volume| Reverse(volume.total_size_bytes));
-        assert!(data[0].mount_label.contains("B:"));
+        assert_eq!(data[0].mount_label, volume_b_mount);
         assert_eq!(data[0].total_size_bytes, 9999);
 
         // Sort by files: A: (2 files) should come first
         data.sort_by_key(|volume| Reverse(volume.file_count));
-        assert!(data[0].mount_label.contains("A:"));
+        assert_eq!(data[0].mount_label, volume_a_mount);
         assert_eq!(data[0].file_count, 2);
     }
 
@@ -1416,15 +1429,20 @@ mod tests {
     #[test]
     fn test_get_volume_data_no_label_uses_mount_point_only() {
         let database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let temp = tempfile::tempdir().expect("Failed to create temp directory");
+        let mount_point = temp.path().to_string_lossy().to_string();
         let volume = IndexedVolume {
             label: None,
-            ..make_volume("SN999", "X:")
+            ..make_volume("SN999", &mount_point)
         };
         database.upsert_volume(&volume).expect("Failed to upsert");
         let volumes = database.get_all_volumes().expect("Failed to get volumes");
         let data = get_volume_data(&database, &volumes).expect("Failed to get volume data");
         assert_eq!(data.len(), 1);
-        assert_eq!(data[0].mount_label, "X:", "No label should show mount point only");
+        assert_eq!(
+            data[0].mount_label, mount_point,
+            "No label should show mount point only"
+        );
         assert_eq!(data[0].file_count, 0, "Empty volume should have 0 files");
         assert_eq!(data[0].total_size_bytes, 0, "Empty volume should have 0 size");
     }
