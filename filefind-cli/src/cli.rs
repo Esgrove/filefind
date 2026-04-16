@@ -803,8 +803,13 @@ mod tests {
 
     /// Helper to set up a database with sample data and return it.
     fn setup_database() -> Database {
+        setup_database_with_mount("C:")
+    }
+
+    /// Helper to set up a database with sample data using a specific mount point.
+    fn setup_database_with_mount(mount_point: &str) -> Database {
         let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
-        let volume = make_volume("SN001", "C:");
+        let volume = make_volume("SN001", mount_point);
         let volume_id = database.upsert_volume(&volume).expect("Failed to upsert volume");
 
         let files = vec![
@@ -1200,16 +1205,20 @@ mod tests {
 
     #[test]
     fn test_list_volumes_sort_by_name() {
-        let database = setup_database();
+        let temp = tempdir().expect("Failed to create temp directory");
+        let mount_point = temp.path().to_string_lossy().to_string();
+        let database = setup_database_with_mount(&mount_point);
         let volumes = database.get_all_volumes().expect("Failed to get volumes");
         assert_eq!(volumes.len(), 1);
-        assert_eq!(volumes[0].mount_point, "C:");
+        assert_eq!(volumes[0].mount_point, mount_point);
         list_volumes(&database, VolumeSortBy::Name).expect("list_volumes failed");
     }
 
     #[test]
     fn test_list_volumes_sort_by_size() {
-        let database = setup_database();
+        let temp = tempdir().expect("Failed to create temp directory");
+        let mount_point = temp.path().to_string_lossy().to_string();
+        let database = setup_database_with_mount(&mount_point);
         let volumes = database.get_all_volumes().expect("Failed to get volumes");
         let data = get_volume_data(&database, &volumes).expect("Failed to get volume data");
         assert_eq!(data.len(), 1);
@@ -1220,7 +1229,9 @@ mod tests {
 
     #[test]
     fn test_list_volumes_sort_by_files() {
-        let database = setup_database();
+        let temp = tempdir().expect("Failed to create temp directory");
+        let mount_point = temp.path().to_string_lossy().to_string();
+        let database = setup_database_with_mount(&mount_point);
         let volumes = database.get_all_volumes().expect("Failed to get volumes");
         let data = get_volume_data(&database, &volumes).expect("Failed to get volume data");
         assert_eq!(data.len(), 1);
@@ -1370,8 +1381,10 @@ mod tests {
     fn test_delete_missing_directory_nonexistent_path_is_noop() {
         let database = setup_database();
         let stats_before = database.get_stats().expect("Failed to get stats");
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let missing_path = temp_dir.path().join("missing").join("path");
         // Deleting a path not in the database should be a no-op
-        delete_missing_directory(&database, "Z:\\nonexistent\\path");
+        delete_missing_directory(&database, &missing_path.to_string_lossy());
         let stats_after = database.get_stats().expect("Failed to get stats");
         assert_eq!(stats_before.total_files, stats_after.total_files);
         assert_eq!(stats_before.total_directories, stats_after.total_directories);
@@ -1405,12 +1418,14 @@ mod tests {
 
     #[test]
     fn test_get_volume_data_has_correct_counts() {
-        let database = setup_database();
+        let temp = tempdir().expect("Failed to create temp directory");
+        let mount_point = temp.path().to_string_lossy().to_string();
+        let database = setup_database_with_mount(&mount_point);
         let volumes = database.get_all_volumes().expect("Failed to get volumes");
         let data = get_volume_data(&database, &volumes).expect("Failed to get volume data");
         assert_eq!(data.len(), 1);
         assert!(
-            data[0].mount_label.contains("C:"),
+            data[0].mount_label.contains(&mount_point),
             "Mount label should contain the mount point"
         );
         assert!(
@@ -1450,14 +1465,16 @@ mod tests {
     #[test]
     fn test_get_volume_data_with_label_combines_mount_and_label() {
         let database = Database::open_in_memory().expect("Failed to open in-memory database");
+        let temp = tempdir().expect("Failed to create temp directory");
+        let mount_point = temp.path().to_string_lossy().to_string();
         let volume = IndexedVolume {
             label: Some("Windows".to_string()),
-            ..make_volume("SN_WIN", "C:")
+            ..make_volume("SN_WIN", &mount_point)
         };
         database.upsert_volume(&volume).expect("Failed to upsert");
         let volumes = database.get_all_volumes().expect("Failed to get volumes");
         let data = get_volume_data(&database, &volumes).expect("Failed to get volume data");
-        assert_eq!(data[0].mount_label, "C: Windows");
+        assert_eq!(data[0].mount_label, format!("{mount_point} Windows"));
     }
 
     // ── display functions ─────────────────────────────────────────

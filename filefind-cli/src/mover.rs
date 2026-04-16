@@ -1731,9 +1731,14 @@ mod tests {
     fn test_check_disk_space_exactly_available() {
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let available = get_available_space(temp_dir.path()).expect("failed to get available space");
-        // Requesting exactly what's available should succeed
-        let result = check_disk_space(temp_dir.path(), available);
-        assert!(result.is_ok(), "Requesting exactly the available space should succeed");
+        // Free space can change between the two calls, so stay just below the
+        // observed value while still exercising the near-boundary success case.
+        let required = available.saturating_sub(4096);
+        let result = check_disk_space(temp_dir.path(), required);
+        assert!(
+            result.is_ok(),
+            "Requesting slightly less than the observed available space should succeed"
+        );
     }
 
     #[test]
