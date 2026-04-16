@@ -545,11 +545,12 @@ impl Daemon {
             let volumes = db.get_all_volumes().unwrap_or_default();
             for (drive_letter, mft_refs) in &deletions_by_drive {
                 // Find volume_id for this drive from the cached list
-                if let Some(volume) = volumes.iter().find(|v| {
-                    v.mount_point
+                if let Some(volume) = volumes.iter().find(|volume| {
+                    volume
+                        .mount_point
                         .chars()
                         .next()
-                        .is_some_and(|c| c.eq_ignore_ascii_case(drive_letter))
+                        .is_some_and(|ch| ch.eq_ignore_ascii_case(drive_letter))
                 }) && let Some(volume_id) = volume.id
                 {
                     match db.delete_files_by_mft_references(volume_id, mft_refs) {
@@ -712,8 +713,8 @@ impl Daemon {
 
         volumes
             .iter()
-            .find(|v| v.mount_point.eq_ignore_ascii_case(&mount_point))
-            .and_then(|v| v.id)
+            .find(|volume| volume.mount_point.eq_ignore_ascii_case(&mount_point))
+            .and_then(|volume| volume.id)
     }
 
     /// Build the path cache from the database for faster path resolution.

@@ -1241,7 +1241,7 @@ mod tests {
             IpcToDaemon::Prune,
         ];
 
-        let debug_strings: Vec<String> = variants.iter().map(|v| format!("{v:?}")).collect();
+        let debug_strings: Vec<String> = variants.iter().map(|variant| format!("{variant:?}")).collect();
 
         assert!(debug_strings[0].contains("Stop"));
         assert!(debug_strings[1].contains("Rescan"));

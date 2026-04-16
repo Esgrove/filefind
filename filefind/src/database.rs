@@ -220,7 +220,7 @@ impl Database {
                     i64::try_from(file.size).unwrap_or(i64::MAX),
                     file.created_time.map(system_time_to_unix),
                     file.modified_time.map(system_time_to_unix),
-                    file.mft_reference.map(|v| i64::try_from(v).unwrap_or(i64::MAX)),
+                    file.mft_reference.map(|reference| i64::try_from(reference).unwrap_or(i64::MAX)),
                 ],
             )
             .context("Failed to insert file")?;
@@ -261,7 +261,8 @@ impl Database {
                     i64::try_from(file.size).unwrap_or(i64::MAX),
                     file.created_time.map(system_time_to_unix),
                     file.modified_time.map(system_time_to_unix),
-                    file.mft_reference.map(|v| i64::try_from(v).unwrap_or(i64::MAX)),
+                    file.mft_reference
+                        .map(|reference| i64::try_from(reference).unwrap_or(i64::MAX)),
                 ])?;
             }
         }
@@ -419,7 +420,9 @@ impl Database {
         }
 
         // Build WHERE clause with AND for each pattern
-        let where_clauses: Vec<String> = (1..=patterns.len()).map(|i| format!("name LIKE ?{i}")).collect();
+        let where_clauses: Vec<String> = (1..=patterns.len())
+            .map(|index| format!("name LIKE ?{index}"))
+            .collect();
         let where_clause = where_clauses.join(" AND ");
 
         let sql = format!(
@@ -436,9 +439,11 @@ impl Database {
         let mut statement = self.connection.prepare(&sql)?;
 
         // Bind all pattern parameters
-        let search_patterns: Vec<String> = patterns.iter().map(|p| format!("%{p}%")).collect();
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> =
-            search_patterns.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let search_patterns: Vec<String> = patterns.iter().map(|pattern| format!("%{pattern}%")).collect();
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = search_patterns
+            .iter()
+            .map(|pattern| pattern as &dyn rusqlite::ToSql)
+            .collect();
         let limit_value = i64::try_from(limit).unwrap_or(i64::MAX);
         params_vec.push(&limit_value);
 
@@ -521,7 +526,7 @@ impl Database {
 
         // Build WHERE clause with AND for each pattern
         let where_clauses: Vec<String> = (1..=patterns.len())
-            .map(|i| format!("name LIKE ?{i} ESCAPE '\\'"))
+            .map(|index| format!("name LIKE ?{index} ESCAPE '\\'"))
             .collect();
         let where_clause = where_clauses.join(" AND ");
 
@@ -540,9 +545,14 @@ impl Database {
 
         // Bind all pattern parameters
         // Collect into Vec<String> because rusqlite's ToSql requires Sized types
-        let sql_patterns: Vec<String> = patterns.iter().map(|p| glob_to_sql_like(p).into_owned()).collect();
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> =
-            sql_patterns.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let sql_patterns: Vec<String> = patterns
+            .iter()
+            .map(|pattern| glob_to_sql_like(pattern).into_owned())
+            .collect();
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = sql_patterns
+            .iter()
+            .map(|pattern| pattern as &dyn rusqlite::ToSql)
+            .collect();
         let limit_value = i64::try_from(limit).unwrap_or(i64::MAX);
         params_vec.push(&limit_value);
 
@@ -620,7 +630,9 @@ impl Database {
         }
 
         // Build WHERE clause with AND for each pattern
-        let where_clauses: Vec<String> = (1..=patterns.len()).map(|i| format!("name REGEXP ?{i}")).collect();
+        let where_clauses: Vec<String> = (1..=patterns.len())
+            .map(|index| format!("name REGEXP ?{index}"))
+            .collect();
         let where_clause = where_clauses.join(" AND ");
 
         let sql = format!(
@@ -639,10 +651,18 @@ impl Database {
         // Bind all pattern parameters with case-insensitive flag if needed
         let effective_patterns: Vec<String> = patterns
             .iter()
-            .map(|p| if case_sensitive { p.clone() } else { format!("(?i){p}") })
+            .map(|pattern| {
+                if case_sensitive {
+                    pattern.clone()
+                } else {
+                    format!("(?i){pattern}")
+                }
+            })
             .collect();
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> =
-            effective_patterns.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = effective_patterns
+            .iter()
+            .map(|pattern| pattern as &dyn rusqlite::ToSql)
+            .collect();
         let limit_value = i64::try_from(limit).unwrap_or(i64::MAX);
         params_vec.push(&limit_value);
 
@@ -990,7 +1010,7 @@ impl Database {
                 let name = ctx
                     .get_raw(0)
                     .as_str()
-                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                    .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
 
                 let stem = match name.rfind('.') {
                     // No dot or dot is the first character (dotfile like .gitignore)
@@ -1020,15 +1040,15 @@ impl Database {
                 let pattern: Arc<Regex> = ctx.get_or_create_aux(0, |vr| {
                     let pattern_str = vr
                         .as_str()
-                        .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-                    Regex::new(pattern_str).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
+                        .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
+                    Regex::new(pattern_str).map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
                 })?;
 
                 // Get the text to match against
                 let text = ctx
                     .get_raw(1)
                     .as_str()
-                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                    .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
 
                 Ok(pattern.is_match(text))
             },
@@ -1047,7 +1067,7 @@ fn row_to_file_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
 
     // MFT reference is stored as INTEGER (i64) in SQLite, convert safely to u64
     let mft_reference: Option<i64> = row.get(9)?;
-    let mft_reference = mft_reference.and_then(|v| u64::try_from(v).ok());
+    let mft_reference = mft_reference.and_then(|reference| u64::try_from(reference).ok());
 
     Ok(FileEntry {
         id: Some(row.get(0)?),
@@ -1067,8 +1087,7 @@ fn row_to_file_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
 #[allow(clippy::cast_possible_wrap)]
 fn system_time_to_unix(time: SystemTime) -> i64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_secs() as i64)
 }
 
 /// Convert a Unix timestamp to a `SystemTime`.
@@ -1642,7 +1661,7 @@ mod tests {
         let volumes = database.get_all_volumes().unwrap();
         assert_eq!(volumes.len(), 3);
 
-        let serials: Vec<_> = volumes.iter().map(|v| v.serial_number.as_str()).collect();
+        let serials: Vec<_> = volumes.iter().map(|volume| volume.serial_number.as_str()).collect();
         assert!(serials.contains(&"VOL_A"));
         assert!(serials.contains(&"VOL_B"));
         assert!(serials.contains(&"VOL_C"));
@@ -2221,8 +2240,8 @@ mod tests {
         let volume_id = database.upsert_volume(&volume).unwrap();
 
         let now = SystemTime::now();
-        let created = now - std::time::Duration::from_secs(3600);
-        let modified = now - std::time::Duration::from_secs(60);
+        let created = now - std::time::Duration::from_hours(1);
+        let modified = now - std::time::Duration::from_mins(1);
 
         let file = FileEntry {
             id: None,
@@ -2653,17 +2672,17 @@ mod tests {
         assert_eq!(results.len(), 5);
 
         // Verify the corrupted values are handled correctly
-        let neg_size = results.iter().find(|f| f.name == "neg_size.txt").unwrap();
+        let neg_size = results.iter().find(|file| file.name == "neg_size.txt").unwrap();
         assert_eq!(neg_size.size, 0);
 
-        let neg_time = results.iter().find(|f| f.name == "neg_time.txt").unwrap();
+        let neg_time = results.iter().find(|file| file.name == "neg_time.txt").unwrap();
         assert!(neg_time.created_time.is_none());
         assert!(neg_time.modified_time.is_none());
 
-        let neg_mft = results.iter().find(|f| f.name == "neg_mft.txt").unwrap();
+        let neg_mft = results.iter().find(|file| file.name == "neg_mft.txt").unwrap();
         assert!(neg_mft.mft_reference.is_none());
 
-        let all_neg = results.iter().find(|f| f.name == "all_neg.txt").unwrap();
+        let all_neg = results.iter().find(|file| file.name == "all_neg.txt").unwrap();
         assert_eq!(all_neg.size, 0);
         assert!(all_neg.created_time.is_none());
         assert!(all_neg.modified_time.is_none());

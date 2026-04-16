@@ -83,8 +83,8 @@ impl CliConfig {
         let trimmed_patterns: Vec<String> = args
             .patterns
             .iter()
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
+            .map(|pattern| pattern.trim().to_string())
+            .filter(|pattern| !pattern.is_empty())
             .collect();
 
         // Expand patterns unless exact mode, regex mode, or AND mode is enabled
@@ -201,7 +201,9 @@ impl CliConfig {
         // also add combined forms so e.g. "some name" also matches "somename" and "some.name"
         let simple_patterns: Vec<&str> = patterns
             .iter()
-            .filter(|p| !p.contains('*') && !p.contains('?') && !p.contains('.') && !p.contains(' '))
+            .filter(|pattern| {
+                !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('.') && !pattern.contains(' ')
+            })
             .map(String::as_str)
             .collect();
 

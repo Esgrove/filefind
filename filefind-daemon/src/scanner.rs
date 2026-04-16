@@ -567,7 +567,7 @@ fn collect_paths_to_scan(config: &Config) -> Option<CategorizedPaths> {
             return None;
         }
 
-        ntfs_drives.iter().map(|d| format!("{d}:")).collect()
+        ntfs_drives.iter().map(|drive| format!("{drive}:")).collect()
     } else {
         config.daemon.paths.clone()
     };
@@ -1526,7 +1526,7 @@ mod tests {
         assert!(
             result.is_none(),
             "All inaccessible paths should return None, got Some with {} tasks",
-            result.map_or(0, |c| c.task_count())
+            result.map_or(0, |task_set| task_set.task_count())
         );
     }
 

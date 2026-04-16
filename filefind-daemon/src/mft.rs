@@ -439,7 +439,7 @@ impl MftScanner {
         let name = String::from_utf16_lossy(
             &name_bytes
                 .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .map(|code_unit| u16::from_le_bytes([code_unit[0], code_unit[1]]))
                 .collect::<Vec<_>>(),
         );
 
@@ -476,7 +476,7 @@ impl MftScanner {
         let name = String::from_utf16_lossy(
             &name_bytes
                 .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .map(|code_unit| u16::from_le_bytes([code_unit[0], code_unit[1]]))
                 .collect::<Vec<_>>(),
         );
 
@@ -1632,15 +1632,21 @@ mod tests {
             ref_map.insert(entry.file_reference, entry);
         }
 
-        let report = entries.iter().find(|e| e.name == "report.pdf").expect("report.pdf");
+        let report = entries
+            .iter()
+            .find(|entry| entry.name == "report.pdf")
+            .expect("report.pdf");
         let path = scanner.build_full_path(report, &ref_map, 5);
         assert_eq!(path, "C:\\Users\\John\\Documents\\report.pdf");
 
-        let photo = entries.iter().find(|e| e.name == "photo.jpg").expect("photo.jpg");
+        let photo = entries
+            .iter()
+            .find(|entry| entry.name == "photo.jpg")
+            .expect("photo.jpg");
         let path = scanner.build_full_path(photo, &ref_map, 5);
         assert_eq!(path, "C:\\Users\\John\\Documents\\photo.jpg");
 
-        let system32 = entries.iter().find(|e| e.name == "System32").expect("System32");
+        let system32 = entries.iter().find(|entry| entry.name == "System32").expect("System32");
         let path = scanner.build_full_path(system32, &ref_map, 5);
         assert_eq!(path, "C:\\Windows\\System32");
     }
@@ -1766,11 +1772,11 @@ mod tests {
         }
 
         // Verify sequence numbers were masked off correctly
-        let projects = entries.iter().find(|e| e.name == "Projects").expect("Projects");
+        let projects = entries.iter().find(|entry| entry.name == "Projects").expect("Projects");
         assert_eq!(projects.file_reference, 0x32);
         assert_eq!(projects.parent_reference, 5);
 
-        let main_rs = entries.iter().find(|e| e.name == "main.rs").expect("main.rs");
+        let main_rs = entries.iter().find(|entry| entry.name == "main.rs").expect("main.rs");
         assert_eq!(main_rs.file_reference, 0x01F4);
         assert_eq!(main_rs.parent_reference, 0x3C);
 
@@ -1778,11 +1784,14 @@ mod tests {
         let path = scanner.build_full_path(main_rs, &ref_map, 5);
         assert_eq!(path, "E:\\Projects\\rust\\main.rs");
 
-        let main_go = entries.iter().find(|e| e.name == "main.go").expect("main.go");
+        let main_go = entries.iter().find(|entry| entry.name == "main.go").expect("main.go");
         let path = scanner.build_full_path(main_go, &ref_map, 5);
         assert_eq!(path, "E:\\Projects\\go\\main.go");
 
-        let readme = entries.iter().find(|e| e.name == "README.md").expect("README.md");
+        let readme = entries
+            .iter()
+            .find(|entry| entry.name == "README.md")
+            .expect("README.md");
         let path = scanner.build_full_path(readme, &ref_map, 5);
         assert_eq!(path, "E:\\README.md");
     }
@@ -1811,7 +1820,7 @@ mod tests {
 
         let paths: Vec<String> = entries
             .iter()
-            .map(|e| scanner.build_full_path(e, &ref_map, 5))
+            .map(|entry| scanner.build_full_path(entry, &ref_map, 5))
             .collect();
 
         let filtered: Vec<&String> = paths

@@ -292,9 +292,9 @@ impl FileWatcher {
         let now = std::time::Instant::now();
 
         for path in event.paths {
-            if exclude_patterns.iter().any(|p| {
+            if exclude_patterns.iter().any(|pattern| {
                 let path_str = path.to_string_lossy();
-                path_str.contains(p.as_str())
+                path_str.contains(pattern.as_str())
             }) {
                 continue;
             }
@@ -440,7 +440,7 @@ pub async fn scan_directory_with_concurrency(
             path: root.clone(),
             name: root.file_name().map_or_else(
                 || root.to_string_lossy().into_owned(),
-                |n| n.to_string_lossy().into_owned(),
+                |name| name.to_string_lossy().into_owned(),
             ),
             is_directory: metadata.is_dir(),
             size: 0,
@@ -839,17 +839,17 @@ mod tests {
         }
 
         // Check that we found the expected files
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert!(names.contains(&"file1.txt"), "Should find file1.txt, got: {names:?}");
         assert!(names.contains(&"file2.txt"), "Should find file2.txt, got: {names:?}");
         assert!(names.contains(&"subdir"), "Should find subdir, got: {names:?}");
 
         // Verify file entry properties
-        let file1 = entries.iter().find(|e| e.name == "file1.txt").unwrap();
+        let file1 = entries.iter().find(|entry| entry.name == "file1.txt").unwrap();
         assert!(!file1.is_directory);
         assert_eq!(file1.size, 7); // "content" is 7 bytes
 
-        let subdir = entries.iter().find(|e| e.name == "subdir").unwrap();
+        let subdir = entries.iter().find(|entry| entry.name == "subdir").unwrap();
         assert!(subdir.is_directory);
     }
 
@@ -877,7 +877,7 @@ mod tests {
 
         let entries = scan_directory(root, &["*.tmp".to_string()]).await.unwrap();
 
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert!(names.contains(&"keep.txt"));
         assert!(names.contains(&"another.txt"));
         assert!(!names.contains(&"skip.tmp"));
@@ -896,7 +896,7 @@ mod tests {
 
         let entries = scan_directory(root, &[]).await.unwrap();
 
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert!(names.contains(&"a"));
         assert!(names.contains(&"b"));
         assert!(names.contains(&"c"));
@@ -916,13 +916,13 @@ mod tests {
 
         let entries = scan_directory(root, &[]).await.unwrap();
 
-        let small = entries.iter().find(|e| e.name == "small.txt").unwrap();
+        let small = entries.iter().find(|entry| entry.name == "small.txt").unwrap();
         assert_eq!(small.size, 1);
 
-        let medium = entries.iter().find(|e| e.name == "medium.txt").unwrap();
+        let medium = entries.iter().find(|entry| entry.name == "medium.txt").unwrap();
         assert_eq!(medium.size, 1000);
 
-        let empty = entries.iter().find(|e| e.name == "empty.txt").unwrap();
+        let empty = entries.iter().find(|entry| entry.name == "empty.txt").unwrap();
         assert_eq!(empty.size, 0);
     }
 

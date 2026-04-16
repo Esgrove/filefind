@@ -276,7 +276,7 @@ fn check_volume_entries(entries: Vec<EntryToCheck>) -> VolumeCheckResult {
     };
 
     // Separate directories and files
-    let (mut directories, files): (Vec<_>, Vec<_>) = entries.into_iter().partition(|e| e.is_directory);
+    let (mut directories, files): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| entry.is_directory);
 
     // Sort directories by path length (shortest first) for parent-first checking
     directories.sort_by_key(|entry| entry.full_path.len());
@@ -327,7 +327,7 @@ fn check_volume_entries(entries: Vec<EntryToCheck>) -> VolumeCheckResult {
         // Check if the parent directory is known to exist (optimization)
         let parent = Path::new(&entry.full_path)
             .parent()
-            .map(|p| p.to_string_lossy().to_string());
+            .map(|path| path.to_string_lossy().to_string());
 
         let parent_exists = match &parent {
             Some(parent_path) if existing_directories.contains(parent_path) => true,
@@ -553,7 +553,7 @@ mod tests {
     fn insert_test_file(database: &mut Database, volume_id: i64, path: &str, is_directory: bool) {
         let name = Path::new(path)
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
 
         let entry = FileEntry::new(volume_id, name, path.to_string(), is_directory);

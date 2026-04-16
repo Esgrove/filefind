@@ -41,7 +41,7 @@ pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
     let text_lower = text.to_lowercase();
 
     // Pre-lowercase all patterns once instead of per-match
-    let patterns_lower: Vec<String> = patterns.iter().map(|p| p.to_lowercase()).collect();
+    let patterns_lower: Vec<String> = patterns.iter().map(|pattern| pattern.to_lowercase()).collect();
 
     // Collect all match ranges (start, end) for all patterns
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -115,8 +115,7 @@ pub fn is_directory_empty_on_disk(path: &str) -> bool {
     thread::spawn(move || {
         let is_empty = Path::new(&path)
             .read_dir()
-            .map(|mut entries| entries.next().is_none())
-            .unwrap_or(false);
+            .is_ok_and(|mut entries| entries.next().is_none());
         let _ = sender.send(is_empty);
     });
 
@@ -227,7 +226,9 @@ pub fn count_files_under_directory(files: &[&FileEntry], dir_path: &str) -> usiz
     let dir_prefix_forward = format!("{dir_path}/");
     files
         .iter()
-        .filter(|f| f.full_path.starts_with(&dir_prefix_backslash) || f.full_path.starts_with(&dir_prefix_forward))
+        .filter(|file| {
+            file.full_path.starts_with(&dir_prefix_backslash) || file.full_path.starts_with(&dir_prefix_forward)
+        })
         .count()
 }
 

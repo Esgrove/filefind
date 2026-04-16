@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -66,8 +67,8 @@ pub fn list_volumes(database: &Database, sort_by: VolumeSortBy) -> Result<()> {
     // Sort by the specified field
     match sort_by {
         VolumeSortBy::Name => volume_data.sort_by(|a, b| a.mount_label.cmp(&b.mount_label)),
-        VolumeSortBy::Size => volume_data.sort_by(|a, b| b.total_size_bytes.cmp(&a.total_size_bytes)),
-        VolumeSortBy::Files => volume_data.sort_by(|a, b| b.file_count.cmp(&a.file_count)),
+        VolumeSortBy::Size => volume_data.sort_by_key(|volume| Reverse(volume.total_size_bytes)),
+        VolumeSortBy::Files => volume_data.sort_by_key(|volume| Reverse(volume.file_count)),
     }
 
     // Calculate maximum widths for alignment in a single pass
@@ -150,16 +151,16 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
     match config.sort_by {
         SortBy::Name => {
             if config.output_format == OutputFormat::Name {
-                results.sort_unstable_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                results.sort_unstable_by_key(|entry| entry.name.to_lowercase());
             } else {
-                results.sort_unstable_by(|a, b| a.full_path.cmp(&b.full_path));
+                results.sort_unstable_by(|left, right| left.full_path.cmp(&right.full_path));
             }
         }
-        SortBy::Size => results.sort_unstable_by(|a, b| b.size.cmp(&a.size)),
+        SortBy::Size => results.sort_unstable_by_key(|entry| Reverse(entry.size)),
     }
 
     // Separate directories and files
-    let (directories, files): (Vec<_>, Vec<_>) = results.iter().partition(|e| e.is_directory);
+    let (directories, files): (Vec<_>, Vec<_>) = results.iter().partition(|entry| entry.is_directory);
 
     // Collect patterns to highlight (only simple patterns, not regex or glob)
     let highlight_patterns: Vec<&str> = if config.regex {
@@ -168,7 +169,7 @@ pub fn run_search(config: &CliConfig, database: &Database) -> Result<()> {
         config
             .patterns
             .iter()
-            .filter(|p| !p.contains('*') && !p.contains('?'))
+            .filter(|pattern| !pattern.contains('*') && !pattern.contains('?'))
             .map(String::as_str)
             .collect()
     };
@@ -338,7 +339,7 @@ fn display_grouped(
     for file in files {
         let parent = PathBuf::from(&file.full_path)
             .parent()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_default();
         files_by_dir.entry(parent).or_default().push(file);
     }
@@ -375,7 +376,7 @@ fn display_grouped(
     }
 
     // Then show files in directories that weren't matched
-    let matched_dirs: HashSet<_> = directories.iter().map(|d| &d.full_path).collect();
+    let matched_dirs: HashSet<_> = directories.iter().map(|directory| &directory.full_path).collect();
 
     let mut other_dirs: Vec<_> = files_by_dir.keys().filter(|dir| !matched_dirs.contains(*dir)).collect();
     other_dirs.sort();
@@ -623,7 +624,10 @@ fn print_entry_info(entry: &FileEntry, highlight_patterns: &[&str], status: Entr
             utils::highlight_match(&entry.full_path, highlight_patterns).into_owned(),
         ),
         EntryStatus::Directory { size, file_count } => (
-            size.map_or_else(|| format!("{:>10}", "-"), |s| format!("{:>10}", format_size(s))),
+            size.map_or_else(
+                || format!("{:>10}", "-"),
+                |size_bytes| format!("{:>10}", format_size(size_bytes)),
+            ),
             format!("{file_count:>8}"),
             entry.full_path.magenta().to_string(),
         ),
@@ -683,8 +687,14 @@ fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<Fi
     }
 
     // Check if all patterns are the same type (all glob or all plain)
-    let all_glob = config.patterns.iter().all(|p| p.contains('*') || p.contains('?'));
-    let any_glob = config.patterns.iter().any(|p| p.contains('*') || p.contains('?'));
+    let all_glob = config
+        .patterns
+        .iter()
+        .all(|pattern| pattern.contains('*') || pattern.contains('?'));
+    let any_glob = config
+        .patterns
+        .iter()
+        .any(|pattern| pattern.contains('*') || pattern.contains('?'));
 
     if config.regex {
         // All regex patterns - use SQL-level AND
@@ -921,7 +931,7 @@ mod tests {
         ];
         let result = filter_by_drives(entries, &["C".to_string()]);
         assert_eq!(result.len(), 2);
-        assert!(result.iter().all(|e| e.full_path.starts_with("C:")));
+        assert!(result.iter().all(|entry| entry.full_path.starts_with("C:")));
     }
 
     #[test]
@@ -933,8 +943,8 @@ mod tests {
         ];
         let result = filter_by_drives(entries, &["C".to_string(), "E".to_string()]);
         assert_eq!(result.len(), 2);
-        assert!(result.iter().any(|e| e.full_path.starts_with("C:")));
-        assert!(result.iter().any(|e| e.full_path.starts_with("E:")));
+        assert!(result.iter().any(|entry| entry.full_path.starts_with("C:")));
+        assert!(result.iter().any(|entry| entry.full_path.starts_with("E:")));
     }
 
     #[test]
@@ -1000,7 +1010,7 @@ mod tests {
         let config = search_config(vec!["readme", "config"]);
         let results = search_any_pattern(&config, &database).expect("Search failed");
         assert_eq!(results.len(), 2);
-        let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = results.iter().map(|entry| entry.name.as_str()).collect();
         assert!(names.contains(&"readme.txt"));
         assert!(names.contains(&"config.json"));
     }
@@ -1013,7 +1023,7 @@ mod tests {
         // readme.txt should appear only once
         let config = search_config(vec![".txt", "readme"]);
         let results = search_any_pattern(&config, &database).expect("Search failed");
-        let readme_count = results.iter().filter(|e| e.name == "readme.txt").count();
+        let readme_count = results.iter().filter(|entry| entry.name == "readme.txt").count();
         assert_eq!(readme_count, 1, "readme.txt should appear only once");
     }
 
@@ -1032,8 +1042,8 @@ mod tests {
         config.regex = false;
         let results = search_any_pattern(&config, &database).expect("Search failed");
         assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|e| {
-            std::path::Path::new(&e.name)
+        assert!(results.iter().all(|entry| {
+            std::path::Path::new(&entry.name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
         }));
@@ -1045,7 +1055,7 @@ mod tests {
         let mut config = search_config(vec![r"^re"]);
         config.regex = true;
         let results = search_any_pattern(&config, &database).expect("Search failed");
-        let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = results.iter().map(|entry| entry.name.as_str()).collect();
         assert!(names.contains(&"readme.txt"));
         assert!(names.contains(&"report.txt"));
     }
@@ -1078,7 +1088,11 @@ mod tests {
         config.match_all = true;
         let results = search_all_patterns(&config, &database).expect("Search failed");
         assert!(results.len() >= 2, "Should match readme.txt and report.txt");
-        assert!(results.iter().all(|e| e.name.contains("re") && e.name.contains(".txt")));
+        assert!(
+            results
+                .iter()
+                .all(|entry| entry.name.contains("re") && entry.name.contains(".txt"))
+        );
     }
 
     #[test]
@@ -1118,11 +1132,11 @@ mod tests {
         config.regex = true;
         let results = search_all_patterns(&config, &database).expect("Search failed");
         assert!(results.len() >= 2);
-        assert!(results.iter().all(|e| {
-            std::path::Path::new(&e.name)
+        assert!(results.iter().all(|entry| {
+            std::path::Path::new(&entry.name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
-                && e.name.starts_with("re")
+                && entry.name.starts_with("re")
         }));
     }
 
@@ -1249,17 +1263,17 @@ mod tests {
         assert_eq!(data.len(), 2);
 
         // Sort by name: A: should come first
-        data.sort_by(|a, b| a.mount_label.cmp(&b.mount_label));
+        data.sort_by_key(|volume| volume.mount_label.clone());
         assert!(data[0].mount_label.contains("A:"));
         assert!(data[1].mount_label.contains("B:"));
 
         // Sort by size: B: (9999) should come first
-        data.sort_by(|a, b| b.total_size_bytes.cmp(&a.total_size_bytes));
+        data.sort_by_key(|volume| Reverse(volume.total_size_bytes));
         assert!(data[0].mount_label.contains("B:"));
         assert_eq!(data[0].total_size_bytes, 9999);
 
         // Sort by files: A: (2 files) should come first
-        data.sort_by(|a, b| b.file_count.cmp(&a.file_count));
+        data.sort_by_key(|volume| Reverse(volume.file_count));
         assert!(data[0].mount_label.contains("A:"));
         assert_eq!(data[0].file_count, 2);
     }
@@ -1646,7 +1660,7 @@ mod tests {
         for file in &files {
             let parent = PathBuf::from(&file.full_path)
                 .parent()
-                .map(|p| p.to_string_lossy().to_string())
+                .map(|path| path.to_string_lossy().to_string())
                 .unwrap_or_default();
             files_by_dir.entry(parent).or_default().push(file);
         }
@@ -1695,12 +1709,12 @@ mod tests {
         let all_results = search_any_pattern(&config, &database).expect("Search failed");
         let filtered = filter_by_drives(all_results, &config.drives);
         assert!(
-            filtered.iter().all(|e| e.full_path.starts_with("C:")),
+            filtered.iter().all(|entry| entry.full_path.starts_with("C:")),
             "All results should be on C: drive"
         );
         // notes.txt is on D:, so it should be excluded
         assert!(
-            !filtered.iter().any(|e| e.name == "notes.txt"),
+            !filtered.iter().any(|entry| entry.name == "notes.txt"),
             "notes.txt is on D: and should be filtered out"
         );
         run_search(&config, &database).expect("run_search failed");
@@ -1749,7 +1763,11 @@ mod tests {
         // AND mode: "re" AND ".txt" should match readme.txt and report.txt
         let results = search_all_patterns(&config, &database).expect("Search failed");
         assert!(results.len() >= 2);
-        assert!(results.iter().all(|e| e.name.contains("re") && e.name.contains(".txt")));
+        assert!(
+            results
+                .iter()
+                .all(|entry| entry.name.contains("re") && entry.name.contains(".txt"))
+        );
         run_search(&config, &database).expect("run_search failed");
     }
 
@@ -1762,8 +1780,8 @@ mod tests {
         };
         let results = search_any_pattern(&config, &database).expect("Search failed");
         assert_eq!(results.len(), 2, "Should match config.json and data.json");
-        assert!(results.iter().all(|e| {
-            std::path::Path::new(&e.name)
+        assert!(results.iter().all(|entry| {
+            std::path::Path::new(&entry.name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
         }));
@@ -1779,7 +1797,7 @@ mod tests {
         };
         let results = search_any_pattern(&config, &database).expect("Search failed");
         // The search returns both files and dirs; run_search partitions them
-        let (dirs, files): (Vec<_>, Vec<_>) = results.iter().partition(|e| e.is_directory);
+        let (dirs, files): (Vec<_>, Vec<_>) = results.iter().partition(|entry| entry.is_directory);
         assert!(!files.is_empty(), "Should find .txt files");
         // In files_only mode, dirs would be ignored during display
         // but the data layer returns everything — the filtering is display-level
@@ -1795,9 +1813,9 @@ mod tests {
             ..search_config(vec!["Projects"])
         };
         let results = search_any_pattern(&config, &database).expect("Search failed");
-        let dirs: Vec<_> = results.iter().filter(|e| e.is_directory).collect();
+        let dirs: Vec<_> = results.iter().filter(|entry| entry.is_directory).collect();
         assert!(!dirs.is_empty(), "Should find the Projects directory");
-        assert!(dirs.iter().any(|d| d.name == "Projects"));
+        assert!(dirs.iter().any(|directory| directory.name == "Projects"));
         run_search(&config, &database).expect("run_search failed");
     }
 
@@ -1809,8 +1827,8 @@ mod tests {
             ..search_config(vec![".txt"])
         };
         let mut results = search_any_pattern(&config, &database).expect("Search failed");
-        results.sort_unstable_by(|a, b| b.size.cmp(&a.size));
-        let files: Vec<_> = results.iter().filter(|e| !e.is_directory).collect();
+        results.sort_unstable_by_key(|entry| Reverse(entry.size));
+        let files: Vec<_> = results.iter().filter(|entry| !entry.is_directory).collect();
         // Verify descending size order
         for window in files.windows(2) {
             assert!(
@@ -1835,8 +1853,8 @@ mod tests {
         };
         let mut results = search_any_pattern(&config, &database).expect("Search failed");
         // Name format sorts by name (case-insensitive)
-        results.sort_unstable_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
+        results.sort_unstable_by_key(|entry| entry.name.to_lowercase());
+        let names: Vec<&str> = results.iter().map(|entry| entry.name.as_str()).collect();
         for window in names.windows(2) {
             assert!(
                 window[0].to_lowercase() <= window[1].to_lowercase(),
@@ -1866,7 +1884,7 @@ mod tests {
             config
                 .patterns
                 .iter()
-                .filter(|p| !p.contains('*') && !p.contains('?'))
+                .filter(|pattern| !pattern.contains('*') && !pattern.contains('?'))
                 .map(String::as_str)
                 .next()
                 .is_none(),
@@ -1889,7 +1907,7 @@ mod tests {
             config
                 .patterns
                 .iter()
-                .filter(|p| !p.contains('*') && !p.contains('?'))
+                .filter(|pattern| !pattern.contains('*') && !pattern.contains('?'))
                 .map(String::as_str)
                 .collect()
         };

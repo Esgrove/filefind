@@ -270,7 +270,7 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
         // Check if file is already in the destination directory
         let file_parent = Path::new(&file.full_path)
             .parent()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_default();
 
         let parent_normalized = normalize_extended_prefix(&file_parent);
@@ -794,7 +794,7 @@ fn is_same_file(source: &Path, dest_file: &Path, dest_canonical_cache: &mut Opti
     let dest_canonical = dest_canonical_cache.get_or_insert_with(|| {
         dest_file
             .parent()
-            .and_then(|p| p.canonicalize().ok())
+            .and_then(|path| path.canonicalize().ok())
             .unwrap_or_default()
     });
     let dest_file_canonical = dest_file
