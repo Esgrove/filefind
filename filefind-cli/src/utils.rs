@@ -260,6 +260,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::test_utils::native_path;
 
     /// Helper to create a test file entry.
     fn make_file(name: &str, path: &str, size: u64) -> FileEntry {
@@ -399,62 +400,71 @@ mod tests {
 
     #[test]
     fn test_calculate_directory_sizes_single_file() {
-        let file = make_file("test.txt", "C:\\Projects\\test.txt", 1024);
+        let file = make_file("test.txt", &native_path(&["Projects", "test.txt"]), 1024);
         let files: Vec<&FileEntry> = vec![&file];
         let sizes = calculate_directory_sizes(&files);
         assert_eq!(sizes.len(), 1);
-        assert_eq!(*sizes.get("C:\\Projects").expect("Missing directory"), 1024);
+        assert_eq!(
+            *sizes.get(&native_path(&["Projects"])).expect("Missing directory"),
+            1024
+        );
     }
 
     #[test]
     fn test_calculate_directory_sizes_multiple_files_same_dir() {
-        let file1 = make_file("a.txt", "C:\\Dir\\a.txt", 100);
-        let file2 = make_file("b.txt", "C:\\Dir\\b.txt", 200);
-        let file3 = make_file("c.txt", "C:\\Dir\\c.txt", 300);
+        let file1 = make_file("a.txt", &native_path(&["Dir", "a.txt"]), 100);
+        let file2 = make_file("b.txt", &native_path(&["Dir", "b.txt"]), 200);
+        let file3 = make_file("c.txt", &native_path(&["Dir", "c.txt"]), 300);
         let all_files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
         let sizes = calculate_directory_sizes(&all_files);
         assert_eq!(sizes.len(), 1);
-        assert_eq!(*sizes.get("C:\\Dir").expect("Missing directory"), 600);
+        assert_eq!(*sizes.get(&native_path(&["Dir"])).expect("Missing directory"), 600);
     }
 
     #[test]
     fn test_calculate_directory_sizes_multiple_directories() {
-        let file1 = make_file("a.txt", "C:\\DirA\\a.txt", 100);
-        let file2 = make_file("b.txt", "C:\\DirB\\b.txt", 200);
-        let file3 = make_file("c.txt", "C:\\DirA\\c.txt", 50);
+        let file1 = make_file("a.txt", &native_path(&["DirA", "a.txt"]), 100);
+        let file2 = make_file("b.txt", &native_path(&["DirB", "b.txt"]), 200);
+        let file3 = make_file("c.txt", &native_path(&["DirA", "c.txt"]), 50);
         let all_files: Vec<&FileEntry> = vec![&file1, &file2, &file3];
         let sizes = calculate_directory_sizes(&all_files);
         assert_eq!(sizes.len(), 2);
-        assert_eq!(*sizes.get("C:\\DirA").expect("Missing DirA"), 150);
-        assert_eq!(*sizes.get("C:\\DirB").expect("Missing DirB"), 200);
+        assert_eq!(*sizes.get(&native_path(&["DirA"])).expect("Missing DirA"), 150);
+        assert_eq!(*sizes.get(&native_path(&["DirB"])).expect("Missing DirB"), 200);
     }
 
     #[test]
     fn test_calculate_directory_sizes_nested_directories() {
-        let file1 = make_file("a.txt", "C:\\Parent\\Child\\a.txt", 100);
-        let file2 = make_file("b.txt", "C:\\Parent\\b.txt", 200);
+        let file1 = make_file("a.txt", &native_path(&["Parent", "Child", "a.txt"]), 100);
+        let file2 = make_file("b.txt", &native_path(&["Parent", "b.txt"]), 200);
         let all_files: Vec<&FileEntry> = vec![&file1, &file2];
         let sizes = calculate_directory_sizes(&all_files);
         assert_eq!(sizes.len(), 2);
-        assert_eq!(*sizes.get("C:\\Parent\\Child").expect("Missing Child"), 100);
-        assert_eq!(*sizes.get("C:\\Parent").expect("Missing Parent"), 200);
+        assert_eq!(
+            *sizes.get(&native_path(&["Parent", "Child"])).expect("Missing Child"),
+            100
+        );
+        assert_eq!(*sizes.get(&native_path(&["Parent"])).expect("Missing Parent"), 200);
     }
 
     #[test]
     fn test_calculate_directory_sizes_zero_size_file() {
-        let file = make_file("empty.txt", "C:\\Dir\\empty.txt", 0);
+        let file = make_file("empty.txt", &native_path(&["Dir", "empty.txt"]), 0);
         let files: Vec<&FileEntry> = vec![&file];
         let sizes = calculate_directory_sizes(&files);
-        assert_eq!(*sizes.get("C:\\Dir").expect("Missing directory"), 0);
+        assert_eq!(*sizes.get(&native_path(&["Dir"])).expect("Missing directory"), 0);
     }
 
     #[test]
     fn test_calculate_directory_sizes_large_sizes() {
-        let file1 = make_file("big1.bin", "C:\\Dir\\big1.bin", 5_000_000_000);
-        let file2 = make_file("big2.bin", "C:\\Dir\\big2.bin", 5_000_000_000);
+        let file1 = make_file("big1.bin", &native_path(&["Dir", "big1.bin"]), 5_000_000_000);
+        let file2 = make_file("big2.bin", &native_path(&["Dir", "big2.bin"]), 5_000_000_000);
         let all_files: Vec<&FileEntry> = vec![&file1, &file2];
         let sizes = calculate_directory_sizes(&all_files);
-        assert_eq!(*sizes.get("C:\\Dir").expect("Missing directory"), 10_000_000_000);
+        assert_eq!(
+            *sizes.get(&native_path(&["Dir"])).expect("Missing directory"),
+            10_000_000_000
+        );
     }
 
     // ── count_files_under_directory ───────────────────────────────

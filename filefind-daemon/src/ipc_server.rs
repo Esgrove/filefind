@@ -391,7 +391,7 @@ impl IpcServer {
         let socket_path = self.effective_pipe_path();
 
         // Remove existing socket file if it exists
-        let _ = std::fs::remove_file(&socket_path);
+        let _ = std::fs::remove_file(socket_path);
 
         // Create the socket directory if needed
         if let Some(parent) = socket_path.parent()
@@ -401,7 +401,7 @@ impl IpcServer {
             return;
         }
 
-        let listener = match UnixListener::bind(&socket_path) {
+        let listener = match UnixListener::bind(socket_path) {
             Ok(listener) => listener,
             Err(error) => {
                 error!("Failed to bind Unix socket: {}", error);
@@ -427,14 +427,13 @@ impl IpcServer {
             match listener.accept() {
                 Ok((stream, _)) => {
                     debug!("Client connected to IPC server");
-                    if let Err(error) = self.handle_unix_client_sync(stream) {
+                    if let Err(error) = self.handle_unix_client_sync(&stream) {
                         warn!("Error handling client: {}", error);
                     }
                 }
                 Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     // No connection available, sleep briefly and try again
                     std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
                 }
                 Err(error) => {
                     warn!("Failed to accept connection: {}", error);
@@ -443,17 +442,17 @@ impl IpcServer {
         }
 
         // Clean up socket file
-        let _ = std::fs::remove_file(&socket_path);
+        let _ = std::fs::remove_file(socket_path);
     }
 
     /// Handle a Unix domain socket client synchronously.
     #[cfg(not(windows))]
-    fn handle_unix_client_sync(&self, stream: std::os::unix::net::UnixStream) -> Result<()> {
+    fn handle_unix_client_sync(&self, stream: &std::os::unix::net::UnixStream) -> Result<()> {
         // Set blocking for this connection
         stream.set_nonblocking(false)?;
 
         // Read the command using binary protocol
-        let mut reader = &stream;
+        let mut reader = stream;
         let response = match DaemonCommand::read_from(&mut reader) {
             Ok(command) => {
                 debug!("Received command: {:?}", command);
@@ -466,7 +465,7 @@ impl IpcServer {
         };
 
         // Send response
-        let mut write_stream = &stream;
+        let mut write_stream = stream;
         response.write_to(&mut write_stream)?;
 
         Ok(())
@@ -1482,6 +1481,9 @@ mod tests {
         {
             let _ = std::fs::OpenOptions::new().read(true).write(true).open(pipe_path);
         }
+        // On Unix the non-blocking accept loop notices the flag on its own.
+        #[cfg(not(windows))]
+        let _ = pipe_path;
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
 

@@ -40,6 +40,9 @@ struct CategorizedPaths {
     local_paths_by_drive: HashMap<char, Vec<String>>,
     mapped_network_drives: Vec<(char, PathBuf)>,
     unc_paths: Vec<PathBuf>,
+    /// Local directories without a drive letter (Unix paths).
+    /// Scanned with directory walking since MFT requires a drive letter.
+    plain_directories: Vec<PathBuf>,
 }
 
 /// Result from a scan operation.
@@ -64,6 +67,7 @@ impl CategorizedPaths {
             + self.local_paths_by_drive.len()
             + self.mapped_network_drives.len()
             + self.unc_paths.len()
+            + self.plain_directories.len()
     }
 }
 
@@ -140,20 +144,24 @@ pub async fn scan_single_path(database: &mut Database, scan_path: &Path, config:
             try_mft_with_fallback(database, drive_letter, &[], scan_path, exclude_patterns, clean_scan).await?
         }
         PathType::LocalDirectory => {
-            // Use MFT scanner with path filter for local directories
-            let drive_letter = extract_drive_letter(scan_path).expect("LocalDirectory should have a drive letter");
-
-            let path_filter = scan_path.to_string_lossy().into_owned();
-            debug!("Using MFT scanner with path filter: {}", path_filter);
-            try_mft_with_fallback(
-                database,
-                drive_letter,
-                &[path_filter],
-                scan_path,
-                exclude_patterns,
-                clean_scan,
-            )
-            .await?
+            // Use MFT scanner with path filter for local directories.
+            // Paths without a drive letter (Unix) use directory walking instead.
+            if let Some(drive_letter) = extract_drive_letter(scan_path) {
+                let path_filter = scan_path.to_string_lossy().into_owned();
+                debug!("Using MFT scanner with path filter: {}", path_filter);
+                try_mft_with_fallback(
+                    database,
+                    drive_letter,
+                    &[path_filter],
+                    scan_path,
+                    exclude_patterns,
+                    clean_scan,
+                )
+                .await?
+            } else {
+                debug!("Using directory scanner for local directory without drive letter");
+                scan_directory_to_db(database, scan_path, exclude_patterns, clean_scan).await?
+            }
         }
         PathType::MappedNetworkDrive => {
             // Try MFT scanner for mapped network drives - some NAS devices support it
@@ -228,8 +236,8 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
         }));
     }
 
-    // UNC paths (directory walk only)
-    for scan_path in categorized.unc_paths {
+    // UNC paths and plain directories without a drive letter (directory walk only)
+    for scan_path in categorized.unc_paths.into_iter().chain(categorized.plain_directories) {
         let label = scan_path.to_string_lossy().into_owned();
         let exclude = Arc::clone(&exclude_patterns);
         tasks.push(tokio::spawn(async move {
@@ -641,6 +649,7 @@ fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
     let mut local_paths_by_drive: HashMap<char, Vec<String>> = HashMap::new();
     let mut mapped_network_drives: Vec<(char, PathBuf)> = Vec::new();
     let mut unc_paths: Vec<PathBuf> = Vec::new();
+    let mut plain_directories: Vec<PathBuf> = Vec::new();
 
     for path_str in paths_to_scan {
         let scan_path = PathBuf::from(&path_str);
@@ -659,6 +668,9 @@ fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
             PathType::LocalDirectory => {
                 if let Some(drive_letter) = extract_drive_letter(&scan_path) {
                     local_paths_by_drive.entry(drive_letter).or_default().push(path_str);
+                } else {
+                    // No drive letter (Unix path): scan with directory walking
+                    plain_directories.push(scan_path);
                 }
             }
             PathType::MappedNetworkDrive => {
@@ -682,6 +694,7 @@ fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
         local_paths_by_drive,
         mapped_network_drives,
         unc_paths,
+        plain_directories,
     }
 }
 
@@ -1138,6 +1151,7 @@ mod tests {
             local_paths_by_drive: HashMap::new(),
             mapped_network_drives: Vec::new(),
             unc_paths: Vec::new(),
+            plain_directories: Vec::new(),
         };
         assert_eq!(paths.task_count(), 0);
     }
@@ -1149,6 +1163,7 @@ mod tests {
             local_paths_by_drive: HashMap::new(),
             mapped_network_drives: Vec::new(),
             unc_paths: Vec::new(),
+            plain_directories: Vec::new(),
         };
         assert_eq!(paths.task_count(), 2);
     }
@@ -1162,6 +1177,7 @@ mod tests {
             local_paths_by_drive: local,
             mapped_network_drives: vec![('Z', PathBuf::from("Z:\\"))],
             unc_paths: vec![PathBuf::from("\\\\server\\share")],
+            plain_directories: Vec::new(),
         };
         assert_eq!(paths.task_count(), 4);
     }
@@ -1177,6 +1193,7 @@ mod tests {
             local_paths_by_drive: local,
             mapped_network_drives: Vec::new(),
             unc_paths: Vec::new(),
+            plain_directories: Vec::new(),
         };
         assert_eq!(paths.task_count(), 2);
     }
@@ -1561,9 +1578,9 @@ mod tests {
             categorized.mapped_network_drives.is_empty(),
             "Temp dir should not be categorized as mapped network drive"
         );
+        let local_directory_count = categorized.local_paths_by_drive.len() + categorized.plain_directories.len();
         assert_eq!(
-            categorized.local_paths_by_drive.len(),
-            1,
+            local_directory_count, 1,
             "Temp dir should be categorized as a local directory path"
         );
     }
@@ -1603,7 +1620,15 @@ mod tests {
         ];
         let categorized = collect_paths_to_scan(&config).expect("Two accessible paths should return Some");
 
-        if drive1 == drive2 {
+        if drive1.is_none() && drive2.is_none() {
+            // No drive letters (Unix): each path is a separate directory-walk task
+            assert_eq!(
+                categorized.plain_directories.len(),
+                2,
+                "Both paths should be categorized as plain directories"
+            );
+            assert_eq!(categorized.task_count(), 2, "Each plain directory is its own task");
+        } else if drive1 == drive2 {
             // Same drive: both paths grouped under one drive entry = 1 task
             assert_eq!(
                 categorized.task_count(),
@@ -2422,6 +2447,7 @@ mod tests {
                 PathBuf::from("\\\\server2\\share"),
                 PathBuf::from("\\\\server3\\share"),
             ],
+            plain_directories: Vec::new(),
         };
         // 3 NTFS roots + 2 local drive groups + 2 mapped drives + 3 UNC = 10
         assert_eq!(paths.task_count(), 10);
@@ -2434,6 +2460,7 @@ mod tests {
             local_paths_by_drive: HashMap::new(),
             mapped_network_drives: Vec::new(),
             unc_paths: vec![PathBuf::from("\\\\server\\share")],
+            plain_directories: Vec::new(),
         };
         assert_eq!(paths.task_count(), 1);
     }
@@ -2445,6 +2472,7 @@ mod tests {
             local_paths_by_drive: HashMap::new(),
             mapped_network_drives: vec![('Z', PathBuf::from("Z:\\"))],
             unc_paths: Vec::new(),
+            plain_directories: Vec::new(),
         };
         assert_eq!(paths.task_count(), 1);
     }

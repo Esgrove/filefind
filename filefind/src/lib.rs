@@ -272,7 +272,9 @@ pub fn is_network_path(path: &Path) -> bool {
 /// and share (e.g., `"\\server\share"`) for network paths. The `\\?\` prefix
 /// added by [`Path::canonicalize`] on Windows is stripped before extraction.
 ///
-/// Returns `None` if the path has no recognizable volume root.
+/// Returns `None` if the path has no recognizable volume root, including Unix
+/// paths — same-volume comparison on Unix should use device ids from
+/// `std::os::unix::fs::MetadataExt` instead of string prefixes.
 ///
 /// # Examples
 ///
@@ -368,7 +370,7 @@ pub fn get_unc_for_drive(drive_letter: char) -> Option<String> {
 /// ```
 #[cfg(not(windows))]
 #[must_use]
-pub fn get_unc_for_drive(_drive_letter: char) -> Option<String> {
+pub const fn get_unc_for_drive(_drive_letter: char) -> Option<String> {
     None
 }
 
@@ -466,7 +468,7 @@ pub fn get_persistent_drive_mapping(drive_letter: char) -> Option<String> {
 /// ```
 #[cfg(not(windows))]
 #[must_use]
-pub fn get_persistent_drive_mapping(_drive_letter: char) -> Option<String> {
+pub const fn get_persistent_drive_mapping(_drive_letter: char) -> Option<String> {
     None
 }
 

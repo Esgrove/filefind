@@ -381,7 +381,7 @@ fn is_parent_missing(path: &str, missing_directories: &HashSet<String>) -> bool 
     false
 }
 
-/// Extract volume key from a path (drive letter or UNC root).
+/// Extract volume key from a path (drive letter, UNC root, or Unix mount point).
 fn extract_volume_key(path: &str) -> String {
     // Handle UNC paths: \\server\share -> \\server\share
     if path.starts_with("\\\\") {
@@ -395,6 +395,18 @@ fn extract_volume_key(path: &str) -> String {
     // Handle drive letters: C:\... -> C:
     if path.len() >= 2 && path.chars().nth(1) == Some(':') {
         return path[..2].to_uppercase();
+    }
+
+    // Handle absolute Unix paths: group by macOS mount point under /Volumes,
+    // otherwise by the root filesystem
+    if let Some(remainder) = path.strip_prefix("/Volumes/") {
+        let volume_name = remainder.split('/').next().unwrap_or_default();
+        if !volume_name.is_empty() {
+            return format!("/Volumes/{volume_name}");
+        }
+    }
+    if path.starts_with('/') {
+        return "/".to_string();
     }
 
     // Fallback for unknown path formats
@@ -657,13 +669,20 @@ mod tests {
 
     #[test]
     fn test_is_parent_missing() {
-        let mut missing: HashSet<String> = HashSet::new();
-        missing.insert("C:\\parent".to_string());
+        let root = if cfg!(windows) { "C:\\" } else { "/" };
+        let parent_dir = Path::new(root).join("parent");
+        let child_path = parent_dir.join("child.txt");
+        let deep_path = parent_dir.join("sub").join("deep.txt");
+        let other_path = Path::new(root).join("other").join("file.txt");
 
-        assert!(is_parent_missing("C:\\parent\\child.txt", &missing));
-        assert!(is_parent_missing("C:\\parent\\sub\\deep.txt", &missing));
-        assert!(!is_parent_missing("C:\\other\\file.txt", &missing));
-        assert!(!is_parent_missing("C:\\parent", &missing)); // The path itself, not its parent
+        let mut missing: HashSet<String> = HashSet::new();
+        missing.insert(parent_dir.to_string_lossy().to_string());
+
+        assert!(is_parent_missing(&child_path.to_string_lossy(), &missing));
+        assert!(is_parent_missing(&deep_path.to_string_lossy(), &missing));
+        assert!(!is_parent_missing(&other_path.to_string_lossy(), &missing));
+        // The path itself, not its parent
+        assert!(!is_parent_missing(&parent_dir.to_string_lossy(), &missing));
     }
 
     #[test]
@@ -687,6 +706,23 @@ mod tests {
     fn test_extract_volume_key_unc_path() {
         assert_eq!(extract_volume_key("\\\\server\\share\\file.txt"), "\\\\server\\share");
         assert_eq!(extract_volume_key("\\\\nas\\data\\docs"), "\\\\nas\\data");
+    }
+
+    #[test]
+    fn test_extract_volume_key_unix_paths() {
+        assert_eq!(extract_volume_key("/Users/test/file.txt"), "/");
+        assert_eq!(extract_volume_key("/Volumes/USB/photos/img.jpg"), "/Volumes/USB");
+        assert_eq!(
+            extract_volume_key("/Volumes/Backup Drive/data"),
+            "/Volumes/Backup Drive"
+        );
+        // Bare /Volumes/ with no volume name falls back to the root filesystem
+        assert_eq!(extract_volume_key("/Volumes/"), "/");
+    }
+
+    #[test]
+    fn test_extract_volume_key_unknown_format() {
+        assert_eq!(extract_volume_key("relative/path/file.txt"), "UNKNOWN");
     }
 
     #[test]

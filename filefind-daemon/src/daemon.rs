@@ -6,7 +6,14 @@
 //! - Coordinating updates to the database based on file changes
 
 use std::collections::HashMap;
+#[cfg(not(windows))]
+use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+#[cfg(not(windows))]
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -815,28 +822,35 @@ pub fn start_daemon(options: &DaemonOptions, config: &Config) -> Result<()> {
 /// # Platform Support
 ///
 /// - **Windows**: Uses `DETACHED_PROCESS` and `CREATE_NO_WINDOW` creation flags
-/// - **Unix**: Uses `setsid` to create a new session (not yet implemented)
-#[cfg(windows)]
+/// - **Unix**: Uses a new process group with detached standard streams
 fn spawn_background_daemon(rescan: bool) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    use std::process::Command;
-
-    // Windows process creation flags
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
     let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
 
+    // Run in foreground mode in the detached process
     let mut command = Command::new(&exe_path);
-    command.arg("start").arg("-f"); // Run in foreground mode in the detached process
+    command.arg("start").arg("-f");
 
     if rescan {
         command.arg("--rescan");
     }
 
     // Detach from console and create without a window
-    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    #[cfg(windows)]
+    {
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    }
+
+    // Detach from the terminal's process group and standard streams
+    #[cfg(not(windows))]
+    command
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     let child = command.spawn().context("Failed to spawn background daemon process")?;
 
@@ -844,17 +858,6 @@ fn spawn_background_daemon(rescan: bool) -> Result<()> {
     print_cyan!("Use 'filefindd status' to check daemon status");
     print_cyan!("Use 'filefindd stop' to stop the daemon");
 
-    Ok(())
-}
-
-/// Spawn the daemon as a detached background process (non-Windows stub).
-#[cfg(not(windows))]
-fn spawn_background_daemon(_rescan: bool) -> Result<()> {
-    // On Unix, we would use fork() or nohup-style daemonization
-    // For now, just print a message suggesting foreground mode
-    print_warning!("Background daemon mode not implemented on this platform.");
-    print_cyan!("Use 'filefindd start -f' for foreground mode.");
-    print_cyan!("Or use 'nohup filefindd start -f &' to run in background.");
     Ok(())
 }
 
