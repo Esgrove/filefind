@@ -3,7 +3,7 @@
 //! Handles storing and querying the file index.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -18,6 +18,7 @@ use crate::types::{FileEntry, IndexedVolume, VolumeType};
 
 /// Batch size for MFT reference delete operations.
 const MFT_DELETE_BATCH_SIZE: usize = 500;
+const DUPLICATE_PROGRESS_UPDATE_INTERVAL: u64 = 1_000;
 
 /// Database wrapper for file index operations.
 pub struct Database {
@@ -880,59 +881,133 @@ impl Database {
         &self.connection
     }
 
-    /// Find all duplicate files grouped by case-insensitive file stem (name without extension).
+    /// Find all duplicate files grouped by case-insensitive file stem.
     ///
-    /// Returns groups of files that share the same stem, ordered alphabetically by stem.
-    /// Only non-directory entries are considered, and only groups with 2 or more files
-    /// are returned.
+    /// The stem is the name without extension.
+    /// Returns groups of files that share the same stem.
+    /// Groups are ordered alphabetically by stem.
+    /// Only non-directory entries are considered.
+    /// Only groups with 2 or more files are returned.
     ///
     /// # Errors
     /// Returns an error if the database operation fails.
     pub fn find_duplicates(&self) -> Result<Vec<(String, Vec<FileEntry>)>> {
-        self.register_file_stem_function()?;
+        self.find_duplicates_with_progress(|_, _| {})
+    }
 
-        // First, find all stems that have duplicates
-        let mut stem_statement = self.connection.prepare(
+    /// Find duplicate files and report scan progress.
+    ///
+    /// The progress callback receives `(processed, total)` counts.
+    /// Duplicate detection scans file names once to count stems.
+    /// It then scans file entries once to collect matching groups.
+    /// Therefore, `total` is twice the number of indexed non-directory files.
+    ///
+    /// # Errors
+    /// Returns an error if the database operation fails.
+    pub fn find_duplicates_with_progress<F>(&self, mut update_progress: F) -> Result<Vec<(String, Vec<FileEntry>)>>
+    where
+        F: FnMut(u64, u64),
+    {
+        let total_files_count = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM files WHERE is_directory = 0", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .context("Failed to count files for duplicate scan")?;
+        let total_files = u64::try_from(total_files_count).context("File count was negative")?;
+        let total_work = total_files.saturating_mul(2);
+        update_progress(0, total_work);
+
+        if total_files == 0 {
+            return Ok(Vec::new());
+        }
+
+        let duplicate_stems = self.find_duplicate_stems(total_work, &mut update_progress)?;
+
+        if duplicate_stems.is_empty() {
+            update_progress(total_work, total_work);
+            return Ok(Vec::new());
+        }
+
+        let groups = self.collect_duplicate_groups(&duplicate_stems, total_files, total_work, &mut update_progress)?;
+        update_progress(total_work, total_work);
+
+        Ok(groups.into_iter().collect())
+    }
+
+    /// Scan indexed file names and return stems that appear more than once.
+    ///
+    /// Reports progress while reading each file name.
+    /// The returned stems are lowercased for case-insensitive grouping.
+    fn find_duplicate_stems<F>(&self, total_work: u64, update_progress: &mut F) -> Result<HashSet<String>>
+    where
+        F: FnMut(u64, u64),
+    {
+        let mut stem_counts: HashMap<String, u64> = HashMap::new();
+        let mut file_statement = self.connection.prepare(
             r"
-            SELECT file_stem(name) as stem, COUNT(*) as cnt
+            SELECT name
             FROM files
             WHERE is_directory = 0
-            GROUP BY stem COLLATE NOCASE
-            HAVING cnt >= 2
-            ORDER BY stem COLLATE NOCASE
             ",
         )?;
+        let mut rows = file_statement.query([])?;
+        let mut processed = 0;
 
-        let stems: Vec<String> = stem_statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()
-            .context("Failed to query duplicate stems")?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(0)?;
+            let stem = file_stem(&name).to_lowercase();
+            *stem_counts.entry(stem).or_default() += 1;
+            processed += 1;
+            report_duplicate_progress(processed, total_work, update_progress);
+        }
+        update_progress(processed, total_work);
 
-        // Then fetch all files for each duplicate stem
+        Ok(stem_counts
+            .into_iter()
+            .filter_map(|(stem, count)| (count >= 2).then_some(stem))
+            .collect())
+    }
+
+    /// Collect file entries whose stems are known duplicates.
+    ///
+    /// Groups are keyed by lowercased stem.
+    /// Files are read ordered by full path.
+    /// This preserves path order within each duplicate group.
+    /// Progress starts at `total_files` because stem counting is the first half of the scan.
+    fn collect_duplicate_groups<F>(
+        &self,
+        duplicate_stems: &HashSet<String>,
+        total_files: u64,
+        total_work: u64,
+        update_progress: &mut F,
+    ) -> Result<BTreeMap<String, Vec<FileEntry>>>
+    where
+        F: FnMut(u64, u64),
+    {
         let mut file_statement = self.connection.prepare(
             r"
             SELECT id, volume_id, parent_id, name, full_path, is_directory, size, created_time, modified_time, mft_reference
             FROM files
-            WHERE is_directory = 0 AND file_stem(name) = ?1 COLLATE NOCASE
+            WHERE is_directory = 0
             ORDER BY full_path
             ",
         )?;
-
-        // Use BTreeMap to maintain alphabetical order by lowercase stem
+        let mut rows = file_statement.query([])?;
         let mut groups: BTreeMap<String, Vec<FileEntry>> = BTreeMap::new();
+        let mut processed = total_files;
 
-        for stem in &stems {
-            let files = file_statement
-                .query_map(rusqlite::params![stem], row_to_file_entry)?
-                .collect::<Result<Vec<_>, _>>()
-                .context("Failed to query files for duplicate stem")?;
-
-            if files.len() >= 2 {
-                groups.entry(stem.to_lowercase()).or_default().extend(files);
+        while let Some(row) = rows.next()? {
+            let entry = row_to_file_entry(row)?;
+            let stem = file_stem(&entry.name).to_lowercase();
+            if duplicate_stems.contains(&stem) {
+                groups.entry(stem).or_default().push(entry);
             }
+            processed += 1;
+            report_duplicate_progress(processed, total_work, update_progress);
         }
 
-        Ok(groups.into_iter().collect())
+        Ok(groups)
     }
 
     fn initialize(&self) -> Result<()> {
@@ -992,41 +1067,6 @@ impl Database {
         Ok(())
     }
 
-    /// Register the `file_stem` scalar function for extracting file name without extension.
-    ///
-    /// This enables SQL queries like: `SELECT file_stem(name) FROM files`
-    ///
-    /// Behavior matches Rust's `Path::file_stem()`:
-    /// - `"file.txt"` → `"file"`
-    /// - `"archive.tar.gz"` → `"archive.tar"`
-    /// - `"file"` → `"file"`
-    /// - `".gitignore"` → `".gitignore"`
-    fn register_file_stem_function(&self) -> Result<()> {
-        self.connection.create_scalar_function(
-            "file_stem",
-            1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |ctx| {
-                let name = ctx
-                    .get_raw(0)
-                    .as_str()
-                    .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
-
-                let stem = match name.rfind('.') {
-                    // No dot or dot is the first character (dotfile like .gitignore)
-                    None | Some(0) => name.to_string(),
-                    // Has a dot: take everything before the last dot
-                    Some(pos) => name[..pos].to_string(),
-                };
-
-                Ok(stem)
-            },
-        )?;
-
-        trace!("Registered file_stem function");
-        Ok(())
-    }
-
     /// Register the REGEXP function for regex searches.
     ///
     /// This enables SQL queries like: `SELECT * FROM files WHERE name REGEXP 'pattern'`
@@ -1056,6 +1096,30 @@ impl Database {
 
         trace!("Registered REGEXP function");
         Ok(())
+    }
+}
+
+/// Report duplicate scan progress at throttled intervals.
+///
+/// Always reports the final update.
+/// Intermediate updates are limited to avoid excessive terminal redraws.
+fn report_duplicate_progress<F>(processed: u64, total: u64, update_progress: &mut F)
+where
+    F: FnMut(u64, u64),
+{
+    if processed == total || processed.is_multiple_of(DUPLICATE_PROGRESS_UPDATE_INTERVAL) {
+        update_progress(processed, total);
+    }
+}
+
+/// Return the filename stem using filefind's duplicate matching rules.
+///
+/// The stem is the portion before the final dot.
+/// Dotfiles such as `.gitignore` keep their full name as the stem.
+fn file_stem(name: &str) -> String {
+    match name.rfind('.') {
+        None | Some(0) => name.to_string(),
+        Some(dot_position) => name[..dot_position].to_string(),
     }
 }
 

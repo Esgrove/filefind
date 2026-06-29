@@ -1,10 +1,11 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use colored::Colorize;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use filefind::config::OutputFormat;
 use filefind::types::FileEntry;
@@ -213,14 +214,32 @@ pub fn show_stats(database: &Database) -> Result<()> {
     Ok(())
 }
 
-/// Show duplicate files grouped by case-insensitive file stem (name without extension).
+/// Show duplicate files grouped by case-insensitive file stem.
 ///
-/// Queries the database for all non-directory files that share a stem, then displays
-/// each group with the stem as a header and the full paths listed underneath.
+/// The stem is the name without extension.
+/// Queries the database for all non-directory files that share a stem.
+/// Displays each group with the stem as a header.
+/// Lists the full paths underneath each header.
 pub fn show_duplicates(database: &Database, drives: &[String], limit: Option<usize>, verbose: bool) -> Result<()> {
     let start_time = Instant::now();
 
-    let all_groups = database.find_duplicates()?;
+    let progress_bar = duplicate_progress_bar();
+    let all_groups_result = database.find_duplicates_with_progress(|processed, total| {
+        if total == 0 {
+            progress_bar.set_message("No files to scan");
+            return;
+        }
+
+        progress_bar.set_length(total);
+        progress_bar.set_position(processed.min(total));
+        if processed <= total / 2 {
+            progress_bar.set_message("Scanning file names");
+        } else {
+            progress_bar.set_message("Collecting duplicates");
+        }
+    });
+    progress_bar.finish_and_clear();
+    let all_groups = all_groups_result?;
 
     // Filter by drive if specified
     let groups: Vec<(String, Vec<FileEntry>)> = if drives.is_empty() {
@@ -280,6 +299,25 @@ pub fn show_duplicates(database: &Database, drives: &[String], limit: Option<usi
     }
 
     Ok(())
+}
+
+/// Create the progress bar used by the duplicates command.
+///
+/// The bar is hidden during tests to keep test output stable.
+fn duplicate_progress_bar() -> ProgressBar {
+    let progress_bar = ProgressBar::new_spinner();
+    if cfg!(test) {
+        progress_bar.set_draw_target(ProgressDrawTarget::hidden());
+    }
+    progress_bar.enable_steady_tick(Duration::from_millis(100));
+    progress_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("=>-"),
+    );
+    progress_bar.set_message("Preparing duplicate scan");
+    progress_bar
 }
 
 /// Display results in grouped format (files grouped by directory).
