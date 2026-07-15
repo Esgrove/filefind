@@ -1046,7 +1046,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::test_utils::native_path;
+    use crate::test_utils::{make_file, native_path};
 
     // --- cross_device_size tests ---
     // The volume-prefix comparison tests are Windows-only; the Unix
@@ -1057,8 +1057,8 @@ mod tests {
     fn test_cross_device_size_all_same_volume() {
         let destination = PathBuf::from(r"C:\dest");
         let files = [
-            make_file_entry("a.txt", r"C:\source\a.txt", 1000),
-            make_file_entry("b.txt", r"C:\other\b.txt", 2000),
+            make_file("a.txt", r"C:\source\a.txt", 1000),
+            make_file("b.txt", r"C:\other\b.txt", 2000),
         ];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
@@ -1071,8 +1071,8 @@ mod tests {
     fn test_cross_device_size_all_different_volume() {
         let destination = PathBuf::from(r"D:\dest");
         let files = [
-            make_file_entry("a.txt", r"C:\source\a.txt", 1000),
-            make_file_entry("b.txt", r"E:\other\b.txt", 2000),
+            make_file("a.txt", r"C:\source\a.txt", 1000),
+            make_file("b.txt", r"E:\other\b.txt", 2000),
         ];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
@@ -1085,9 +1085,9 @@ mod tests {
     fn test_cross_device_size_mixed_volumes() {
         let destination = PathBuf::from(r"C:\dest");
         let files = [
-            make_file_entry("a.txt", r"C:\source\a.txt", 1000),
-            make_file_entry("b.txt", r"D:\other\b.txt", 2000),
-            make_file_entry("c.txt", r"C:\more\c.txt", 3000),
+            make_file("a.txt", r"C:\source\a.txt", 1000),
+            make_file("b.txt", r"D:\other\b.txt", 2000),
+            make_file("c.txt", r"C:\more\c.txt", 3000),
         ];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
@@ -1100,8 +1100,8 @@ mod tests {
     fn test_cross_device_size_unc_destination() {
         let destination = PathBuf::from(r"\\server\share\dest");
         let files = [
-            make_file_entry("a.txt", r"\\server\share\source\a.txt", 1000),
-            make_file_entry("b.txt", r"C:\local\b.txt", 2000),
+            make_file("a.txt", r"\\server\share\source\a.txt", 1000),
+            make_file("b.txt", r"C:\local\b.txt", 2000),
         ];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
@@ -1114,7 +1114,7 @@ mod tests {
     fn test_cross_device_size_with_canonicalized_destination() {
         // Destination has \\?\ prefix from canonicalize, source does not
         let destination = PathBuf::from(r"\\?\C:\dest");
-        let files = [make_file_entry("a.txt", r"C:\source\a.txt", 5000)];
+        let files = [make_file("a.txt", r"C:\source\a.txt", 5000)];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
         // Both resolve to c: — same volume, no space needed
@@ -1135,7 +1135,7 @@ mod tests {
     fn test_cross_device_size_unknown_prefix_conservative() {
         // Files with unrecognizable paths should be counted conservatively
         let destination = PathBuf::from(r"C:\dest");
-        let files = [make_file_entry("a.txt", "relative/path/a.txt", 1000)];
+        let files = [make_file("a.txt", "relative/path/a.txt", 1000)];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
         // Unknown prefix → conservatively assumed cross-device
@@ -1151,7 +1151,7 @@ mod tests {
         let destination = temp_dir.path().join("dest");
         fs::create_dir(&destination).expect("failed to create destination");
 
-        let files = [make_file_entry("a.txt", &source_path.to_string_lossy(), 1000)];
+        let files = [make_file("a.txt", &source_path.to_string_lossy(), 1000)];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
         // Source and destination share a filesystem — no space needed
@@ -1164,11 +1164,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let missing_path = temp_dir.path().join("does_not_exist.txt");
 
-        let files = [make_file_entry(
-            "does_not_exist.txt",
-            &missing_path.to_string_lossy(),
-            1000,
-        )];
+        let files = [make_file("does_not_exist.txt", &missing_path.to_string_lossy(), 1000)];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
         // Unknown device id → conservatively assumed cross-device
@@ -1195,20 +1191,13 @@ mod tests {
         assert!(!is_cross_device_error(&error));
     }
 
-    /// Helper to create a test `FileEntry` with a given name, path, and size.
-    fn make_file_entry(name: &str, full_path: &str, size: u64) -> FileEntry {
-        let mut entry = FileEntry::new(1, name.to_string(), full_path.to_string(), false);
-        entry.size = size;
-        entry
-    }
-
     #[test]
     fn test_filter_files_removes_duplicates() {
         let destination = PathBuf::from(native_path(&["dest"]));
         let first_path = native_path(&["source1", "file.txt"]);
         let files = vec![
-            make_file_entry("file.txt", &first_path, 100),
-            make_file_entry("file.txt", &native_path(&["source2", "file.txt"]), 200),
+            make_file("file.txt", &first_path, 100),
+            make_file("file.txt", &native_path(&["source2", "file.txt"]), 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1225,8 +1214,8 @@ mod tests {
         let destination = PathBuf::from(native_path(&["dest"]));
         let source_path = native_path(&["source", "file2.txt"]);
         let files = vec![
-            make_file_entry("file1.txt", &native_path(&["dest", "file1.txt"]), 100),
-            make_file_entry("file2.txt", &source_path, 200),
+            make_file("file1.txt", &native_path(&["dest", "file1.txt"]), 100),
+            make_file("file2.txt", &source_path, 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1253,9 +1242,9 @@ mod tests {
     fn test_filter_files_all_unique() {
         let destination = PathBuf::from("C:\\dest");
         let files = vec![
-            make_file_entry("file1.txt", "C:\\source\\file1.txt", 100),
-            make_file_entry("file2.txt", "C:\\source\\file2.txt", 200),
-            make_file_entry("file3.txt", "C:\\other\\file3.txt", 300),
+            make_file("file1.txt", "C:\\source\\file1.txt", 100),
+            make_file("file2.txt", "C:\\source\\file2.txt", 200),
+            make_file("file3.txt", "C:\\other\\file3.txt", 300),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1270,8 +1259,8 @@ mod tests {
         let destination = PathBuf::from(native_path(&["dest"]));
         let first_path = native_path(&["source1", "file.txt"]);
         let files = vec![
-            make_file_entry("file.txt", &first_path, 100),
-            make_file_entry("file.txt", &native_path(&["source2", "file.txt"]), 200),
+            make_file("file.txt", &first_path, 100),
+            make_file("file.txt", &native_path(&["source2", "file.txt"]), 200),
         ];
 
         // Even with force=true, duplicate names from search results should be skipped
@@ -1286,7 +1275,7 @@ mod tests {
     #[test]
     fn test_filter_files_already_at_destination_regardless_of_force() {
         let destination = PathBuf::from(native_path(&["dest"]));
-        let files = vec![make_file_entry("file1.txt", &native_path(&["dest", "file1.txt"]), 100)];
+        let files = vec![make_file("file1.txt", &native_path(&["dest", "file1.txt"]), 100)];
 
         // Even with force=true, files already at destination are counted, not skipped
         let result = filter_files(&files, &destination, true);
@@ -1302,10 +1291,10 @@ mod tests {
         let second_path = native_path(&["source1", "file2.txt"]);
         let third_path = native_path(&["other", "file3.txt"]);
         let files = vec![
-            make_file_entry("file1.txt", &native_path(&["dest", "file1.txt"]), 100),
-            make_file_entry("file2.txt", &second_path, 200),
-            make_file_entry("file2.txt", &native_path(&["source2", "file2.txt"]), 300),
-            make_file_entry("file3.txt", &third_path, 400),
+            make_file("file1.txt", &native_path(&["dest", "file1.txt"]), 100),
+            make_file("file2.txt", &second_path, 200),
+            make_file("file2.txt", &native_path(&["source2", "file2.txt"]), 300),
+            make_file("file3.txt", &third_path, 400),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1322,8 +1311,8 @@ mod tests {
     fn test_filter_files_all_at_destination() {
         let destination = PathBuf::from(native_path(&["dest"]));
         let files = vec![
-            make_file_entry("a.txt", &native_path(&["dest", "a.txt"]), 100),
-            make_file_entry("b.txt", &native_path(&["dest", "b.txt"]), 200),
+            make_file("a.txt", &native_path(&["dest", "a.txt"]), 100),
+            make_file("b.txt", &native_path(&["dest", "b.txt"]), 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1384,7 +1373,7 @@ mod tests {
         fs::write(&existing_file, "existing content").expect("failed to write test file");
 
         let source_path = native_path(&["other", "report.txt"]);
-        let files = vec![make_file_entry("report.txt", &source_path, 500)];
+        let files = vec![make_file("report.txt", &source_path, 500)];
 
         // Without force: file is skipped because it exists at destination
         let result = filter_files(&files, &destination, false);
@@ -1407,9 +1396,9 @@ mod tests {
         let destination = PathBuf::from(native_path(&["dest"]));
         let first_path = native_path(&["source1", "Report.TXT"]);
         let files = vec![
-            make_file_entry("Report.TXT", &first_path, 100),
-            make_file_entry("report.txt", &native_path(&["source2", "report.txt"]), 200),
-            make_file_entry("REPORT.txt", &native_path(&["source3", "REPORT.txt"]), 300),
+            make_file("Report.TXT", &first_path, 100),
+            make_file("report.txt", &native_path(&["source2", "report.txt"]), 200),
+            make_file("REPORT.txt", &native_path(&["source3", "REPORT.txt"]), 300),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1429,9 +1418,9 @@ mod tests {
         let destination = PathBuf::from(r"\\?\C:\dest");
         let files = vec![
             // Source file whose parent matches the destination when prefix is stripped
-            make_file_entry("file1.txt", r"C:\dest\file1.txt", 100),
+            make_file("file1.txt", r"C:\dest\file1.txt", 100),
             // Source file from a different directory
-            make_file_entry("file2.txt", r"C:\source\file2.txt", 200),
+            make_file("file2.txt", r"C:\source\file2.txt", 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1448,8 +1437,8 @@ mod tests {
         // Destination without prefix, source path with prefix
         let destination = PathBuf::from(r"C:\dest");
         let files = vec![
-            make_file_entry("file1.txt", r"\\?\C:\dest\file1.txt", 100),
-            make_file_entry("file2.txt", r"C:\source\file2.txt", 200),
+            make_file("file1.txt", r"\\?\C:\dest\file1.txt", 100),
+            make_file("file2.txt", r"C:\source\file2.txt", 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1476,9 +1465,9 @@ mod tests {
         let incoming_path = native_path(&["incoming", "data.bin"]);
         let files = vec![
             // This file IS in the destination directory
-            make_file_entry("data.bin", &dest_file_path, 100),
+            make_file("data.bin", &dest_file_path, 100),
             // This file has the same name but lives elsewhere
-            make_file_entry("data.bin", &incoming_path, 500),
+            make_file("data.bin", &incoming_path, 500),
         ];
 
         // With force=true:
@@ -1503,8 +1492,8 @@ mod tests {
 
         let dest_file_path = destination.join("data.bin").to_string_lossy().to_string();
         let files = vec![
-            make_file_entry("data.bin", &dest_file_path, 100),
-            make_file_entry("data.bin", &native_path(&["incoming", "data.bin"]), 500),
+            make_file("data.bin", &dest_file_path, 100),
+            make_file("data.bin", &native_path(&["incoming", "data.bin"]), 500),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1780,11 +1769,11 @@ mod tests {
         let first_readme_path = native_path(&["a", "readme.md"]);
         let other_path = native_path(&["e", "other.txt"]);
         let files = vec![
-            make_file_entry("readme.md", &first_readme_path, 10),
-            make_file_entry("README.MD", &native_path(&["b", "README.MD"]), 20),
-            make_file_entry("Readme.Md", &native_path(&["c", "Readme.Md"]), 30),
-            make_file_entry("ReadMe.md", &native_path(&["d", "ReadMe.md"]), 40),
-            make_file_entry("other.txt", &other_path, 50),
+            make_file("readme.md", &first_readme_path, 10),
+            make_file("README.MD", &native_path(&["b", "README.MD"]), 20),
+            make_file("Readme.Md", &native_path(&["c", "Readme.Md"]), 30),
+            make_file("ReadMe.md", &native_path(&["d", "ReadMe.md"]), 40),
+            make_file("other.txt", &other_path, 50),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -1807,9 +1796,9 @@ mod tests {
         // for moving (subject to force/exists checks).
         let destination = PathBuf::from(native_path(&["dest"]));
         let files = vec![
-            make_file_entry("shared.txt", &native_path(&["dest", "shared.txt"]), 100),
-            make_file_entry("shared.txt", &native_path(&["incoming", "shared.txt"]), 200),
-            make_file_entry("unique.txt", &native_path(&["incoming", "unique.txt"]), 300),
+            make_file("shared.txt", &native_path(&["dest", "shared.txt"]), 100),
+            make_file("shared.txt", &native_path(&["incoming", "shared.txt"]), 200),
+            make_file("unique.txt", &native_path(&["incoming", "unique.txt"]), 300),
         ];
 
         // Without force: incoming/shared.txt would be caught by exists-at-dest
@@ -1985,8 +1974,8 @@ mod tests {
         // Simulates what happens after normalize_destination resolves back to Z:
         let destination = PathBuf::from(r"Z:\DATA");
         let files = vec![
-            make_file_entry("file1.txt", r"Z:\DATA\file1.txt", 100),
-            make_file_entry("file2.txt", r"C:\source\file2.txt", 200),
+            make_file("file1.txt", r"Z:\DATA\file1.txt", 100),
+            make_file("file2.txt", r"C:\source\file2.txt", 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -2006,8 +1995,8 @@ mod tests {
         // Even if somehow \\?\UNC\ path reaches filter_files, the normalization handles it
         let destination = PathBuf::from(r"\\?\UNC\192.168.1.107\NAS\DATA");
         let files = vec![
-            make_file_entry("file1.txt", r"\\192.168.1.107\NAS\DATA\file1.txt", 100),
-            make_file_entry("file2.txt", r"C:\source\file2.txt", 200),
+            make_file("file1.txt", r"\\192.168.1.107\NAS\DATA\file1.txt", 100),
+            make_file("file2.txt", r"C:\source\file2.txt", 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -2025,8 +2014,8 @@ mod tests {
     fn test_filter_files_extended_prefix_on_both_sides() {
         let destination = PathBuf::from(r"\\?\C:\dest");
         let files = vec![
-            make_file_entry("file1.txt", r"\\?\C:\dest\file1.txt", 100),
-            make_file_entry("file2.txt", r"C:\dest\file2.txt", 200),
+            make_file("file1.txt", r"\\?\C:\dest\file1.txt", 100),
+            make_file("file2.txt", r"C:\dest\file2.txt", 200),
         ];
 
         let result = filter_files(&files, &destination, false);
@@ -2124,7 +2113,7 @@ mod tests {
 
         // File entry uses the plain path, destination uses the canonical form.
         // The string comparison will fail, but is_same_file should catch it.
-        let files = vec![make_file_entry("report.txt", &file_path.to_string_lossy(), 5)];
+        let files = vec![make_file("report.txt", &file_path.to_string_lossy(), 5)];
 
         let result = filter_files(&files, &canonical_dest, false);
 
@@ -2153,7 +2142,7 @@ mod tests {
         let source_file = source.join("report.txt");
         fs::write(&source_file, "source version").expect("failed to write source file");
 
-        let files = vec![make_file_entry("report.txt", &source_file.to_string_lossy(), 14)];
+        let files = vec![make_file("report.txt", &source_file.to_string_lossy(), 14)];
 
         let result = filter_files(&files, &dest, false);
 
@@ -2182,7 +2171,7 @@ mod tests {
         fs::write(&file_path, "important data").expect("failed to write file");
 
         let canonical_dest = dest.canonicalize().expect("failed to canonicalize");
-        let files = vec![make_file_entry("data.bin", &file_path.to_string_lossy(), 14)];
+        let files = vec![make_file("data.bin", &file_path.to_string_lossy(), 14)];
 
         // Even with force=true, same file should be detected and not moved
         let result = filter_files(&files, &canonical_dest, true);

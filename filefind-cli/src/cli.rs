@@ -785,46 +785,12 @@ fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
-
     use filefind::Database;
     use filefind::types::{FileEntry, IndexedVolume, VolumeType};
     use tempfile::tempdir;
 
     use super::*;
-    use crate::test_utils::native_path;
-
-    /// Helper to create a test file entry.
-    fn make_file(name: &str, path: &str, size: u64) -> FileEntry {
-        FileEntry {
-            id: None,
-            volume_id: 1,
-            parent_id: None,
-            name: name.to_string(),
-            full_path: path.to_string(),
-            is_directory: false,
-            size,
-            created_time: Some(SystemTime::now()),
-            modified_time: Some(SystemTime::now()),
-            mft_reference: None,
-        }
-    }
-
-    /// Helper to create a test directory entry.
-    fn make_dir(name: &str, path: &str) -> FileEntry {
-        FileEntry {
-            id: None,
-            volume_id: 1,
-            parent_id: None,
-            name: name.to_string(),
-            full_path: path.to_string(),
-            is_directory: true,
-            size: 0,
-            created_time: Some(SystemTime::now()),
-            modified_time: Some(SystemTime::now()),
-            mft_reference: None,
-        }
-    }
+    use crate::test_utils::{make_dir, make_file, native_path};
 
     /// Helper to create a test volume.
     fn make_volume(serial: &str, mount: &str) -> IndexedVolume {

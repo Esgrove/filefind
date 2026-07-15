@@ -254,29 +254,12 @@ pub fn count_files_under_directory(files: &[&FileEntry], dir_path: &str) -> usiz
 mod tests {
     use std::borrow::Cow;
     use std::fs;
-    use std::time::SystemTime;
 
     use filefind::FileEntry;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::test_utils::native_path;
-
-    /// Helper to create a test file entry.
-    fn make_file(name: &str, path: &str, size: u64) -> FileEntry {
-        FileEntry {
-            id: None,
-            volume_id: 1,
-            parent_id: None,
-            name: name.to_string(),
-            full_path: path.to_string(),
-            is_directory: false,
-            size,
-            created_time: Some(SystemTime::now()),
-            modified_time: Some(SystemTime::now()),
-            mft_reference: None,
-        }
-    }
+    use crate::test_utils::{make_file, native_path};
 
     // ── highlight_match ───────────────────────────────────────────
 
