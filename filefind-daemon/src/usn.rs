@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::{Result, bail};
 
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -60,9 +62,11 @@ mod reason_flags {
 }
 
 /// Size of the buffer for reading USN journal records.
+#[cfg_attr(not(windows), allow(dead_code))]
 const USN_BUFFER_SIZE: usize = 64 * 1024;
 
 /// File attribute flag for directories.
+#[cfg_attr(not(windows), allow(dead_code))]
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
 /// USN Journal monitor for tracking file system changes.
@@ -75,6 +79,7 @@ pub struct UsnMonitor {
     volume_handle: SendableHandle,
 
     /// Last processed USN.
+    #[cfg_attr(not(windows), allow(dead_code))]
     last_usn: i64,
 
     /// Journal ID to detect journal resets.
@@ -247,6 +252,7 @@ impl UsnMonitor {
     }
 
     /// Query current USN Journal information (non-Windows stub).
+    #[expect(clippy::unused_self, reason = "signature mirrors the Windows implementation")]
     #[cfg(not(windows))]
     pub fn query_journal(&self) -> Result<UsnJournalInfo> {
         bail!("USN Journal monitoring is only supported on Windows");
@@ -333,6 +339,11 @@ impl UsnMonitor {
     }
 
     /// Read changes from the USN Journal (non-Windows stub).
+    #[expect(
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        reason = "signature mirrors the Windows implementation"
+    )]
     #[cfg(not(windows))]
     pub fn read_changes(&mut self) -> Result<(Vec<UsnChange>, i64)> {
         bail!("USN Journal monitoring is only supported on Windows");
@@ -349,6 +360,7 @@ impl UsnMonitor {
     /// zero or would exceed the buffer.
     ///
     /// Returns the parsed changes and the next USN from the buffer header.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_usn_buffer(buffer: &[u8], bytes_returned: usize) -> (Vec<UsnChange>, i64) {
         let mut changes = Vec::new();
 
@@ -382,6 +394,7 @@ impl UsnMonitor {
     }
 
     /// Parse a USN record from raw bytes.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_usn_record(data: &[u8]) -> Option<UsnChange> {
         if data.len() < 60 {
             return None;
@@ -398,6 +411,7 @@ impl UsnMonitor {
     }
 
     /// Parse a `USN_RECORD_V2` structure.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_usn_record_v2(data: &[u8]) -> Option<UsnChange> {
         if data.len() < 60 {
             return None;
@@ -437,6 +451,7 @@ impl UsnMonitor {
     }
 
     /// Parse a `USN_RECORD_V3` structure.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_usn_record_v3(data: &[u8]) -> Option<UsnChange> {
         if data.len() < 76 {
             return None;
@@ -513,6 +528,7 @@ impl UsnMonitor {
 
     /// Get the current last USN value.
     #[cfg(test)]
+    #[cfg_attr(not(windows), allow(dead_code))]
     #[must_use]
     pub const fn get_last_usn(&self) -> i64 {
         self.last_usn

@@ -10,10 +10,14 @@
 //! - Does NOT work on network drives, even if they report as NTFS.
 
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::time::SystemTime;
 
-use anyhow::{Context, Result, bail};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use filefind::types::{FileEntry, IndexedVolume};
+#[cfg(windows)]
 use tracing::debug;
 
 #[cfg(windows)]
@@ -30,18 +34,22 @@ use windows::Win32::System::Ioctl::{FSCTL_ENUM_USN_DATA, FSCTL_GET_NTFS_VOLUME_D
 #[cfg(windows)]
 use windows::core::PCWSTR;
 
+#[cfg(windows)]
 use filefind::types::VolumeType;
 
 /// Size of the buffer for reading MFT records.
+#[cfg_attr(not(windows), allow(dead_code))]
 const MFT_BUFFER_SIZE: usize = 64 * 1024;
 
 /// Path patterns that should never be indexed.
+#[cfg_attr(not(windows), allow(dead_code))]
 const IGNORED_PATH_PATTERNS: &[&str] = &[
     "$Recycle", // Windows Recycle Bin
     "#Recycle", // NAS Recycle Bin
 ];
 
 /// File attribute flag for directories.
+#[cfg_attr(not(windows), allow(dead_code))]
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
 /// File attribute flag for hidden files.
@@ -51,6 +59,7 @@ const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
 /// MFT scanner for indexing NTFS volumes.
 pub struct MftScanner {
     /// Drive letter (e.g., "C").
+    #[cfg_attr(not(windows), allow(dead_code))]
     drive_letter: char,
 
     /// Volume handle.
@@ -168,12 +177,6 @@ impl MftScanner {
         Ok(fs_name == "NTFS")
     }
 
-    /// Check if a volume is NTFS formatted (non-Windows stub).
-    #[cfg(not(windows))]
-    const fn is_ntfs_volume(_drive_letter: char) -> Result<bool> {
-        Ok(false)
-    }
-
     /// Scan the MFT and return all file entries.
     ///
     /// # Errors
@@ -186,6 +189,7 @@ impl MftScanner {
 
     /// Scan the MFT (non-Windows stub).
     #[expect(dead_code, reason = "public API for full volume scanning")]
+    #[expect(clippy::unused_self, reason = "signature mirrors the Windows implementation")]
     #[cfg(not(windows))]
     pub fn scan(&self) -> Result<Vec<FileEntry>> {
         bail!("MFT scanning is only supported on Windows");
@@ -262,6 +266,7 @@ impl MftScanner {
     }
 
     /// Scan the MFT with path filters (non-Windows stub).
+    #[expect(clippy::unused_self, reason = "signature mirrors the Windows implementation")]
     #[cfg(not(windows))]
     pub fn scan_filtered(&self, _path_filters: &[String]) -> Result<Vec<FileEntry>> {
         bail!("MFT scanning is only supported on Windows");
@@ -369,6 +374,7 @@ impl MftScanner {
     /// are filtered out automatically.
     ///
     /// Returns the parsed entries and the next file reference from the buffer header.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_mft_buffer(buffer: &[u8], bytes_returned: usize) -> (Vec<MftEntry>, u64) {
         let mut entries = Vec::new();
 
@@ -404,6 +410,7 @@ impl MftScanner {
     }
 
     /// Parse a USN record from raw bytes.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_usn_record(data: &[u8]) -> Option<MftEntry> {
         if data.len() < 60 {
             return None;
@@ -420,6 +427,7 @@ impl MftScanner {
     }
 
     /// Parse a `USN_RECORD_V2` structure.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_usn_record_v2(data: &[u8]) -> Option<MftEntry> {
         if data.len() < 60 {
             return None;
@@ -456,6 +464,7 @@ impl MftScanner {
     }
 
     /// Parse a `USN_RECORD_V3` structure.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_usn_record_v3(data: &[u8]) -> Option<MftEntry> {
         if data.len() < 76 {
             return None;
@@ -569,6 +578,7 @@ impl MftScanner {
     }
 
     /// Build the full path for an entry by walking up the directory tree.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn build_full_path(&self, entry: &MftEntry, ref_map: &HashMap<u64, &MftEntry>, root_ref: u64) -> String {
         const MAX_DEPTH: usize = 256;
 
@@ -636,6 +646,7 @@ impl MftScanner {
     }
 
     /// Get volume information (non-Windows stub).
+    #[expect(clippy::unused_self, reason = "signature mirrors the Windows implementation")]
     #[cfg(not(windows))]
     pub fn get_volume_info(&self) -> Result<IndexedVolume> {
         bail!("MFT scanning is only supported on Windows");

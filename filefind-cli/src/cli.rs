@@ -785,45 +785,12 @@ fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
-
     use filefind::Database;
     use filefind::types::{FileEntry, IndexedVolume, VolumeType};
     use tempfile::tempdir;
 
     use super::*;
-
-    /// Helper to create a test file entry.
-    fn make_file(name: &str, path: &str, size: u64) -> FileEntry {
-        FileEntry {
-            id: None,
-            volume_id: 1,
-            parent_id: None,
-            name: name.to_string(),
-            full_path: path.to_string(),
-            is_directory: false,
-            size,
-            created_time: Some(SystemTime::now()),
-            modified_time: Some(SystemTime::now()),
-            mft_reference: None,
-        }
-    }
-
-    /// Helper to create a test directory entry.
-    fn make_dir(name: &str, path: &str) -> FileEntry {
-        FileEntry {
-            id: None,
-            volume_id: 1,
-            parent_id: None,
-            name: name.to_string(),
-            full_path: path.to_string(),
-            is_directory: true,
-            size: 0,
-            created_time: Some(SystemTime::now()),
-            modified_time: Some(SystemTime::now()),
-            mft_reference: None,
-        }
-    }
+    use crate::test_utils::{make_dir, make_file, native_path};
 
     /// Helper to create a test volume.
     fn make_volume(serial: &str, mount: &str) -> IndexedVolume {
@@ -1702,13 +1669,19 @@ mod tests {
         };
         let dir_owned = [make_dir("testdir", &temp_path)];
         let dirs: Vec<&FileEntry> = dir_owned.iter().collect();
-        let file_owned = [make_file("inner.txt", &format!("{temp_path}\\inner.txt"), 512)];
+        let inner_path = temp.path().join("inner.txt");
+        let expected_parent = inner_path
+            .parent()
+            .expect("Inner file should have a parent")
+            .to_string_lossy()
+            .to_string();
+        let file_owned = [make_file("inner.txt", &inner_path.to_string_lossy(), 512)];
         let files: Vec<&FileEntry> = file_owned.iter().collect();
 
         // Verify directory size calculation picks up files under the dir
         let dir_sizes = utils::calculate_directory_sizes(&files);
         assert_eq!(
-            *dir_sizes.get(&temp_path).expect("Should have dir size"),
+            *dir_sizes.get(&expected_parent).expect("Should have dir size"),
             512,
             "Dir size should equal the file's size"
         );
@@ -1721,9 +1694,11 @@ mod tests {
     fn test_display_grouped_groups_files_by_parent() {
         let database = setup_database();
         let config = search_config(vec!["file"]);
-        let entry1 = make_file("file1.txt", "C:\\DirA\\file1.txt", 100);
-        let entry2 = make_file("file2.txt", "C:\\DirA\\file2.txt", 200);
-        let entry3 = make_file("file3.txt", "C:\\DirB\\file3.txt", 300);
+        let parent_a = native_path(&["DirA"]);
+        let parent_b = native_path(&["DirB"]);
+        let entry1 = make_file("file1.txt", &native_path(&["DirA", "file1.txt"]), 100);
+        let entry2 = make_file("file2.txt", &native_path(&["DirA", "file2.txt"]), 200);
+        let entry3 = make_file("file3.txt", &native_path(&["DirB", "file3.txt"]), 300);
         let files_owned = [entry1, entry2, entry3];
         let files: Vec<&FileEntry> = files_owned.iter().collect();
         let dirs: Vec<&FileEntry> = Vec::new();
@@ -1738,8 +1713,8 @@ mod tests {
             files_by_dir.entry(parent).or_default().push(file);
         }
         assert_eq!(files_by_dir.len(), 2, "Should group into 2 directories");
-        assert_eq!(files_by_dir["C:\\DirA"].len(), 2);
-        assert_eq!(files_by_dir["C:\\DirB"].len(), 1);
+        assert_eq!(files_by_dir[&parent_a].len(), 2);
+        assert_eq!(files_by_dir[&parent_b].len(), 1);
 
         display_grouped(&dirs, &files, &config, &["file"], &database);
     }

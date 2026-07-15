@@ -502,6 +502,7 @@ dependencies = [
  "ctrlc",
  "filefind",
  "indicatif",
+ "libc",
  "regex",
  "tempfile",
  "windows-sys 0.61.2",

@@ -3,6 +3,8 @@
 mod cli;
 mod config;
 mod mover;
+#[cfg(test)]
+mod test_utils;
 mod utils;
 
 use std::path::PathBuf;
