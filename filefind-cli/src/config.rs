@@ -12,6 +12,7 @@ use regex::Regex;
 use filefind::config::{OutputFormat, UserConfig};
 use filefind::{build_path_mappings, resolve_unc_to_mapped_path};
 
+use crate::hyperlink::Hyperlinker;
 use crate::{Command, FileFindCli, OutputFormatArg, SortBy};
 
 /// Combined configuration from user config and CLI arguments.
@@ -67,6 +68,9 @@ pub struct CliConfig {
 
     /// Force overwrite existing files at the move destination.
     pub force_overwrite: bool,
+
+    /// Emits clickable terminal hyperlinks for result paths.
+    pub hyperlinks: Hyperlinker,
 }
 
 impl CliConfig {
@@ -117,6 +121,9 @@ impl CliConfig {
         // Case sensitivity: CLI arg overrides user config
         let case_sensitive = args.case || user_config.cli.case_sensitive;
 
+        // Hyperlink mode: CLI arg overrides user config
+        let hyperlink_mode = args.links.unwrap_or(user_config.cli.hyperlinks);
+
         Ok(Self {
             command: args.command,
             patterns,
@@ -134,6 +141,7 @@ impl CliConfig {
             path_mappings: build_path_mappings(&[], &user_config.daemon.path_mappings),
             move_to: args.move_to,
             force_overwrite: args.force,
+            hyperlinks: Hyperlinker::new(hyperlink_mode, &user_config.cli.hyperlink_scheme),
         })
     }
 
@@ -236,6 +244,8 @@ impl From<OutputFormatArg> for OutputFormat {
 
 #[cfg(test)]
 mod tests {
+    use filefind::config::HyperlinkMode;
+
     use super::*;
     use crate::FileFindCli;
 
@@ -255,6 +265,7 @@ mod tests {
             list: false,
             name: false,
             sort: Some(SortBy::Name),
+            links: Some(HyperlinkMode::Never),
             info: false,
             verbose: false,
             exact: false,
@@ -638,6 +649,24 @@ mod tests {
         assert_eq!(config.patterns, vec![r"config\.json", r"settings"]);
         assert!(config.match_all);
         assert!(config.regex);
+    }
+
+    // ── Hyperlinks ────────────────────────────────────────────────
+
+    #[test]
+    fn test_from_args_links_never_disables_hyperlinks() {
+        let mut args = args_with_patterns(vec!["test"]);
+        args.links = Some(HyperlinkMode::Never);
+        let config = CliConfig::from_args(args).expect("Failed to build config");
+        assert!(!config.hyperlinks.is_enabled());
+    }
+
+    #[test]
+    fn test_from_args_links_always_enables_hyperlinks() {
+        let mut args = args_with_patterns(vec!["test"]);
+        args.links = Some(HyperlinkMode::Always);
+        let config = CliConfig::from_args(args).expect("Failed to build config");
+        assert!(config.hyperlinks.is_enabled());
     }
 
     // ── From<OutputFormatArg> for OutputFormat ────────────────────

@@ -16,6 +16,7 @@ Indexes millions of files in seconds and keeps the database updated in real-time
 - **Smart pattern expansion**: Automatically searches for "some.name", "some name", and "somename"
 - **Background daemon**: Runs quietly, keeping the index up-to-date
 - **File moving**: Move matching files to a directory with progress, disk space checks, and graceful abort
+- **Clickable results**: Result paths are terminal hyperlinks that open in the default application
 
 ## Components
 
@@ -131,6 +132,12 @@ filefind -o info "*.mp4"
 # Limit files shown per directory
 filefind -n 10 "*.txt"
 
+# Force clickable hyperlinks even when the output is piped or redirected
+filefind -L always "*.mp4"
+
+# Disable clickable hyperlinks
+filefind -L never "*.mp4"
+
 # Show index statistics
 filefind stats
 
@@ -221,6 +228,12 @@ case_sensitive = false
 
 # Show hidden files in results
 show_hidden = false
+
+# Emit clickable terminal hyperlinks for result paths: "auto", "always", or "never"
+hyperlinks = "auto"
+
+# URI scheme used for terminal hyperlinks
+hyperlink_scheme = "file"
 ```
 
 ## How it works
@@ -248,6 +261,19 @@ filefind falls back to traditional directory scanning with file system watchers 
 When searching without glob or regex mode, filefind automatically expands dot-separated patterns.
 For example, searching for "some.name" will also find "some name" and "somename".
 This helps match files regardless of naming convention. Use `-e` (exact) mode to disable this.
+
+### Clickable Results
+
+Result paths are wrapped in OSC 8 terminal hyperlinks.
+Ctrl+Click (Windows Terminal, Warp) or Cmd+Click (iTerm2) opens the file with the application
+the operating system associates with its type, and directories open in the file manager.
+To always open videos in VLC, for example, associate the video file types with VLC in the
+operating system, or register a custom protocol handler and set `hyperlink_scheme` to it.
+
+Links are only emitted when the output goes to a terminal that is known to support them,
+so piped and redirected output stays free of escape sequences.
+Use `-L always` to force links (for example when paging with `less -R`)
+and `-L never` when a terminal or multiplexer does not handle them.
 
 ## Requirements
 

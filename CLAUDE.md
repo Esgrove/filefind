@@ -60,6 +60,7 @@ cargo test -p filefind
     - `src/main.rs` - CLI entry point and search logic
     - `src/cli.rs` - Search execution, result display, and move dispatch
     - `src/config.rs` - CLI configuration merging (user config + CLI args)
+    - `src/hyperlink.rs` - OSC 8 terminal hyperlinks for result paths
     - `src/mover.rs` - File move operations with progress, abort handling, and disk space checks
 - `filefind-tray/` - System tray application
     - `src/main.rs` - Tray app entry point
@@ -130,6 +131,12 @@ Remember to update the example config file when adding new config options.
 - `color` - Enable colored output
 - `case_sensitive` - Case-sensitive search by default
 - `show_hidden` - Show hidden files in results
+- `hyperlinks` - Emit OSC 8 terminal hyperlinks: "auto", "always", or "never"
+- `hyperlink_scheme` - URI scheme used for hyperlinks (default "file")
+
+### CLI Display Options
+
+- `--links <MODE>` (`-L`) - Terminal hyperlink mode: auto, always, or never
 
 ### CLI Move Options
 
@@ -235,6 +242,28 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
   Supports `--drive` filtering,
   `--limit` to cap the number of groups shown,
   and `--verbose` for stats.
+
+### CLI Terminal Hyperlinks
+
+- Result paths are wrapped in OSC 8 escape sequences so terminals render them as links.
+  Ctrl+Click (Windows Terminal, Warp) or Cmd+Click (iTerm2) opens the path with the
+  application the operating system associates with it.
+- `Hyperlinker` in `filefind-cli/src/hyperlink.rs` owns the mode and URI scheme and is
+  stored on `CliConfig`. `wrap()` returns the text borrowed and unchanged when links are
+  disabled, so display code can print its result unconditionally.
+- Link text may already contain ANSI color codes; they nest inside the link and the
+  sequences are zero-width, so `info` format columns stay aligned.
+- `auto` mode (default) requires stdout to be a terminal _and_ the terminal to be known to
+  support OSC 8 (`WT_SESSION`, `TERM_PROGRAM`, `KONSOLE_VERSION`, `DOMTERM`, kitty via
+  `TERM`, or VTE >= 0.50). This keeps piped and redirected output free of escape sequences.
+  `TerminalEnvironment` holds the relevant variables so detection can be unit tested
+  without mutating the process environment.
+- Paths are converted to URIs: backslashes become forward slashes, unsafe bytes are
+  percent-encoded, UNC paths become `file://server/share/...`, and drive paths become
+  `file:///C:/...`. Links use the mapped display path, so `path_mappings` are respected.
+- Missing directories are never linked because they no longer exist on disk.
+- A non-`file` `hyperlink_scheme` emits `<scheme>://<path>` and requires a protocol handler
+  registered with the operating system.
 
 ### System Tray Application
 

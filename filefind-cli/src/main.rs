@@ -2,6 +2,7 @@
 
 mod cli;
 mod config;
+mod hyperlink;
 mod mover;
 #[cfg(test)]
 mod test_utils;
@@ -14,6 +15,7 @@ use anyhow::bail;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
+use filefind::config::HyperlinkMode;
 use filefind::database::Database;
 use filefind::{generate_shell_completion, print_error};
 
@@ -87,6 +89,10 @@ pub struct FileFindCli {
     /// Sort results by this field.
     #[arg(short = 's', long, value_enum)]
     pub sort: Option<SortBy>,
+
+    /// Emit clickable terminal hyperlinks for result paths
+    #[arg(short = 'L', long = "links", value_enum, name = "MODE")]
+    pub links: Option<HyperlinkMode>,
 
     /// Info output with file sizes (shortcut for --output info)
     #[arg(short = 'i', long, conflicts_with_all = ["output", "list", "name"])]
@@ -200,7 +206,9 @@ fn main() -> Result<()> {
     match &config.command {
         Some(Command::Stats) => cli::show_stats(&database),
         Some(Command::Volumes { sort }) => cli::list_volumes(&database, sort.unwrap_or(VolumeSortBy::Name)),
-        Some(Command::Duplicates { drive, limit }) => cli::show_duplicates(&database, drive, *limit, config.verbose),
+        Some(Command::Duplicates { drive, limit }) => {
+            cli::show_duplicates(&database, drive, *limit, config.verbose, &config.hyperlinks)
+        }
         Some(Command::Completion { .. }) => unreachable!("Handled above"),
         None => cli::run_search(&config, &database),
     }
@@ -433,6 +441,37 @@ mod tests {
     fn test_sort_default_is_none() {
         let cli = parse(&["pattern"]);
         assert!(cli.sort.is_none());
+    }
+
+    // ── Hyperlinks ────────────────────────────────────────────────
+
+    #[test]
+    fn test_links_mode_long() {
+        let cli = parse(&["--links", "always", "pattern"]);
+        assert!(matches!(cli.links, Some(HyperlinkMode::Always)));
+    }
+
+    #[test]
+    fn test_links_mode_short() {
+        let cli = parse(&["-L", "never", "pattern"]);
+        assert!(matches!(cli.links, Some(HyperlinkMode::Never)));
+    }
+
+    #[test]
+    fn test_links_mode_auto() {
+        let cli = parse(&["--links", "auto", "pattern"]);
+        assert!(matches!(cli.links, Some(HyperlinkMode::Auto)));
+    }
+
+    #[test]
+    fn test_links_default_is_none() {
+        let cli = parse(&["pattern"]);
+        assert!(cli.links.is_none());
+    }
+
+    #[test]
+    fn test_invalid_links_mode() {
+        parse_err(&["--links", "sometimes", "pattern"]);
     }
 
     // ── Drive filter ──────────────────────────────────────────────

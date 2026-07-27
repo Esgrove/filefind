@@ -125,6 +125,18 @@ pub struct CliConfig {
     /// Show hidden files in results.
     #[serde(default)]
     pub show_hidden: bool,
+
+    /// Emit OSC 8 terminal hyperlinks so result paths can be opened with a modifier click.
+    #[serde(default)]
+    pub hyperlinks: HyperlinkMode,
+
+    /// URI scheme used for terminal hyperlinks.
+    ///
+    /// `file` (the default) lets the operating system open each path with its
+    /// registered default application. Any other value is emitted verbatim as
+    /// `<scheme>://<path>`, which allows routing clicks to a custom protocol handler.
+    #[serde(default = "default_hyperlink_scheme")]
+    pub hyperlink_scheme: String,
 }
 
 /// A manual mapping from a UNC path prefix to a mapped drive letter.
@@ -151,6 +163,19 @@ pub enum OutputFormat {
     Grouped,
     /// Detailed info with size.
     Info,
+}
+
+/// When to emit OSC 8 terminal hyperlinks for result paths.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum HyperlinkMode {
+    /// Emit hyperlinks only when the output goes to a terminal known to support OSC 8 (default).
+    #[default]
+    Auto,
+    /// Always emit hyperlinks, even when the output is redirected.
+    Always,
+    /// Never emit hyperlinks.
+    Never,
 }
 
 /// Log level for the daemon.
@@ -312,6 +337,8 @@ impl Default for CliConfig {
             color: true,
             case_sensitive: false,
             show_hidden: false,
+            hyperlinks: HyperlinkMode::default(),
+            hyperlink_scheme: default_hyperlink_scheme(),
         }
     }
 }
@@ -341,6 +368,29 @@ impl std::str::FromStr for OutputFormat {
     }
 }
 
+impl std::fmt::Display for HyperlinkMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Always => write!(f, "always"),
+            Self::Never => write!(f, "never"),
+        }
+    }
+}
+
+impl std::str::FromStr for HyperlinkMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "never" => Ok(Self::Never),
+            _ => Err(format!("Unknown hyperlink mode: {s}")),
+        }
+    }
+}
+
 const fn default_scan_interval_seconds() -> u64 {
     3600
 }
@@ -355,6 +405,10 @@ const fn default_max_results() -> usize {
 
 const fn default_true() -> bool {
     true
+}
+
+fn default_hyperlink_scheme() -> String {
+    String::from("file")
 }
 
 #[cfg(test)]
@@ -401,6 +455,36 @@ mod tests {
         assert!(config.color);
         assert!(!config.case_sensitive);
         assert!(!config.show_hidden);
+        assert_eq!(config.hyperlinks, HyperlinkMode::Auto);
+        assert_eq!(config.hyperlink_scheme, "file");
+    }
+
+    #[test]
+    fn test_hyperlink_mode_display() {
+        assert_eq!(HyperlinkMode::Auto.to_string(), "auto");
+        assert_eq!(HyperlinkMode::Always.to_string(), "always");
+        assert_eq!(HyperlinkMode::Never.to_string(), "never");
+    }
+
+    #[test]
+    fn test_hyperlink_mode_from_str() {
+        assert_eq!("auto".parse::<HyperlinkMode>(), Ok(HyperlinkMode::Auto));
+        assert_eq!("ALWAYS".parse::<HyperlinkMode>(), Ok(HyperlinkMode::Always));
+        assert_eq!("Never".parse::<HyperlinkMode>(), Ok(HyperlinkMode::Never));
+        assert!("sometimes".parse::<HyperlinkMode>().is_err());
+    }
+
+    #[test]
+    fn test_load_config_with_hyperlink_settings() {
+        let mut temp_file = NamedTempFile::new().expect("create temp file");
+
+        let config_content = "[cli]\nhyperlinks = \"always\"\nhyperlink_scheme = \"vlc\"\n";
+        temp_file.write_all(config_content.as_bytes()).expect("write config");
+
+        let config = UserConfig::load_from_path(Some(temp_file.path()));
+
+        assert_eq!(config.cli.hyperlinks, HyperlinkMode::Always);
+        assert_eq!(config.cli.hyperlink_scheme, "vlc");
     }
 
     #[test]

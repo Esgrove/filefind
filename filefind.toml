@@ -78,3 +78,17 @@ exclude_patterns = ["*.tmp", "~$*", "Thumbs.db", "*.parts"]
 
 # Show hidden files in results
 # show_hidden = false
+
+# Emit clickable terminal hyperlinks (OSC 8) for result paths:
+#   "auto"   - only when writing to a terminal known to support them (default)
+#   "always" - always, even when the output is redirected or piped
+#   "never"  - never
+# Ctrl+Click (Windows Terminal, Warp) or Cmd+Click (iTerm2) opens the path
+# with the application the operating system associates with it.
+# hyperlinks = "auto"
+
+# URI scheme used for terminal hyperlinks.
+# "file" (default) hands the path to the default application for its type.
+# Any other value is emitted as "<scheme>://<path>" and requires a matching
+# protocol handler to be registered with the operating system.
+# hyperlink_scheme = "file"

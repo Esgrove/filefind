@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -9,12 +10,10 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use filefind::config::OutputFormat;
 use filefind::types::FileEntry;
-use filefind::{
-    Database, IndexedVolume, format_number, format_size, print_bold_magenta, print_bold_red, print_bold_yellow,
-    print_error,
-};
+use filefind::{Database, IndexedVolume, format_number, format_size, print_bold_magenta, print_bold_red, print_error};
 
 use crate::config::CliConfig;
+use crate::hyperlink::Hyperlinker;
 use crate::mover;
 use crate::{SortBy, VolumeSortBy, utils};
 
@@ -220,7 +219,13 @@ pub fn show_stats(database: &Database) -> Result<()> {
 /// Queries the database for all non-directory files that share a stem.
 /// Displays each group with the stem as a header.
 /// Lists the full paths underneath each header.
-pub fn show_duplicates(database: &Database, drives: &[String], limit: Option<usize>, verbose: bool) -> Result<()> {
+pub fn show_duplicates(
+    database: &Database,
+    drives: &[String],
+    limit: Option<usize>,
+    verbose: bool,
+    hyperlinks: &Hyperlinker,
+) -> Result<()> {
     let start_time = Instant::now();
 
     let progress_bar = duplicate_progress_bar();
@@ -279,7 +284,11 @@ pub fn show_duplicates(database: &Database, drives: &[String], limit: Option<usi
         }
         print_bold_magenta!("{} ({})", stem, files.len());
         for file in files {
-            println!("  {:>10}  {}", format_size(file.size), file.full_path);
+            println!(
+                "  {:>10}  {}",
+                format_size(file.size),
+                hyperlinks.wrap(&file.full_path, &file.full_path)
+            );
         }
     }
 
@@ -331,7 +340,8 @@ fn display_grouped_output(
     if config.files_only {
         // Files only mode: show full paths
         for file in files {
-            println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
+            let text = utils::highlight_match(&file.full_path, highlight_patterns);
+            println!("{}", config.hyperlinks.wrap(&file.full_path, &text));
         }
     } else if config.directories_only {
         // Dirs only mode: show full path with file count
@@ -345,18 +355,19 @@ fn display_grouped_output(
             }
 
             let file_count = utils::count_files_under_directory(files, &directory.full_path);
-            if file_count > 0 {
-                println!(
+            let text = if file_count > 0 {
+                format!(
                     "{} ({file_count})",
                     utils::highlight_match(&directory.full_path, highlight_patterns)
-                );
+                )
             } else if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Truly empty folder on disk: print in bold yellow (no highlight to avoid mixed colors)
-                print_bold_yellow!("{} (empty)", &directory.full_path);
+                format!("{} (empty)", directory.full_path).bold().yellow().to_string()
             } else {
                 // Directory has files but none match the search: print in magenta (no highlight to avoid mixed colors)
-                print_bold_magenta!("{}", &directory.full_path);
-            }
+                directory.full_path.bold().magenta().to_string()
+            };
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &text));
         }
     } else {
         // Normal mode: group files under directories
@@ -395,20 +406,27 @@ fn display_grouped(
 
         let file_count = utils::count_files_under_directory(files, &directory.full_path);
         if let Some(dir_files) = files_by_dir.get(&directory.full_path) {
-            print_bold_magenta!("{} ({file_count})", &directory.full_path);
+            let header = format!("{} ({file_count})", directory.full_path)
+                .bold()
+                .magenta()
+                .to_string();
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &header));
             let total_files = dir_files.len();
             for file in dir_files.iter().take(config.files_per_dir) {
-                println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
+                let text = utils::highlight_match(&file.name, highlight_patterns);
+                println!("  {}", config.hyperlinks.wrap(&file.full_path, &text));
             }
             if total_files > config.files_per_dir {
                 println!("  {} ({})", "...".dimmed(), total_files - config.files_per_dir);
             }
         } else if utils::is_directory_empty_on_disk(&directory.full_path) {
             // Truly empty folder on disk: print in bold yellow
-            print_bold_yellow!("{} (empty)", &directory.full_path);
+            let header = format!("{} (empty)", directory.full_path).bold().yellow().to_string();
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &header));
         } else {
             // Directory has files but none match the search: print in magenta
-            print_bold_magenta(&directory.full_path);
+            let header = directory.full_path.bold().magenta().to_string();
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &header));
         }
         println!();
     }
@@ -422,9 +440,11 @@ fn display_grouped(
     for dir_path in other_dirs {
         if let Some(dir_files) = files_by_dir.get(dir_path) {
             let file_count = dir_files.len();
-            print_bold_magenta!("{dir_path} ({file_count})");
+            let header = format!("{dir_path} ({file_count})").bold().magenta().to_string();
+            println!("{}", config.hyperlinks.wrap(dir_path, &header));
             for file in dir_files.iter().take(config.files_per_dir) {
-                println!("  {}", utils::highlight_match(&file.name, highlight_patterns));
+                let text = utils::highlight_match(&file.name, highlight_patterns);
+                println!("  {}", config.hyperlinks.wrap(&file.full_path, &text));
             }
             if file_count > config.files_per_dir {
                 println!("  {} ({})", "...".dimmed(), file_count - config.files_per_dir);
@@ -446,7 +466,8 @@ fn display_name(
 ) {
     if config.files_only {
         for file in files {
-            println!("{}", utils::highlight_match(&file.name, highlight_patterns));
+            let text = utils::highlight_match(&file.name, highlight_patterns);
+            println!("{}", config.hyperlinks.wrap(&file.full_path, &text));
         }
     } else if config.directories_only {
         for directory in directories {
@@ -456,11 +477,12 @@ fn display_name(
                 continue;
             }
 
-            if utils::is_directory_empty_on_disk(&directory.full_path) {
-                println!("{}", directory.name.yellow());
+            let text = if utils::is_directory_empty_on_disk(&directory.full_path) {
+                directory.name.yellow().to_string()
             } else {
-                println!("{}", utils::highlight_match(&directory.name, highlight_patterns));
-            }
+                utils::highlight_match(&directory.name, highlight_patterns).into_owned()
+            };
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &text));
         }
     } else {
         for directory in directories {
@@ -470,14 +492,16 @@ fn display_name(
                 continue;
             }
 
-            if utils::is_directory_empty_on_disk(&directory.full_path) {
-                println!("{}", directory.name.yellow());
+            let text = if utils::is_directory_empty_on_disk(&directory.full_path) {
+                directory.name.yellow().to_string()
             } else {
-                println!("{}", directory.name.cyan());
-            }
+                directory.name.cyan().to_string()
+            };
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &text));
         }
         for file in files {
-            println!("{}", utils::highlight_match(&file.name, highlight_patterns));
+            let text = utils::highlight_match(&file.name, highlight_patterns);
+            println!("{}", config.hyperlinks.wrap(&file.full_path, &text));
         }
     }
 }
@@ -492,7 +516,8 @@ fn display_list(
 ) {
     if config.files_only {
         for file in files {
-            println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
+            let text = utils::highlight_match(&file.full_path, highlight_patterns);
+            println!("{}", config.hyperlinks.wrap(&file.full_path, &text));
         }
     } else if config.directories_only {
         for directory in directories {
@@ -504,12 +529,13 @@ fn display_list(
                 continue;
             }
 
-            if utils::is_directory_empty_on_disk(&directory.full_path) {
+            let text = if utils::is_directory_empty_on_disk(&directory.full_path) {
                 // Empty folder: print in yellow (no highlight to avoid mixed colors)
-                println!("{}", directory.full_path.yellow());
+                directory.full_path.yellow().to_string()
             } else {
-                println!("{}", utils::highlight_match(&directory.full_path, highlight_patterns));
-            }
+                utils::highlight_match(&directory.full_path, highlight_patterns).into_owned()
+            };
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &text));
         }
     } else {
         // Show directories first, then files (both already sorted by caller)
@@ -522,14 +548,16 @@ fn display_list(
                 continue;
             }
 
-            if utils::is_directory_empty_on_disk(&directory.full_path) {
-                println!("{}", directory.full_path.yellow());
+            let text = if utils::is_directory_empty_on_disk(&directory.full_path) {
+                directory.full_path.yellow().to_string()
             } else {
-                println!("{}", directory.full_path.cyan());
-            }
+                directory.full_path.cyan().to_string()
+            };
+            println!("{}", config.hyperlinks.wrap(&directory.full_path, &text));
         }
         for file in files {
-            println!("{}", utils::highlight_match(&file.full_path, highlight_patterns));
+            let text = utils::highlight_match(&file.full_path, highlight_patterns);
+            println!("{}", config.hyperlinks.wrap(&file.full_path, &text));
         }
     }
 }
@@ -563,7 +591,12 @@ fn display_info(
 
         for directory in sorted_dirs {
             if !utils::check_directory_exists(&directory.full_path) {
-                print_entry_info(directory, highlight_patterns, EntryStatus::MissingDirectory);
+                print_entry_info(
+                    directory,
+                    highlight_patterns,
+                    EntryStatus::MissingDirectory,
+                    &config.hyperlinks,
+                );
                 delete_missing_directory(database, &directory.full_path);
                 continue;
             }
@@ -575,7 +608,7 @@ fn display_info(
             } else {
                 EntryStatus::Directory { size, file_count }
             };
-            print_entry_info(directory, highlight_patterns, status);
+            print_entry_info(directory, highlight_patterns, status, &config.hyperlinks);
         }
     }
     if !config.directories_only {
@@ -587,7 +620,7 @@ fn display_info(
             println!("────────────────────────────────────────────────────────────────────");
         }
         for file in files {
-            print_entry_info(file, highlight_patterns, EntryStatus::File);
+            print_entry_info(file, highlight_patterns, EntryStatus::File, &config.hyperlinks);
         }
     }
 }
@@ -654,7 +687,8 @@ fn filter_by_drives(results: Vec<FileEntry>, drives: &[String]) -> Vec<FileEntry
 ///
 /// For directories, the status includes the calculated size and file count.
 /// Empty directories are printed in yellow, missing directories in red.
-fn print_entry_info(entry: &FileEntry, highlight_patterns: &[&str], status: EntryStatus) {
+/// Existing entries are wrapped in a terminal hyperlink when hyperlinks are enabled.
+fn print_entry_info(entry: &FileEntry, highlight_patterns: &[&str], status: EntryStatus, hyperlinks: &Hyperlinker) {
     let (size_str, count_str, path_display) = match status {
         EntryStatus::File => (
             format!("{:>10}", format_size(entry.size)),
@@ -679,6 +713,13 @@ fn print_entry_info(entry: &FileEntry, highlight_patterns: &[&str], status: Entr
             format!("{:>8}", ""),
             entry.full_path.red().to_string(),
         ),
+    };
+
+    // Missing entries cannot be opened, so they are never linked
+    let path_display = if matches!(status, EntryStatus::MissingDirectory) {
+        Cow::Borrowed(path_display.as_str())
+    } else {
+        hyperlinks.wrap(&entry.full_path, &path_display)
     };
 
     println!("{size_str}{count_str}  {path_display}");
@@ -786,6 +827,7 @@ fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<
 #[cfg(test)]
 mod tests {
     use filefind::Database;
+    use filefind::config::HyperlinkMode;
     use filefind::types::{FileEntry, IndexedVolume, VolumeType};
     use tempfile::tempdir;
 
@@ -870,6 +912,7 @@ mod tests {
             path_mappings: HashMap::new(),
             move_to: None,
             force_overwrite: false,
+            hyperlinks: Hyperlinker::disabled(),
         }
     }
 
@@ -1318,7 +1361,7 @@ mod tests {
         assert_eq!(entry.size, 1024);
         assert!(!entry.is_directory);
         // Calling should not panic and exercises the File arm
-        print_entry_info(&entry, &["test"], status);
+        print_entry_info(&entry, &["test"], status, &Hyperlinker::disabled());
     }
 
     #[test]
@@ -1334,7 +1377,7 @@ mod tests {
             assert_eq!(size, Some(4096));
             assert_eq!(file_count, 3);
         }
-        print_entry_info(&entry, &[], status);
+        print_entry_info(&entry, &[], status, &Hyperlinker::disabled());
     }
 
     #[test]
@@ -1348,7 +1391,7 @@ mod tests {
             assert!(size.is_none(), "Should have no size to display as '-'");
             assert_eq!(file_count, 0, "Should show 0 file count");
         }
-        print_entry_info(&entry, &[], status);
+        print_entry_info(&entry, &[], status, &Hyperlinker::disabled());
     }
 
     #[test]
@@ -1356,28 +1399,28 @@ mod tests {
         let entry = make_dir("empty", "C:\\empty");
         assert!(entry.is_directory);
         assert_eq!(entry.size, 0);
-        print_entry_info(&entry, &[], EntryStatus::EmptyDirectory);
+        print_entry_info(&entry, &[], EntryStatus::EmptyDirectory, &Hyperlinker::disabled());
     }
 
     #[test]
     fn test_print_entry_info_missing_directory() {
         let entry = make_dir("gone", "C:\\gone");
         assert!(entry.is_directory);
-        print_entry_info(&entry, &[], EntryStatus::MissingDirectory);
+        print_entry_info(&entry, &[], EntryStatus::MissingDirectory, &Hyperlinker::disabled());
     }
 
     #[test]
     fn test_print_entry_info_zero_size_file() {
         let entry = make_file("test.txt", "C:\\test.txt", 0);
         assert_eq!(entry.size, 0, "Zero-size file should display 0 bytes");
-        print_entry_info(&entry, &[], EntryStatus::File);
+        print_entry_info(&entry, &[], EntryStatus::File, &Hyperlinker::disabled());
     }
 
     #[test]
     fn test_print_entry_info_large_file() {
         let entry = make_file("big.bin", "C:\\big.bin", 10_000_000_000);
         assert_eq!(entry.size, 10_000_000_000);
-        print_entry_info(&entry, &["big"], EntryStatus::File);
+        print_entry_info(&entry, &["big"], EntryStatus::File, &Hyperlinker::disabled());
     }
 
     // ── delete_missing_directory ──────────────────────────────────
@@ -1505,6 +1548,32 @@ mod tests {
         assert!(config.files_only);
         assert_eq!(files.len(), 2);
         display_grouped_output(&dirs, &files, &config, &["test"], &database);
+    }
+
+    #[test]
+    fn test_display_functions_with_hyperlinks_enabled() {
+        let database = setup_database();
+        let config = CliConfig {
+            hyperlinks: Hyperlinker::new(HyperlinkMode::Always, "file"),
+            ..search_config(vec!["test"])
+        };
+        let files_owned = [make_file("test.txt", &native_path(&["test.txt"]), 100)];
+        let files: Vec<&FileEntry> = files_owned.iter().collect();
+        let directories: Vec<&FileEntry> = Vec::new();
+
+        assert!(config.hyperlinks.is_enabled());
+        assert!(
+            config
+                .hyperlinks
+                .wrap(&files_owned[0].full_path, "test.txt")
+                .contains("\x1b]8;;file://")
+        );
+
+        // Every format must stay panic free while emitting hyperlink sequences
+        display_grouped_output(&directories, &files, &config, &["test"], &database);
+        display_list(&directories, &files, &config, &["test"], &database);
+        display_name(&directories, &files, &config, &["test"], &database);
+        display_info(&directories, &files, &config, &["test"], &database);
     }
 
     #[test]
@@ -2029,14 +2098,14 @@ mod tests {
     #[test]
     fn test_show_duplicates_empty_database() {
         let database = Database::open_in_memory().expect("Failed to open in-memory database");
-        let result = show_duplicates(&database, &[], None, false);
+        let result = show_duplicates(&database, &[], None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_show_duplicates_finds_groups() {
         let database = setup_duplicates_database();
-        let result = show_duplicates(&database, &[], None, false);
+        let result = show_duplicates(&database, &[], None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
@@ -2046,7 +2115,7 @@ mod tests {
         // Filter to only C: drive — "report" group should drop to 2 files (C: only),
         // "config" group should disappear (only 1 file on C:)
         let drives = vec!["C".to_string()];
-        let result = show_duplicates(&database, &drives, None, false);
+        let result = show_duplicates(&database, &drives, None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
@@ -2055,7 +2124,7 @@ mod tests {
         let database = setup_duplicates_database();
         // Filter to E: drive which has no files — no duplicates
         let drives = vec!["E".to_string()];
-        let result = show_duplicates(&database, &drives, None, false);
+        let result = show_duplicates(&database, &drives, None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
@@ -2063,14 +2132,14 @@ mod tests {
     fn test_show_duplicates_with_limit() {
         let database = setup_duplicates_database();
         // Limit to 1 group
-        let result = show_duplicates(&database, &[], Some(1), false);
+        let result = show_duplicates(&database, &[], Some(1), false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_show_duplicates_with_limit_zero() {
         let database = setup_duplicates_database();
-        let result = show_duplicates(&database, &[], Some(0), false);
+        let result = show_duplicates(&database, &[], Some(0), false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
@@ -2078,21 +2147,21 @@ mod tests {
     fn test_show_duplicates_with_limit_exceeding_total() {
         let database = setup_duplicates_database();
         // Limit higher than total groups — should show all
-        let result = show_duplicates(&database, &[], Some(100), false);
+        let result = show_duplicates(&database, &[], Some(100), false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_show_duplicates_verbose() {
         let database = setup_duplicates_database();
-        let result = show_duplicates(&database, &[], None, true);
+        let result = show_duplicates(&database, &[], None, true, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_show_duplicates_verbose_with_limit() {
         let database = setup_duplicates_database();
-        let result = show_duplicates(&database, &[], Some(1), true);
+        let result = show_duplicates(&database, &[], Some(1), true, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
@@ -2119,12 +2188,12 @@ mod tests {
         database.insert_files_batch(&files).expect("Failed to insert files");
 
         // Without filter: 1 duplicate group
-        let result = show_duplicates(&database, &[], None, false);
+        let result = show_duplicates(&database, &[], None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
 
         // With C: filter: group drops to 1 file, so no duplicates shown
         let drives = vec!["C".to_string()];
-        let result = show_duplicates(&database, &drives, None, false);
+        let result = show_duplicates(&database, &drives, None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 
@@ -2150,7 +2219,7 @@ mod tests {
         ];
         database.insert_files_batch(&files).expect("Failed to insert files");
 
-        let result = show_duplicates(&database, &[], None, false);
+        let result = show_duplicates(&database, &[], None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }
 }
