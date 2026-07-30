@@ -111,7 +111,7 @@ filefind -f "config.toml"
 # Show only directories
 filefind -D "projects"
 
-# Move matching files to a directory
+# Move matching files to a directory (matches already under it stay in place)
 filefind "*.mp4" --move D:\Videos
 
 # Move with force overwrite of existing files

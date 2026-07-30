@@ -219,7 +219,7 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
 - Progress bar via `indicatif`, graceful Ctrl+C abort via `ctrlc` (finish current file,
   second Ctrl+C force-quits)
 - Confirmation prompt shows file count, total size, skipped files, and force-mode warning
-- Files already in the destination directory are counted but not moved or reported as skips
+- Files already in the destination directory or any of its subdirectories are counted but not moved or reported as skips
 - Duplicate filenames across search results are skipped (first occurrence wins)
 - Database is updated after each successful move; MFT reference is cleared since it may
   be invalid on the new volume

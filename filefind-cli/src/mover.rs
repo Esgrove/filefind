@@ -155,7 +155,7 @@ impl MoveSummary {
 /// Move matching files to the specified destination directory.
 ///
 /// Shows a confirmation prompt with the total size before proceeding.
-/// Filters out directories and files already at the destination,
+/// Filters out directories and files already within the destination tree,
 /// checks disk space, and moves files with a progress bar.
 /// Handles Ctrl+C gracefully by finishing the current file before stopping.
 /// Updates the database after each successful move.
@@ -286,8 +286,8 @@ pub fn move_files(files: &[FileEntry], destination: &Path, database: &Database, 
 
 /// Filter files to determine which ones need to be moved.
 ///
-/// Removes files already in the destination directory and handles
-/// duplicate filenames by keeping only the first occurrence.
+/// Removes files already in the destination directory or its subdirectories
+/// and handles duplicate filenames by keeping only the first occurrence.
 /// When `force_overwrite` is false, also skips files whose name already
 /// exists at the destination.
 ///
@@ -305,7 +305,7 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
     let mut seen_names = std::collections::HashSet::new();
 
     for file in files {
-        // Check if file is already in the destination directory
+        // Do not flatten files that are already anywhere in the destination tree.
         let file_parent = Path::new(&file.full_path)
             .parent()
             .map(|path| path.to_string_lossy().to_string())
@@ -313,7 +313,7 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
 
         let parent_normalized = normalize_extended_prefix(&file_parent);
 
-        if parent_normalized == dest_normalized {
+        if Path::new(&parent_normalized).starts_with(Path::new(&dest_normalized)) {
             already_at_destination += 1;
             continue;
         }
@@ -1222,6 +1222,24 @@ mod tests {
 
         assert_eq!(result.files_to_move.len(), 1);
         assert_eq!(result.files_to_move[0].full_path, source_path);
+        assert_eq!(result.already_at_destination, 1);
+        assert!(result.skipped_files.is_empty());
+    }
+
+    #[test]
+    fn test_filter_files_tracks_files_in_destination_subdirectories() {
+        let destination = PathBuf::from(native_path(&["dest"]));
+        let nested_path = native_path(&["dest", "subdir", "nested.txt"]);
+        let sibling_path = native_path(&["destination", "sibling.txt"]);
+        let files = vec![
+            make_file("nested.txt", &nested_path, 100),
+            make_file("sibling.txt", &sibling_path, 200),
+        ];
+
+        let result = filter_files(&files, &destination, false);
+
+        assert_eq!(result.files_to_move.len(), 1);
+        assert_eq!(result.files_to_move[0].full_path, sibling_path);
         assert_eq!(result.already_at_destination, 1);
         assert!(result.skipped_files.is_empty());
     }
