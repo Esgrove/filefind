@@ -303,6 +303,11 @@ cargo llvm-cov nextest
 cargo llvm-cov nextest --open
 ```
 
+## TODO
+
+- Fix "Moved file but failed to update database for" error when overwriting a file that already existed in the targed dir
+- Compare hash of existing duplicate file against target file before overwriting and delete source file instead of moving when matches
+
 ## License
 
 MIT
