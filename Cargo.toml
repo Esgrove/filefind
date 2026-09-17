@@ -3,7 +3,7 @@ resolver = "3"
 members = ["filefind", "filefind-cli", "filefind-daemon", "filefind-tray"]
 
 [workspace.package]
-version = "1.7.0"
+version = "1.7.1"
 edition = "2024"
 authors = ["Esgrove <esgrove@outlook.com>"]
 license = "MIT"
@@ -12,10 +12,10 @@ rust-version = "1.97"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.6.6", features = ["derive"] }
-clap_complete = "4.6.9"
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
 colored = "3.1.1"
-dirs = "6.0.0"
+dirs = "7.0.0"
 regex = "1.13.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
