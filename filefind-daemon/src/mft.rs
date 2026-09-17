@@ -444,7 +444,9 @@ impl MftScanner {
         let name_bytes = &data[file_name_offset..file_name_offset + file_name_length];
         let name = String::from_utf16_lossy(
             &name_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|code_unit| u16::from_le_bytes([code_unit[0], code_unit[1]]))
                 .collect::<Vec<_>>(),
         );
@@ -482,7 +484,9 @@ impl MftScanner {
         let name_bytes = &data[file_name_offset..file_name_offset + file_name_length];
         let name = String::from_utf16_lossy(
             &name_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|code_unit| u16::from_le_bytes([code_unit[0], code_unit[1]]))
                 .collect::<Vec<_>>(),
         );
