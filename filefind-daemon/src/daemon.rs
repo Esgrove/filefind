@@ -288,7 +288,7 @@ impl Daemon {
 
             // Process any pending file changes (unless paused)
             if !self.is_paused {
-                self.process_changes().await?;
+                self.process_changes();
             }
 
             // Sleep for the configured poll interval
@@ -489,8 +489,7 @@ impl Daemon {
     }
 
     /// Process any pending file changes.
-    #[allow(clippy::unused_async)]
-    async fn process_changes(&mut self) -> Result<()> {
+    fn process_changes(&mut self) {
         // Collect raw USN changes first to avoid borrow issues
         let mut raw_changes: Vec<(char, Vec<crate::usn::UsnChange>, i64)> = Vec::new();
 
@@ -599,8 +598,6 @@ impl Daemon {
         for event in watcher_events {
             self.handle_change_event(event);
         }
-
-        Ok(())
     }
 
     /// Convert a USN change to a file change event.
