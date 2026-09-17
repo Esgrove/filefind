@@ -4,8 +4,8 @@ use std::time::SystemTime;
 
 use filefind::FileEntry;
 
-/// Build a platform-native absolute test path: `native_path(&["Dir", "file.txt"])`
-/// yields `C:\Dir\file.txt` on Windows and `/Dir/file.txt` on Unix.
+/// Build a platform-native absolute test path:
+/// `native_path(&["Dir", "file.txt"])` yields `C:\Dir\file.txt` on Windows and `/Dir/file.txt` on Unix.
 pub fn native_path(segments: &[&str]) -> String {
     #[cfg(windows)]
     {

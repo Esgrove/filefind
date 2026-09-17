@@ -1196,7 +1196,7 @@ mod tests {
     #[test]
     fn test_search_all_patterns_mixed_glob_and_plain() {
         let database = setup_database();
-        // Mixed: one glob, one plain — falls back to search_all_patterns_mixed
+        // Mixed: one glob, one plain. Falls back to search_all_patterns_mixed
         let mut config = search_config(vec!["*.txt", "report"]);
         config.match_all = true;
         let results = search_all_patterns(&config, &database).expect("Search failed");
@@ -1638,7 +1638,7 @@ mod tests {
         ];
         let files: Vec<&FileEntry> = files_owned.iter().collect();
         let dirs: Vec<&FileEntry> = Vec::new();
-        // Info mode displays each file's size — verify the data is set up correctly
+        // Info mode displays each file's size. Verify the data is set up correctly
         assert_eq!(files[0].size, 100);
         assert_eq!(files[1].size, 5_000_000);
         display_info(&dirs, &files, &config, &["test"], &database);
@@ -1687,7 +1687,7 @@ mod tests {
         let config = search_config(vec!["test"]);
         let dirs: Vec<&FileEntry> = Vec::new();
         let files: Vec<&FileEntry> = Vec::new();
-        // Both empty — should produce no output without panicking
+        // Both empty. Should produce no output without panicking
         assert!(dirs.is_empty());
         assert!(files.is_empty());
         display_grouped_output(&dirs, &files, &config, &[], &database);
@@ -1916,8 +1916,8 @@ mod tests {
         // The search returns both files and dirs; run_search partitions them
         let (dirs, files): (Vec<_>, Vec<_>) = results.iter().partition(|entry| entry.is_directory);
         assert!(!files.is_empty(), "Should find .txt files");
-        // In files_only mode, dirs would be ignored during display
-        // but the data layer returns everything — the filtering is display-level
+        // In files_only mode, dirs would be ignored during display but the data layer returns everything.
+        // The filtering is display-level
         let _ = dirs; // acknowledged
         run_search(&config, &database).expect("run_search failed");
     }
@@ -2122,7 +2122,7 @@ mod tests {
     #[test]
     fn test_show_duplicates_with_drive_filter_no_results() {
         let database = setup_duplicates_database();
-        // Filter to E: drive which has no files — no duplicates
+        // Filter to E: drive which has no files. No duplicates
         let drives = vec!["E".to_string()];
         let result = show_duplicates(&database, &drives, None, false, &Hyperlinker::disabled());
         assert!(result.is_ok());
@@ -2146,7 +2146,7 @@ mod tests {
     #[test]
     fn test_show_duplicates_with_limit_exceeding_total() {
         let database = setup_duplicates_database();
-        // Limit higher than total groups — should show all
+        // Limit higher than total groups. Should show all
         let result = show_duplicates(&database, &[], Some(100), false, &Hyperlinker::disabled());
         assert!(result.is_ok());
     }

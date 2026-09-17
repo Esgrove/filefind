@@ -1,8 +1,7 @@
 //! Inter-process communication for daemon control and status.
 //!
-//! This module provides a simple IPC mechanism using named pipes (Windows)
-//! or Unix domain sockets (other platforms) for communication between
-//! the daemon and client applications (CLI, tray app).
+//! This module provides a simple IPC mechanism using named pipes (Windows) or Unix domain sockets
+//! (other platforms) for communication between the daemon and client applications (CLI, tray app).
 //!
 //! Uses postcard binary serialization for efficient, compact messages.
 
@@ -234,8 +233,7 @@ impl IpcClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the connection to the daemon fails or if the
-    /// response cannot be parsed.
+    /// Returns an error if the connection to the daemon fails or if the response cannot be parsed.
     pub fn send_command(&self, command: DaemonCommand) -> Result<DaemonResponse> {
         #[cfg(windows)]
         {
@@ -427,8 +425,7 @@ pub fn get_ipc_path() -> &'static PathBuf {
 
 /// Write a length-prefixed message to a writer.
 ///
-/// The message is prefixed with a 2-byte little-endian length header
-/// followed by the raw message bytes.
+/// The message is prefixed with a 2-byte little-endian length header followed by the raw message bytes.
 ///
 /// # Examples
 ///
@@ -456,8 +453,7 @@ pub fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
 
 /// Read a length-prefixed message from a reader.
 ///
-/// Reads a 2-byte little-endian length header followed by that many bytes
-/// of message data.
+/// Reads a 2-byte little-endian length header followed by that many bytes of message data.
 ///
 /// # Examples
 ///

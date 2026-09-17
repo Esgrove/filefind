@@ -6,10 +6,10 @@
 #
 # Can include:
 # - Drive letters (e.g., "C:", "D:") - indexes entire drive using fast NTFS MFT scanning
-# - Specific directories (e.g., "C:\\Users", "D:\\Projects") - uses MFT scanning but
-#   only stores entries under the specified paths (fast AND selective)
-# - Mapped network drives (e.g., "Z:") - MFT scanning is attempted first; if not
-#   available (most NAS devices), falls back to directory walking automatically
+# - Specific directories (e.g., "C:\\Users", "D:\\Projects") - uses MFT scanning
+#   but only stores entries under the specified paths (fast AND selective)
+# - Mapped network drives (e.g., "Z:") - MFT scanning is attempted first.
+#   If not available (most NAS devices), falls back to directory walking automatically
 # - UNC paths (e.g., "\\\\server\\share") - uses directory walking (no drive letter)
 #
 # If empty or not specified, all available local NTFS drives will be auto-detected.
@@ -36,8 +36,8 @@ exclude = [
 # instead of UNC paths. The database always stores the real UNC paths
 # so the daemon can access them from an elevated process.
 #
-# Auto-detection via Win32 API is attempted first for drive letters in
-# the configured paths. Manual mappings here take priority over auto-detected ones.
+# Auto-detection via Win32 API is attempted first for drive letters in the configured paths.
+# Manual mappings here take priority over auto-detected ones.
 #
 # path_mappings = [["\\\\192.168.1.106\\Home", "X"], ["\\\\server\\share", "Z"]]
 

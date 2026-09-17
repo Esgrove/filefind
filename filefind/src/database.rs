@@ -302,8 +302,8 @@ impl Database {
 
     /// Delete a directory and all files under it by path prefix.
     ///
-    /// This deletes the directory entry itself and all entries whose path starts
-    /// with the directory path followed by a path separator.
+    /// This deletes the directory entry itself
+    /// and all entries whose path starts with the directory path followed by a path separator.
     ///
     /// # Errors
     /// Returns an error if the database operation fails.
@@ -837,8 +837,9 @@ impl Database {
 
     /// Get the maximum file ID in the database.
     ///
-    /// Returns 0 if the database is empty. This is useful for tracking which
-    /// entries existed before a scan, so the pruner can skip newly inserted entries.
+    /// Returns 0 if the database is empty.
+    /// This is useful for tracking which entries existed before a scan,
+    /// so the pruner can skip newly inserted entries.
     ///
     /// # Errors
     /// Returns an error if the database operation fails.
@@ -853,9 +854,9 @@ impl Database {
 
     /// Update a file entry's path after it has been moved to a new location.
     ///
-    /// Updates the full path, filename, and clears the MFT reference (which is
-    /// no longer valid on a different volume). The volume ID is left unchanged;
-    /// the daemon's next scan will correct it if the file moved to a different volume.
+    /// Updates the full path, filename, and clears the MFT reference (which is no longer valid on a different volume).
+    /// The volume ID is left unchanged.
+    /// The daemon's next scan will correct it if the file moved to a different volume.
     ///
     /// # Errors
     /// Returns an error if the database operation fails.
@@ -2824,9 +2825,9 @@ mod tests {
         let results = database.search_by_names_all(&patterns, 100).unwrap();
         assert_eq!(results.len(), 3); // config_backup.json, data_backup.json, system_backup.json
 
-        // Test 5: Single pattern "config" - should match all files containing config
-        // config_backup.json, config_settings.json, my_config_file.json, config_backup.yaml,
-        // config_backup.xml, config.yaml, config.toml, myconfig.txt, app_config_settings.ini
+        // Test 5: Single pattern "config" - should match all files containing config config_backup.json,
+        // config_settings.json, my_config_file.json, config_backup.yaml, config_backup.xml,
+        // config.yaml, config.toml, myconfig.txt, app_config_settings.ini
         let patterns = vec!["config".to_string()];
         let results = database.search_by_names_all(&patterns, 100).unwrap();
         assert_eq!(results.len(), 9); // All files with "config" in name
@@ -2929,9 +2930,8 @@ mod tests {
         let results = database.search_by_globs_all(&patterns, 100).unwrap();
         assert_eq!(results.len(), 3); // report_2024_final.pdf, report_2023_final.pdf, report_2024_final.txt
 
-        // Test 4: "*2024*" AND "*.pdf" - reports and summaries
-        // report_2024_final.pdf, report_2024_draft.pdf, report_2024.pdf, summary_2024_final.pdf,
-        // summary_2024.pdf, calendar_2024.pdf
+        // Test 4: "*2024*" AND "*.pdf" - reports and summaries report_2024_final.pdf, report_2024_draft.pdf,
+        // report_2024.pdf, summary_2024_final.pdf, summary_2024.pdf, calendar_2024.pdf
         let patterns = vec!["*2024*".to_string(), "*.pdf".to_string()];
         let results = database.search_by_globs_all(&patterns, 100).unwrap();
         assert_eq!(results.len(), 6); // All 2024 PDFs
@@ -3322,7 +3322,8 @@ mod tests {
         let volume = create_test_volume("REGEX_COMPLEX_VOL", "X:");
         let volume_id = database.upsert_volume(&volume).unwrap();
 
-        // Files with various combinations of: type (report/summary/invoice), year (2023/2024), month (01-12), format (pdf/xlsx/docx)
+        // Files with various combinations of:
+        // type (report/summary/invoice), year (2023/2024), month (01-12), format (pdf/xlsx/docx)
         let files = [
             // report + 2024 + various months + pdf
             "report_2024_01.pdf",

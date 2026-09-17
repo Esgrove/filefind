@@ -1,16 +1,16 @@
 //! File scanning and indexing functionality.
 //!
-//! This module provides functions for scanning file systems and indexing
-//! files into the database. It supports multiple scanning strategies:
+//! This module provides functions for scanning file systems and indexing files into the database.
+//! It supports multiple scanning strategies:
 //! - MFT scanning for NTFS volumes (fast)
 //! - Directory walking for non-NTFS volumes (fallback)
 //!
 //! Scans support two modes:
-//! - **Normal/Incremental** (default): Scans drives and UPSERTs entries, then
-//!   cleans up stale entries. For NTFS volumes, uses USN journal to efficiently
-//!   identify deleted/renamed files. For non-NTFS, runs pruning after scan.
-//! - **Clean/Force** (with `--force` flag): Deletes all existing entries for a
-//!   volume before inserting new ones. Use when you want a complete rebuild.
+//! - **Normal/Incremental** (default): Scans drives and UPSERTs entries, then cleans up stale entries.
+//!   For NTFS volumes, uses USN journal to efficiently identify deleted/renamed files.
+//!   For non-NTFS, runs pruning after scan.
+//! - **Clean/Force** (with `--force` flag): Deletes all existing entries for a volume before inserting new ones.
+//!   Use when you want a complete rebuild.
 //!
 //! Clean scan is automatically used when the database is new or empty.
 
@@ -78,10 +78,11 @@ impl CategorizedPaths {
 ///
 /// ## Scan Modes
 ///
-/// - **Normal mode** (default): Scans and UPSERTs entries, then cleans up stale
-///   entries using USN journal (NTFS) or pruning (non-NTFS).
-/// - **Clean mode** (`force_clean_scan`): Deletes all existing entries before
-///   inserting. Used for complete rebuilds.
+/// - **Normal mode** (default):
+///   Scans and UPSERTs entries,
+///   then cleans up stale entries using USN journal (NTFS) or pruning (non-NTFS).
+/// - **Clean mode** (`force_clean_scan`): Deletes all existing entries before inserting.
+///   Used for complete rebuilds.
 ///
 /// Clean scan is automatically used when the database is new or empty.
 pub async fn run_scan(path: Option<PathBuf>, config: &Config) -> Result<()> {
@@ -597,10 +598,10 @@ fn is_drive_letter_path(path: &Path) -> bool {
 
 /// Check if a path is accessible.
 ///
-/// This function handles the case where `Path::exists()` returns false for mapped
-/// network drives when running in an elevated process. On Windows, network drive
-/// mappings are per-session and per-elevation level, so an admin process won't see
-/// drives mapped in the non-elevated user session.
+/// This function handles the case where `Path::exists()` returns false for mapped network drives
+/// when running in an elevated process.
+/// On Windows, network drive mappings are per-session and per-elevation level,
+/// so an admin process won't see drives mapped in the non-elevated user session.
 ///
 /// For drive letter paths, we attempt to read the directory to verify accessibility
 /// rather than relying solely on `exists()`.
@@ -700,9 +701,8 @@ fn categorize_paths(paths_to_scan: Vec<String>) -> CategorizedPaths {
 
 /// Log a descriptive warning for a scan path that could not be accessed.
 ///
-/// Distinguishes between UNC network paths, mapped network drives (including
-/// offline persistent mappings), and regular local paths so the user gets an
-/// actionable message instead of a generic "inaccessible" warning.
+/// Distinguishes between UNC network paths, mapped network drives (including offline persistent mappings),
+/// and regular local paths so the user gets an actionable message instead of a generic "inaccessible" warning.
 fn log_inaccessible_scan_path(path: &Path) {
     if is_unc_path(path) {
         warn!(
@@ -867,9 +867,8 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
 
 /// Run volume pruning for non-NTFS volumes after incremental scan.
 ///
-/// This is called after scanning to clean up stale entries for volumes
-/// that don't support USN journal. Uses parallel filesystem checks across
-/// all volumes for maximum I/O throughput.
+/// This is called after scanning to clean up stale entries for volumes that don't support USN journal.
+/// Uses parallel filesystem checks across all volumes for maximum I/O throughput.
 fn prune_non_ntfs_volumes(database: &Database, volume_ids_to_prune: &[i64], max_id: i64, verbose: bool) {
     if volume_ids_to_prune.is_empty() {
         return;
@@ -1294,16 +1293,16 @@ mod tests {
 
             let categorized = categorize_paths(vec![drive_root, sub_str]);
 
-            // The drive root is present as an NTFS root, so local paths on
-            // the same drive must be removed to prevent double-scanning
+            // The drive root is present as an NTFS root,
+            // so local paths on the same drive must be removed to prevent double-scanning
             if categorized.ntfs_drive_roots.contains(&letter) {
                 assert!(
                     !categorized.local_paths_by_drive.contains_key(&letter),
                     "Local paths on drive {letter}: should be removed when the full drive root is scanned"
                 );
             }
-            // Regardless of how the drive root was categorized, the subdirectory
-            // should never appear as a separate task alongside the root
+            // Regardless of how the drive root was categorized,
+            // the subdirectory should never appear as a separate task alongside the root
             let local_count = categorized.local_paths_by_drive.get(&letter).map_or(0, Vec::len);
             let root_present = categorized.ntfs_drive_roots.contains(&letter);
             assert!(
@@ -2030,8 +2029,8 @@ mod tests {
                 assert!(!error.is_empty(), "Error message should describe the failure");
             }
             ScanResult::Success { entries, .. } => {
-                // On some platforms scan_directory may succeed with an empty
-                // result instead of returning an error for nonexistent paths.
+                // On some platforms scan_directory may succeed with an empty result
+                // instead of returning an error for nonexistent paths.
                 assert!(
                     entries.is_empty(),
                     "Nonexistent path should produce no entries if it does not error"

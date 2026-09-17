@@ -58,7 +58,8 @@ Common data structures:
 Path and formatting helpers:
 
 - `PathType` enum for classifying paths (drive root, directory, UNC, network)
-- `get_volume_prefix()` - Extract a lowercase volume root (drive letter or UNC server/share) from a path for same-volume comparison
+- `get_volume_prefix()` - Extract a lowercase volume root
+  (drive letter or UNC server/share) from a path for same-volume comparison
 - `format_size()` - Human-readable file sizes
 - `format_number()` - Number formatting with separators
 - Print macros for colored terminal output

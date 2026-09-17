@@ -90,8 +90,8 @@ pub fn run() -> Result<()> {
             }
 
             // Process all pending Windows messages without blocking.
-            // Using PeekMessageW instead of GetMessageW so the loop can
-            // continue to poll daemon status even when no messages arrive.
+            // Using PeekMessageW instead of GetMessageW
+            // so the loop can continue to poll daemon status even when no messages arrive.
             // SAFETY: PeekMessageW is safe to call with valid pointers
             while unsafe { PeekMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
                 if msg.message == WM_QUIT {
@@ -383,8 +383,8 @@ fn format_status_tooltip(status: &DaemonStatus) -> String {
 ///
 /// On Windows, uses `ShellExecuteW` with the `runas` verb to request UAC elevation
 /// so the daemon has administrator rights for MFT/USN Journal access.
-/// The daemon is started with `filefindd start` (without `-f`) so it handles its own
-/// background spawning with `CREATE_NO_WINDOW`, avoiding any visible terminal window.
+/// The daemon is started with `filefindd start` (without `-f`)
+/// so it handles its own background spawning with `CREATE_NO_WINDOW`, avoiding any visible terminal window.
 ///
 /// If the tray app is already running as administrator, no UAC prompt is shown.
 #[cfg(windows)]
@@ -408,8 +408,8 @@ fn start_daemon() -> Result<()> {
     let file = to_wide(exe_path.as_os_str());
     let params = to_wide(OsStr::new("start"));
 
-    // SAFETY: `ShellExecuteW` is a standard Windows API call. All string pointers
-    // are valid null-terminated UTF-16 buffers that outlive the call.
+    // SAFETY: `ShellExecuteW` is a standard Windows API call.
+    // All string pointers are valid null-terminated UTF-16 buffers that outlive the call.
     #[allow(unsafe_code)]
     let result = unsafe {
         ShellExecuteW(

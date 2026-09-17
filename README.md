@@ -248,8 +248,8 @@ we bypass the overhead of Windows file system APIs and can scan millions of file
 ### USN Journal
 
 NTFS maintains a Update Sequence Number (USN) Journal that logs all file system changes.
-Instead of periodically rescanning the entire drive, filefind monitors this journal to
-efficiently detect new, modified, renamed, and deleted files.
+Instead of periodically rescanning the entire drive,
+filefind monitors this journal to efficiently detect new, modified, renamed, and deleted files.
 
 ### Non-NTFS drives
 
@@ -265,10 +265,11 @@ This helps match files regardless of naming convention. Use `-e` (exact) mode to
 ### Clickable Results
 
 Result paths are wrapped in OSC 8 terminal hyperlinks.
-Ctrl+Click (Windows Terminal, Warp) or Cmd+Click (iTerm2) opens the file with the application
-the operating system associates with its type, and directories open in the file manager.
-To always open videos in VLC, for example, associate the video file types with VLC in the
-operating system, or register a custom protocol handler and set `hyperlink_scheme` to it.
+Ctrl+Click (Windows Terminal, Warp) or Cmd+Click (iTerm2)
+opens the file with the application the operating system associates with its type,
+and directories open in the file manager.
+To always open videos in VLC, for example, associate the video file types with VLC in the operating system,
+or register a custom protocol handler and set `hyperlink_scheme` to it.
 
 Links are only emitted when the output goes to a terminal that is known to support them,
 so piped and redirected output stays free of escape sequences.
@@ -306,7 +307,8 @@ cargo llvm-cov nextest --open
 ## TODO
 
 - Fix "Moved file but failed to update database for" error when overwriting a file that already existed in the targed dir
-- Compare hash of existing duplicate file against target file before overwriting and delete source file instead of moving when matches
+- Compare hash of existing duplicate file against target file
+  before overwriting and delete source file instead of moving when matches
 
 ## License
 

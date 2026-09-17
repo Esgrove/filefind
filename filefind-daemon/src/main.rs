@@ -182,9 +182,9 @@ fn main() -> Result<()> {
 /// Initialize logging based on log level and foreground mode.
 ///
 /// In foreground mode with a terminal attached, logs go to stdout.
-/// In background mode, or when stdout is not a terminal (e.g. spawned as a
-/// detached process by `spawn_background_daemon` or a scheduled task), logs go
-/// to rolling files in `~/logs/filefind/`.
+/// In background mode, or when stdout is not a terminal
+/// (e.g. spawned as a detached process by `spawn_background_daemon` or a scheduled task),
+/// logs go to rolling files in `~/logs/filefind/`.
 fn init_logging(log_level: LogLevel, foreground: bool) -> Result<()> {
     let filter = EnvFilter::new(log_level.as_filter_str());
 
@@ -311,8 +311,8 @@ fn hide_console_window() {
     use windows::Win32::System::Console::FreeConsole;
 
     unsafe {
-        // FreeConsole returns an error if the process is not attached to a console,
-        // which is harmless — just ignore it.
+        // FreeConsole returns an error if the process is not attached to a console, which is harmless.
+        // Just ignore it.
         let _ = FreeConsole();
     }
 }

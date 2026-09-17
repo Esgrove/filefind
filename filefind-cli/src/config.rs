@@ -147,8 +147,8 @@ impl CliConfig {
 
     /// Apply path mappings to a path for display purposes.
     ///
-    /// If the path matches a configured UNC prefix, returns the path with the
-    /// mapped drive letter prefix. Otherwise returns the original path unchanged.
+    /// If the path matches a configured UNC prefix, returns the path with the mapped drive letter prefix.
+    /// Otherwise returns the original path unchanged.
     pub fn display_path<'a>(&self, path: &'a str) -> std::borrow::Cow<'a, str> {
         if self.path_mappings.is_empty() {
             return std::borrow::Cow::Borrowed(path);

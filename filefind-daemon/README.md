@@ -221,13 +221,14 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName "filefind daemon" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
 ```
 
-The `-f` (foreground) flag is important: it tells the daemon to run directly in the
-calling process rather than spawning a detached child. Since the task scheduler already
-manages the process lifecycle, this ensures proper logging and clean shutdown behavior.
+The `-f` (foreground) flag is important:
+it tells the daemon to run directly in the calling process rather than spawning a detached child.
+Since the task scheduler already manages the process lifecycle,
+this ensures proper logging and clean shutdown behavior.
 
-The `-H` (hidden) flag detaches the process from its console window so that no terminal
-window is visible when the task runs. Without it, Windows will spawn a console window
-that stays open for the lifetime of the daemon.
+The `-H` (hidden) flag detaches the process from its console window
+so that no terminal window is visible when the task runs.
+Without it, Windows will spawn a console window that stays open for the lifetime of the daemon.
 
 The daemon can still be stopped anytime using `filefindd stop` or the tray application.
 
@@ -296,8 +297,8 @@ However, Windows does not always handle UNC paths correctly in shell operations.
 
 ### Enable mapped drives for elevated processes
 
-Set the `EnableLinkedConnections` registry value so that
-mapped network drives are shared between elevated and non-elevated sessions:
+Set the `EnableLinkedConnections` registry value
+so that mapped network drives are shared between elevated and non-elevated sessions:
 
 ```powershell
 # Run in an elevated PowerShell
@@ -343,9 +344,10 @@ paths = [
 path_mappings = [["\\\\192.168.1.106\\Home", "X"], ["\\\\192.168.1.107\\NAS\\Data", "Z"]]
 ```
 
-The daemon scans via UNC paths (which work from elevated processes) and the database
-stores the real UNC paths internally. The path mappings are applied at display time
-by the CLI, so search results show `X:\file.txt` instead of `\\192.168.1.106\Home\file.txt`.
+The daemon scans via UNC paths (which work from elevated processes)
+and the database stores the real UNC paths internally.
+The path mappings are applied at display time by the CLI,
+so search results show `X:\file.txt` instead of `\\192.168.1.106\Home\file.txt`.
 
 This keeps the database consistent with paths the daemon can actually access,
 while giving you usable drive letter paths in search output.
@@ -354,15 +356,18 @@ while giving you usable drive letter paths in search output.
 
 ### MFT Reading
 
-On NTFS drives, the daemon reads the Master File Table directly from disk, bypassing Windows file system APIs. This allows indexing millions of files in seconds.
+On NTFS drives, the daemon reads the Master File Table directly from disk, bypassing Windows file system APIs.
+This allows indexing millions of files in seconds.
 
 ### USN Journal Monitoring
 
-After the initial scan, the daemon monitors the NTFS Update Sequence Number Journal to efficiently detect file system changes without rescanning.
+After the initial scan, the daemon monitors the NTFS Update Sequence Number Journal to efficiently detect file system changes
+without rescanning.
 
 ### File System Watcher
 
-For non-NTFS drives and network paths, the daemon falls back to the `notify` crate using `ReadDirectoryChangesW` on Windows for real-time change notifications.
+For non-NTFS drives and network paths,
+the daemon falls back to the `notify` crate using `ReadDirectoryChangesW` on Windows for real-time change notifications.
 
 ### IPC Server
 

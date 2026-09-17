@@ -37,12 +37,10 @@ const COPY_BUFFER_SIZE: usize = 256 * 1024;
 
 /// Calculate the total size of files that will require a cross-device copy.
 ///
-/// Same-device moves use `fs::rename` which is instant and consumes no
-/// additional disk space. Only cross-device moves need free space at the
-/// destination for the copied data.
+/// Same-device moves use `fs::rename` which is instant and consumes no additional disk space.
+/// Only cross-device moves need free space at the destination for the copied data.
 ///
-/// Compares volume prefixes (drive letter or UNC server/share) of each source
-/// against the destination.
+/// Compares volume prefixes (drive letter or UNC server/share) of each source against the destination.
 #[cfg(windows)]
 fn cross_device_size(files: &[&FileEntry], destination: &Path) -> u64 {
     let dest_prefix = get_volume_prefix(&destination.to_string_lossy());
@@ -63,9 +61,8 @@ fn cross_device_size(files: &[&FileEntry], destination: &Path) -> u64 {
 
 /// Calculate the total size of files that will require a cross-device copy.
 ///
-/// Same-device moves use `fs::rename` which is instant and consumes no
-/// additional disk space. Only cross-device moves need free space at the
-/// destination for the copied data.
+/// Same-device moves use `fs::rename` which is instant and consumes no additional disk space.
+/// Only cross-device moves need free space at the destination for the copied data.
 ///
 /// Compares filesystem device ids of each source against the destination,
 /// which is exact for any mount layout (unlike path-string heuristics).
@@ -138,8 +135,8 @@ struct MoveSummary {
     failed: u64,
     /// Total size (in bytes) of all successfully moved files.
     ///
-    /// This counts the logical file size regardless of whether the move was an
-    /// instant same-device rename or a cross-device copy.
+    /// This counts the logical file size regardless of whether the move was an instant same-device rename
+    /// or a cross-device copy.
     total_size_moved: u64,
     /// Whether the operation was aborted by Ctrl+C.
     aborted: bool,
@@ -160,15 +157,15 @@ impl MoveSummary {
 /// Handles Ctrl+C gracefully by finishing the current file before stopping.
 /// Updates the database after each successful move.
 ///
-/// When `force_overwrite` is true, existing files at the destination will be
-/// overwritten. Otherwise they are skipped and listed at the end.
+/// When `force_overwrite` is true, existing files at the destination will be overwritten.
+/// Otherwise they are skipped and listed at the end.
 ///
 /// # Ctrl+C handler
 ///
 /// This function registers a global `ctrlc` handler via [`ctrlc::set_handler`].
-/// That function can only be called **once** per process. If another handler has
-/// already been registered (or if this function is called a second time), the
-/// registration will fail and an error is returned.
+/// That function can only be called **once** per process.
+/// If another handler has already been registered (or if this function is called a second time),
+/// the registration will fail and an error is returned.
 ///
 /// # Errors
 /// Returns an error if the destination directory cannot be created or accessed.
@@ -190,8 +187,8 @@ pub fn move_files(files: &[FileEntry], destination: &Path, database: &Database, 
         );
     }
 
-    // Canonicalize destination for reliable path comparison, then normalize
-    // back to drive-letter form so comparisons match database paths.
+    // Canonicalize destination for reliable path comparison,
+    // then normalize back to drive-letter form so comparisons match database paths.
     let original_destination = destination;
     let destination = destination
         .canonicalize()
@@ -217,8 +214,8 @@ pub fn move_files(files: &[FileEntry], destination: &Path, database: &Database, 
         return Ok(());
     }
 
-    // Calculate total size of all files (for progress bar) and the subset that
-    // will actually require disk space (cross-device copies only).
+    // Calculate total size of all files (for progress bar) and the subset
+    // that will actually require disk space (cross-device copies only).
     let total_size: u64 = filter_result.files_to_move.iter().map(|file| file.size).sum();
     let required_space = cross_device_size(&filter_result.files_to_move, &destination);
 
@@ -288,11 +285,10 @@ pub fn move_files(files: &[FileEntry], destination: &Path, database: &Database, 
 ///
 /// Removes files already in the destination directory or its subdirectories
 /// and handles duplicate filenames by keeping only the first occurrence.
-/// When `force_overwrite` is false, also skips files whose name already
-/// exists at the destination.
+/// When `force_overwrite` is false, also skips files whose name already exists at the destination.
 ///
-/// Returns a `FilterResult` with the files to move, a count of files already
-/// at the destination, and a list of files that were skipped with reasons.
+/// Returns a `FilterResult` with the files to move, a count of files already at the destination,
+/// and a list of files that were skipped with reasons.
 fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite: bool) -> FilterResult<'a> {
     let dest_normalized = normalize_extended_prefix(&destination.to_string_lossy());
     // Lazily resolved canonical destination for fallback same-file detection.
@@ -335,10 +331,10 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
         // Check if a file with this name already exists at the destination
         let dest_file = destination.join(Path::new(&file.full_path).file_name().unwrap_or_default());
         if dest_file.exists() {
-            // The source and destination might be the same file reached via
-            // different path representations (e.g., drive letter vs UNC).
-            // Canonicalize both to detect this; if they match, the file is
-            // already in the destination — not a real conflict.
+            // The source and destination might be the same file reached via different path representations
+            // (e.g., drive letter vs UNC).
+            // Canonicalize both to detect this. If they match, the file is already in the destination.
+            // Not a real conflict.
             if is_same_file(Path::new(&file.full_path), &dest_file, &mut dest_canonical) {
                 already_at_destination += 1;
                 continue;
@@ -450,8 +446,8 @@ fn get_available_space(path: &Path) -> Result<u64> {
     let mut total_bytes: u64 = 0;
     let mut total_free_bytes: u64 = 0;
 
-    // SAFETY: `GetDiskFreeSpaceExW` is a safe Windows API call that writes
-    // disk space information to the provided output pointers.
+    // SAFETY: `GetDiskFreeSpaceExW` is a safe Windows API call
+    // that writes disk space information to the provided output pointers.
     #[allow(unsafe_code)]
     let result = unsafe {
         GetDiskFreeSpaceExW(
@@ -484,11 +480,11 @@ fn get_available_space(path: &Path) -> Result<u64> {
 fn get_available_space(path: &Path) -> Result<u64> {
     let path_bytes = path_to_cstring(path)?;
 
-    // SAFETY: creating a zeroed statfs struct is valid; every field is plain data.
+    // SAFETY: creating a zeroed statfs struct is valid. Every field is plain data.
     #[allow(unsafe_code)]
     let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
 
-    // SAFETY: `statfs` writes filesystem statistics to the output struct;
+    // SAFETY: `statfs` writes filesystem statistics to the output struct.
     // `path_bytes` is a valid NUL-terminated C string.
     #[allow(unsafe_code)]
     let result = unsafe { libc::statfs(path_bytes.as_ptr(), &raw mut stats) };
@@ -512,11 +508,11 @@ fn get_available_space(path: &Path) -> Result<u64> {
 fn get_available_space(path: &Path) -> Result<u64> {
     let path_bytes = path_to_cstring(path)?;
 
-    // SAFETY: creating a zeroed statvfs struct is valid; every field is plain data.
+    // SAFETY: creating a zeroed statvfs struct is valid. Every field is plain data.
     #[allow(unsafe_code)]
     let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
 
-    // SAFETY: `statvfs` writes filesystem statistics to the output struct;
+    // SAFETY: `statvfs` writes filesystem statistics to the output struct.
     // `path_bytes` is a valid NUL-terminated C string.
     #[allow(unsafe_code)]
     let result = unsafe { libc::statvfs(path_bytes.as_ptr(), &raw mut stats) };
@@ -653,8 +649,7 @@ enum MoveError {
 
 /// Move a single file from source to destination.
 ///
-/// Tries `fs::rename` first for same-device moves, then falls back
-/// to copy+verify+delete for cross-device moves.
+/// Tries `fs::rename` first for same-device moves, then falls back to copy+verify+delete for cross-device moves.
 fn move_single_file(
     source: &Path,
     destination: &Path,
@@ -669,11 +664,11 @@ fn move_single_file(
             return Ok(());
         }
         Err(rename_error) => {
-            // Verify file state after a failed rename. On network drives
-            // (SMB), the server can complete the rename but the client
-            // receives an error (e.g., timeout or dropped response).
-            // Without this check, the file appears "lost" — gone from
-            // the source but the code never checks the destination.
+            // Verify file state after a failed rename.
+            // On network drives (SMB), the server can complete the rename but the client receives an error
+            // (e.g., timeout or dropped response).
+            // Without this check, the file appears "lost":
+            // gone from the source but the code never checks the destination.
             if !source.exists() {
                 if destination.exists() {
                     // Rename appears to have succeeded despite the error.
@@ -703,10 +698,9 @@ fn move_single_file(
                 )));
             }
 
-            // Source still exists — no data lost. For cross-device errors
-            // we always fall through to copy+delete. For other errors
-            // (e.g., network drives returning unexpected error codes) we
-            // also fall through, since the copy path is a safe fallback.
+            // Source still exists. No data lost. For cross-device errors we always fall through to copy+delete.
+            // For other errors (e.g., network drives returning unexpected error codes) we also fall through,
+            // since the copy path is a safe fallback.
             if !is_cross_device_error(&rename_error) {
                 progress_bar.suspend(|| {
                     print_warning!(
@@ -765,9 +759,8 @@ fn move_single_file(
 /// Copy a file in chunks while updating the progress bar.
 ///
 /// Checks the abort flag between chunks so we can stop gracefully.
-/// On any error or abort, the destination file handle is closed before
-/// attempting to remove the partial file (required on Windows where open
-/// handles prevent deletion).
+/// On any error or abort, the destination file handle is closed
+/// before attempting to remove the partial file (required on Windows where open handles prevent deletion).
 fn copy_file_with_progress(
     source: &Path,
     destination: &Path,
@@ -775,8 +768,8 @@ fn copy_file_with_progress(
     progress_bar: &ProgressBar,
     abort_flag: &AtomicBool,
 ) -> Result<(), MoveError> {
-    // Perform the actual copy in an inner function so that all file handles
-    // are guaranteed to be dropped before we attempt cleanup on error.
+    // Perform the actual copy in an inner function so that all file handles are guaranteed to be dropped
+    // before we attempt cleanup on error.
     let result = copy_file_inner(source, destination, expected_size, progress_bar, abort_flag);
 
     // At this point both source_file and dest_file handles have been dropped,
@@ -942,8 +935,8 @@ fn normalize_destination(canonical: &Path, original: &Path) -> std::path::PathBu
     canonical.to_path_buf()
 }
 
-/// Normalize a path string by stripping the `\\?\` or `\\?\UNC\` extended-length
-/// prefix and lowercasing for case-insensitive comparison.
+/// Normalize a path string by stripping the `\\?\` or `\\?\UNC\` extended-length prefix
+/// and lowercasing for case-insensitive comparison.
 ///
 /// - `\\?\UNC\server\share\path` → `\\server\share\path`
 /// - `\\?\C:\path` → `c:\path`
@@ -1049,8 +1042,8 @@ mod tests {
     use crate::test_utils::{make_file, native_path};
 
     // --- cross_device_size tests ---
-    // The volume-prefix comparison tests are Windows-only; the Unix
-    // implementation compares real device ids, tested with tempdir below.
+    // The volume-prefix comparison tests are Windows-only.
+    // The Unix implementation compares real device ids, tested with tempdir below.
 
     #[test]
     #[cfg(windows)]
@@ -1062,7 +1055,7 @@ mod tests {
         ];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
-        // All files on C:, destination on C: — no space needed
+        // All files on C:, destination on C: no space needed
         assert_eq!(cross_device_size(&refs, &destination), 0);
     }
 
@@ -1076,7 +1069,7 @@ mod tests {
         ];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
-        // All files on different volumes than D: — full size needed
+        // All files on different volumes than D: full size needed
         assert_eq!(cross_device_size(&refs, &destination), 3000);
     }
 
@@ -1117,7 +1110,7 @@ mod tests {
         let files = [make_file("a.txt", r"C:\source\a.txt", 5000)];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
-        // Both resolve to c: — same volume, no space needed
+        // Both resolve to c: same volume, no space needed
         assert_eq!(cross_device_size(&refs, &destination), 0);
     }
 
@@ -1154,7 +1147,7 @@ mod tests {
         let files = [make_file("a.txt", &source_path.to_string_lossy(), 1000)];
         let refs: Vec<&FileEntry> = files.iter().collect();
 
-        // Source and destination share a filesystem — no space needed
+        // Source and destination share a filesystem. No space needed
         assert_eq!(cross_device_size(&refs, &destination), 0);
     }
 
@@ -1421,7 +1414,7 @@ mod tests {
 
         let result = filter_files(&files, &destination, false);
 
-        // Only the first occurrence should pass; the rest are case-insensitive duplicates
+        // Only the first occurrence should pass. The rest are case-insensitive duplicates
         assert_eq!(result.files_to_move.len(), 1);
         assert_eq!(result.files_to_move[0].full_path, first_path);
         assert_eq!(result.skipped_files.len(), 2);
@@ -1500,8 +1493,8 @@ mod tests {
 
     #[test]
     fn test_filter_files_no_force_with_already_at_dest_and_same_name_source() {
-        // Same scenario as above, but without force — the source file should be
-        // skipped because it already exists at the destination.
+        // Same scenario as above, but without force.
+        // The source file should be skipped because it already exists at the destination.
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let destination = temp_dir.path().to_path_buf();
 
@@ -1611,7 +1604,7 @@ mod tests {
         let abort_flag = AtomicBool::new(false);
         let progress_bar = ProgressBar::hidden();
 
-        // Claim the file is 9999 bytes — the actual file is only 5 bytes
+        // Claim the file is 9999 bytes. The actual file is only 5 bytes
         let result = copy_file_inner(&source_file, &dest_file, 9999, &progress_bar, &abort_flag);
 
         assert!(matches!(result, Err(MoveError::Failed(_))));
@@ -1627,7 +1620,7 @@ mod tests {
         let content = vec![0u8; COPY_BUFFER_SIZE * 3];
         fs::write(&source_file, &content).expect("failed to write source");
 
-        // Set abort flag BEFORE starting — the copy loop checks it at the top
+        // Set abort flag BEFORE starting. The copy loop checks it at the top
         let abort_flag = AtomicBool::new(true);
         let progress_bar = ProgressBar::hidden();
 
@@ -1682,7 +1675,7 @@ mod tests {
         let abort_flag = AtomicBool::new(false);
         let progress_bar = ProgressBar::hidden();
 
-        // Claim expected size is much larger than actual — triggers size mismatch
+        // Claim expected size is much larger than actual. Triggers size mismatch
         let result = copy_file_with_progress(&source_file, &dest_file, 9999, &progress_bar, &abort_flag);
 
         assert!(matches!(result, Err(MoveError::Failed(_))));
@@ -1819,10 +1812,9 @@ mod tests {
             make_file("unique.txt", &native_path(&["incoming", "unique.txt"]), 300),
         ];
 
-        // Without force: incoming/shared.txt would be caught by exists-at-dest
-        // if the directory existed, but since the destination directory doesn't
-        // really exist on disk, the exists() check returns false and the file
-        // passes through.
+        // Without force: incoming/shared.txt would be caught by exists-at-dest if the directory existed,
+        // but since the destination directory doesn't really exist on disk,
+        // the exists() check returns false and the file passes through.
         let result = filter_files(&files, &destination, false);
         assert_eq!(result.already_at_destination, 1);
         // incoming/shared.txt passes (not a seen_names duplicate, dest doesn't exist on disk)
@@ -1890,8 +1882,8 @@ mod tests {
     fn test_check_disk_space_exactly_available() {
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let available = get_available_space(temp_dir.path()).expect("failed to get available space");
-        // Free space can change between the two calls, so stay just below the
-        // observed value while still exercising the near-boundary success case.
+        // Free space can change between the two calls, so stay just below the observed value
+        // while still exercising the near-boundary success case.
         let required = available.saturating_sub(4096);
         let result = check_disk_space(temp_dir.path(), required);
         assert!(
@@ -2217,7 +2209,7 @@ mod tests {
         let dest_file = dest_dir.join("recovered.bin");
         fs::write(&dest_file, content).expect("failed to write dest file");
 
-        // Source does not exist — simulates rename having moved it
+        // Source does not exist. Simulates rename having moved it
         let source_file = temp_dir.path().join("source").join("recovered.bin");
 
         let abort_flag = AtomicBool::new(false);
@@ -2303,10 +2295,10 @@ mod tests {
 
     #[test]
     fn test_move_single_file_rename_fallback_to_copy() {
-        // When rename fails with a non-cross-device error but the source
-        // still exists, the code should fall through to copy+delete.
-        // We simulate this by making the destination directory not exist
-        // at first (so rename fails), then creating it before the copy.
+        // When rename fails with a non-cross-device error but the source still exists,
+        // the code should fall through to copy+delete.
+        // We simulate this by making the destination directory not exist at first
+        // (so rename fails), then creating it before the copy.
         //
         // Since we can't inject code between rename and copy, we instead
         // verify the end-to-end behavior: create source in one temp dir
@@ -2321,9 +2313,9 @@ mod tests {
         let source_file = source_dir.join("safe.bin");
         fs::write(&source_file, content).expect("failed to write source");
 
-        // Destination parent directory does NOT exist — rename will fail
-        // with a non-cross-device error, and the copy will also fail,
-        // but the source must remain intact.
+        // Destination parent directory does NOT exist.
+        // Rename will fail with a non-cross-device error,
+        // and the copy will also fail, but the source must remain intact.
         let dest_file = temp_dir.path().join("nonexistent_dir").join("safe.bin");
 
         let abort_flag = AtomicBool::new(false);
@@ -2337,8 +2329,8 @@ mod tests {
             &abort_flag,
         );
 
-        // The move should fail (both rename and copy fail because dest dir
-        // doesn't exist), but the critical thing is source is preserved.
+        // The move should fail (both rename and copy fail because dest dir doesn't exist),
+        // but the critical thing is source is preserved.
         assert!(matches!(result, Err(MoveError::Failed(_))));
         assert!(
             source_file.exists(),

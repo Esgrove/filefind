@@ -166,8 +166,8 @@ The daemon supports two scan modes:
 - **Incremental mode** (default): Scans and UPSERTs entries, then cleans up stale entries.
   For NTFS volumes, uses USN journal to efficiently identify deleted/renamed files.
   For non-NTFS volumes, runs volume pruner after scan.
-- **Clean mode** (`--force` flag or `force_clean_scan` config): Deletes all existing
-  entries for a volume before inserting new ones. Use for complete rebuilds.
+- **Clean mode** (`--force` flag or `force_clean_scan` config):
+  Deletes all existing entries for a volume before inserting new ones. Use for complete rebuilds.
   Clean scan is automatically used when the database is empty.
 
 ### File Watcher (non-NTFS/network drives)
@@ -210,25 +210,25 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
 ### CLI Move Feature
 
 - `--move <DIR>` moves matching files to the specified directory after displaying search results
-- `--force` overwrites existing files at the destination; without it, conflicts are skipped
-- Move strategy: try `fs::rename` first (atomic, instant on same device), fall back to
-  chunked copy+verify+delete for cross-device moves (e.g., local drive → network share)
+- `--force` overwrites existing files at the destination. Without it, conflicts are skipped
+- Move strategy: try `fs::rename` first (atomic, instant on same device),
+  fall back to chunked copy+verify+delete for cross-device moves (e.g., local drive → network share)
 - Disk space check only counts cross-device files; same-device renames need no free space.
-  Volume detection uses `get_volume_prefix()` from the shared library to compare drive
-  letters or UNC server/share roots.
-- Progress bar via `indicatif`, graceful Ctrl+C abort via `ctrlc` (finish current file,
-  second Ctrl+C force-quits)
+  Volume detection uses `get_volume_prefix()` from the shared library to compare drive letters
+  or UNC server/share roots.
+- Progress bar via `indicatif`, graceful Ctrl+C abort via `ctrlc` (finish current file, second Ctrl+C force-quits)
 - Confirmation prompt shows file count, total size, skipped files, and force-mode warning
 - Files already in the destination directory or any of its subdirectories are counted but not moved or reported as skips
 - Duplicate filenames across search results are skipped (first occurrence wins)
-- Database is updated after each successful move; MFT reference is cleared since it may
-  be invalid on the new volume
-- The `ctrlc` handler can only be registered once per process; the function documents
-  this constraint and returns an error on a second call
+- Database is updated after each successful move.
+  MFT reference is cleared since it may be invalid on the new volume
+- The `ctrlc` handler can only be registered once per process.
+  The function documents this constraint and returns an error on a second call
 
 ### CLI Search Features
 
-- **Pattern expansion**: Dot-separated patterns like "some.name" automatically expand to also search "some name" and "somename"
+- **Pattern expansion**: Dot-separated patterns like "some.name" automatically expand to also search "some name"
+  and "somename"
 - **Glob patterns**: Supports `*` and `?` wildcards
 - **Regex search**: Full regex support with `-r` flag
 - **Exact matching**: Disable pattern expansion with `-e` flag
@@ -246,21 +246,22 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
 ### CLI Terminal Hyperlinks
 
 - Result paths are wrapped in OSC 8 escape sequences so terminals render them as links.
-  Ctrl+Click (Windows Terminal, Warp) or Cmd+Click (iTerm2) opens the path with the
-  application the operating system associates with it.
-- `Hyperlinker` in `filefind-cli/src/hyperlink.rs` owns the mode and URI scheme and is
-  stored on `CliConfig`. `wrap()` returns the text borrowed and unchanged when links are
-  disabled, so display code can print its result unconditionally.
-- Link text may already contain ANSI color codes; they nest inside the link and the
-  sequences are zero-width, so `info` format columns stay aligned.
-- `auto` mode (default) requires stdout to be a terminal _and_ the terminal to be known to
-  support OSC 8 (`WT_SESSION`, `TERM_PROGRAM`, `KONSOLE_VERSION`, `DOMTERM`, kitty via
-  `TERM`, or VTE >= 0.50). This keeps piped and redirected output free of escape sequences.
+  Ctrl+Click (Windows Terminal, Warp) or Cmd+Click (iTerm2)
+  opens the path with the application the operating system associates with it.
+- `Hyperlinker` in `filefind-cli/src/hyperlink.rs` owns the mode and URI scheme and is stored on `CliConfig`.
+  `wrap()` returns the text borrowed and unchanged when links are disabled,
+  so display code can print its result unconditionally.
+- Link text may already contain ANSI color codes.
+  They nest inside the link and the sequences are zero-width, so `info` format columns stay aligned.
+- `auto` mode (default) requires stdout to be a terminal _and_ the terminal to be known to support OSC 8
+  (`WT_SESSION`, `TERM_PROGRAM`, `KONSOLE_VERSION`, `DOMTERM`, kitty via `TERM`, or VTE >= 0.50).
+  This keeps piped and redirected output free of escape sequences.
   `TerminalEnvironment` holds the relevant variables so detection can be unit tested
   without mutating the process environment.
-- Paths are converted to URIs: backslashes become forward slashes, unsafe bytes are
-  percent-encoded, UNC paths become `file://server/share/...`, and drive paths become
-  `file:///C:/...`. Links use the mapped display path, so `path_mappings` are respected.
+- Paths are converted to URIs:
+  backslashes become forward slashes, unsafe bytes are percent-encoded,
+  UNC paths become `file://server/share/...`, and drive paths become `file:///C:/...`.
+  Links use the mapped display path, so `path_mappings` are respected.
 - Missing directories are never linked because they no longer exist on disk.
 - A non-`file` `hyperlink_scheme` emits `<scheme>://<path>` and requires a protocol handler
   registered with the operating system.

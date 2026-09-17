@@ -95,8 +95,7 @@ pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
 /// Check if a directory is truly empty on the filesystem.
 ///
 /// Returns `true` if the directory exists and contains no entries.
-/// Returns `false` if the directory has contents, doesn't exist, or the check
-/// times out (250ms).
+/// Returns `false` if the directory has contents, doesn't exist, or the check times out (250ms).
 ///
 /// The check runs in a separate thread to avoid blocking on network paths.
 ///
@@ -130,9 +129,8 @@ pub fn is_directory_empty_on_disk(path: &str) -> bool {
 
 /// Check if a path is accessible with a timeout.
 ///
-/// Returns `false` if the path doesn't exist or if the check takes longer than
-/// 250ms. The check runs in a separate thread to avoid blocking on unresponsive
-/// network paths.
+/// Returns `false` if the path doesn't exist or if the check takes longer than 250ms.
+/// The check runs in a separate thread to avoid blocking on unresponsive network paths.
 ///
 /// # Examples
 ///
@@ -161,9 +159,8 @@ pub fn check_path_accessible(path: &str) -> bool {
 /// Check if a directory exists on disk with a timeout.
 ///
 /// Returns `true` if the path exists and is a directory.
-/// Returns `false` if it doesn't exist, is not a directory, or the check times
-/// out (250ms). The check runs in a separate thread to avoid blocking on
-/// unresponsive network paths.
+/// Returns `false` if it doesn't exist, is not a directory, or the check times out (250ms).
+/// The check runs in a separate thread to avoid blocking on unresponsive network paths.
 ///
 /// # Examples
 ///
@@ -192,8 +189,7 @@ pub fn check_directory_exists(path: &str) -> bool {
 
 /// Calculate the total size of files under each directory.
 ///
-/// Groups the given file entries by their parent directory and sums the file sizes
-/// for each directory.
+/// Groups the given file entries by their parent directory and sums the file sizes for each directory.
 ///
 /// # Examples
 ///
@@ -224,8 +220,7 @@ pub fn calculate_directory_sizes(files: &[&FileEntry]) -> HashMap<String, u64> {
 
 /// Count all matching files under a directory (including subdirectories).
 ///
-/// Matches files whose `full_path` starts with the directory path followed by
-/// a separator (`\` or `/`).
+/// Matches files whose `full_path` starts with the directory path followed by a separator (`\` or `/`).
 ///
 /// # Examples
 ///

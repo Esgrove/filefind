@@ -449,9 +449,8 @@ impl Daemon {
 
     /// Extract drive letters from configured paths.
     ///
-    /// Returns a list of uppercase drive letters that are referenced in the
-    /// daemon's configured paths. This is used to filter which NTFS volumes
-    /// should have USN monitors started.
+    /// Returns a list of uppercase drive letters that are referenced in the daemon's configured paths.
+    /// This is used to filter which NTFS volumes should have USN monitors started.
     fn get_configured_drives(&self) -> Vec<char> {
         let mut drives: Vec<char> = self
             .config
@@ -1946,9 +1945,8 @@ mod tests {
         let temp_file = temp_dir.path().join("created.txt");
         std::fs::write(&temp_file, "hello").expect("Failed to write temp file");
 
-        // The drive letter won't match our volume mount point, so volume_id
-        // lookup will fail (no volume for the temp path's drive), but the code
-        // path is still exercised without panic.
+        // The drive letter won't match our volume mount point, so volume_id lookup will fail
+        // (no volume for the temp path's drive), but the code path is still exercised without panic.
         daemon.handle_change_event(FileChangeEvent::Created(temp_file));
     }
 

@@ -87,8 +87,8 @@ pub struct DaemonConfig {
     /// instead of UNC paths. The database always stores the real UNC paths
     /// so the daemon can access them from an elevated process.
     ///
-    /// Auto-detection via Win32 API is attempted first for drive letters in
-    /// the configured paths. Manual mappings here take priority over auto-detected ones.
+    /// Auto-detection via Win32 API is attempted first for drive letters in the configured paths.
+    /// Manual mappings here take priority over auto-detected ones.
     ///
     /// Example: `[["\\\\192.168.1.106\\Home", "X"], ["\\\\server\\share", "Z"]]`
     /// This will display `X:\Data\file.txt` instead of `\\192.168.1.106\Home\Data\file.txt`.
@@ -96,8 +96,8 @@ pub struct DaemonConfig {
     pub path_mappings: Vec<PathMapping>,
 
     /// Force clean scan (delete existing entries before inserting new ones).
-    /// When false (default), uses incremental UPSERT which is faster but may
-    /// leave stale entries for moved/deleted files.
+    /// When false (default), uses incremental UPSERT which is faster
+    /// but may leave stale entries for moved/deleted files.
     /// Clean scan is always performed automatically if the database is empty.
     #[serde(default)]
     pub force_clean_scan: bool,

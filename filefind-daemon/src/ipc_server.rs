@@ -233,8 +233,8 @@ impl IpcServer {
                 break;
             }
 
-            // Create named pipe instance with permissive security so non-elevated
-            // clients can connect when the daemon runs with admin privileges.
+            // Create named pipe instance with permissive security
+            // so non-elevated clients can connect when the daemon runs with admin privileges.
             // SAFETY: CreateNamedPipeW is safe with valid parameters.
             let pipe_handle = unsafe {
                 CreateNamedPipeW(
@@ -318,8 +318,8 @@ impl IpcServer {
     /// processes (CLI, tray app) to connect when the daemon runs with admin
     /// privileges (e.g. started by a scheduled task for MFT/USN access).
     ///
-    /// The returned struct borrows `security_descriptor`, so the caller must
-    /// keep it alive for as long as the attributes are in use.
+    /// The returned struct borrows `security_descriptor`,
+    /// so the caller must keep it alive for as long as the attributes are in use.
     #[cfg(windows)]
     fn create_permissive_security_attributes(
         security_descriptor: &mut windows::Win32::Security::SECURITY_DESCRIPTOR,
@@ -1400,8 +1400,8 @@ mod tests {
     }
 
     // ==================== Integration Tests ====================
-    // These tests start a real IPC server and connect real clients through
-    // named pipes (Windows) or Unix domain sockets (other platforms).
+    // These tests start a real IPC server and connect real clients through named pipes
+    // (Windows) or Unix domain sockets (other platforms).
 
     /// Generate a unique pipe/socket path for an integration test.
     ///
@@ -1417,8 +1417,7 @@ mod tests {
         }
     }
 
-    /// Helper: start an IPC server on a unique pipe and return the pieces needed
-    /// to interact with it from the test.
+    /// Helper: start an IPC server on a unique pipe and return the pieces needed to interact with it from the test.
     ///
     /// Returns `(pipe_path, server_state, shutdown_flag, command_receiver)`.
     fn start_test_server(
@@ -1450,8 +1449,8 @@ mod tests {
     /// instances where no pipe exists on Windows.
     ///
     /// The server destroys the old pipe and creates a new one after each client,
-    /// so a client connecting during that gap gets "file not found". This helper
-    /// retries with short back-off to tolerate that race.
+    /// so a client connecting during that gap gets "file not found".
+    /// This helper retries with short back-off to tolerate that race.
     fn send_command_retry(
         client: &filefind::IpcClient,
         command: DaemonCommand,
@@ -1475,8 +1474,7 @@ mod tests {
     fn stop_test_server(shutdown: &Arc<AtomicBool>, pipe_path: &Path) {
         shutdown.store(true, Ordering::Relaxed);
         // On Windows the server thread may be blocked in ConnectNamedPipe.
-        // Opening a throwaway connection unblocks it so the thread can see
-        // the shutdown flag and exit.
+        // Opening a throwaway connection unblocks it so the thread can see the shutdown flag and exit.
         #[cfg(windows)]
         {
             let _ = std::fs::OpenOptions::new().read(true).write(true).open(pipe_path);

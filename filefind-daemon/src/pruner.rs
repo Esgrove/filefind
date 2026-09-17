@@ -185,7 +185,7 @@ pub fn prune_volume_entries(database: &Database, volume_id: i64, verbose: bool) 
 /// # Arguments
 /// * `database` - The database to prune
 /// * `volume_ids` - The volume IDs to prune entries for
-/// * `max_id` - Optional maximum file ID to prune; entries with higher IDs are skipped.
+/// * `max_id` - Optional maximum file ID to prune. Entries with higher IDs are skipped.
 ///   This is useful to skip entries that were just inserted during the current scan.
 /// * `verbose` - Whether to print verbose progress information
 ///
@@ -264,8 +264,7 @@ pub fn prune_multiple_volumes(
 
 /// Check entries for a single volume and return IDs to delete.
 ///
-/// This function processes directories first (sorted by path length) to enable
-/// parent-directory optimization for files.
+/// This function processes directories first (sorted by path length) to enable parent-directory optimization for files.
 fn check_volume_entries(entries: Vec<EntryToCheck>) -> VolumeCheckResult {
     let mut result = VolumeCheckResult {
         ids_to_delete: Vec::new(),

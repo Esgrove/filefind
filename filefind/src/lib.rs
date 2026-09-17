@@ -202,9 +202,8 @@ pub fn is_drive_root(path: &Path) -> bool {
 
 /// Extract the drive letter from a string path like `"C:\Users"` or `"X:"`.
 ///
-/// Returns the uppercase drive letter if the string starts with a drive letter
-/// followed by a colon. Returns `None` for UNC paths, relative paths, or any
-/// string that does not begin with a drive letter.
+/// Returns the uppercase drive letter if the string starts with a drive letter followed by a colon.
+/// Returns `None` for UNC paths, relative paths, or any string that does not begin with a drive letter.
 ///
 /// # Examples
 ///
@@ -226,9 +225,8 @@ pub fn extract_drive_letter_from_str(path: &str) -> Option<char> {
 
 /// Extract the drive letter from a path like `C:\Users` or `X:`.
 ///
-/// Returns the uppercase drive letter if the path starts with a drive letter
-/// followed by a colon. Returns `None` for UNC paths, relative paths, or any
-/// path that does not begin with a drive letter.
+/// Returns the uppercase drive letter if the path starts with a drive letter followed by a colon.
+/// Returns `None` for UNC paths, relative paths, or any path that does not begin with a drive letter.
 ///
 /// # Examples
 ///
@@ -268,13 +266,12 @@ pub fn is_network_path(path: &Path) -> bool {
 
 /// Extract a lowercase volume prefix from a path for same-volume comparison.
 ///
-/// Returns the drive letter (e.g., `"c:"`) for local paths, or the UNC server
-/// and share (e.g., `"\\server\share"`) for network paths. The `\\?\` prefix
-/// added by [`Path::canonicalize`] on Windows is stripped before extraction.
+/// Returns the drive letter (e.g., `"c:"`) for local paths,
+/// or the UNC server and share (e.g., `"\\server\share"`) for network paths.
+/// The `\\?\` prefix added by [`Path::canonicalize`] on Windows is stripped before extraction.
 ///
-/// Returns `None` if the path has no recognizable volume root, including Unix
-/// paths — same-volume comparison on Unix should use device ids from
-/// `std::os::unix::fs::MetadataExt` instead of string prefixes.
+/// Returns `None` if the path has no recognizable volume root, including Unix paths:
+/// same-volume comparison on Unix should use device ids from `std::os::unix::fs::MetadataExt` instead of string prefixes.
 ///
 /// # Examples
 ///
@@ -292,7 +289,7 @@ pub fn get_volume_prefix(path: &str) -> Option<String> {
 
     // UNC path: \\server\share\...
     if let Some(remainder) = path.strip_prefix(r"\\") {
-        // Find server\share — the first two path components
+        // Find server\share. The first two path components
         let mut components = remainder.splitn(3, '\\');
         let server = components.next()?;
         let share = components.next()?;
@@ -342,8 +339,8 @@ pub fn get_unc_for_drive(drive_letter: char) -> Option<String> {
     let mut buffer: Vec<u16> = vec![0u16; 512];
     let mut buffer_len = u32::try_from(buffer.len()).unwrap_or(512);
 
-    // SAFETY: `WNetGetConnectionW` is a safe Windows API call that reads the
-    // null-terminated local name string and writes the remote name into the buffer.
+    // SAFETY: `WNetGetConnectionW` is a safe Windows API call
+    // that reads the null-terminated local name string and writes the remote name into the buffer.
     #[allow(unsafe_code)]
     let result = unsafe { WNetGetConnectionW(local_name.as_ptr(), buffer.as_mut_ptr(), &raw mut buffer_len) };
 
@@ -377,9 +374,8 @@ pub const fn get_unc_for_drive(_drive_letter: char) -> Option<String> {
 /// Get the UNC path for a persistent (remembered) mapped network drive, even when offline.
 ///
 /// Unlike [`get_unc_for_drive`], which only works when the drive is currently connected,
-/// this function reads the Windows registry at `HKCU\Network\<letter>` where persistent
-/// drive mappings are stored. This allows detecting that a drive letter *is* a mapped
-/// network drive even when the remote host is unreachable.
+/// this function reads the Windows registry at `HKCU\Network\<letter>` where persistent drive mappings are stored.
+/// This allows detecting that a drive letter *is* a mapped network drive even when the remote host is unreachable.
 ///
 /// Returns `None` if the drive letter has no persistent mapping.
 ///
@@ -410,8 +406,8 @@ pub fn get_persistent_drive_mapping(drive_letter: char) -> Option<String> {
 
     let mut hkey: windows_sys::Win32::System::Registry::HKEY = std::ptr::null_mut();
 
-    // SAFETY: `RegOpenKeyExW` is a safe Windows API call that opens a registry key
-    // for reading. The key handle is closed below with `RegCloseKey`.
+    // SAFETY: `RegOpenKeyExW` is a safe Windows API call that opens a registry key for reading.
+    // The key handle is closed below with `RegCloseKey`.
     #[allow(unsafe_code)]
     let result = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, key_path.as_ptr(), 0, KEY_READ, &raw mut hkey) };
 
@@ -447,7 +443,7 @@ pub fn get_persistent_drive_mapping(drive_letter: char) -> Option<String> {
         return None;
     }
 
-    // buffer_size is in bytes; convert to u16 count and trim null terminator
+    // buffer_size is in bytes. Convert to u16 count and trim null terminator
     let char_count = (buffer_size as usize) / 2;
     let len = buffer[..char_count].iter().position(|&c| c == 0).unwrap_or(char_count);
 
@@ -549,8 +545,8 @@ pub fn build_path_mappings(drive_letters: &[char], manual_mappings: &[PathMappin
 
 /// Try to resolve a UNC path to use a mapped drive letter prefix.
 ///
-/// If the path starts with a known UNC prefix (from `mappings`), the UNC prefix
-/// is replaced with the corresponding drive letter prefix.
+/// If the path starts with a known UNC prefix (from `mappings`),
+/// the UNC prefix is replaced with the corresponding drive letter prefix.
 ///
 /// For example, with mapping `"\\\\192.168.1.106\\home" → "X:"`:
 /// - `\\192.168.1.106\Home\Data\file.txt` → `X:\Data\file.txt`
@@ -841,7 +837,7 @@ fn get_shell_completion_dir(shell: Shell, name: &str) -> Result<PathBuf> {
         return Ok(user_dir);
     }
 
-    // PowerShell has no separate global directory; skip the global fallback for it.
+    // PowerShell has no separate global directory. Skip the global fallback for it.
     let global_dir = match shell {
         Shell::Bash => Some(PathBuf::from("/etc/bash_completion.d")),
         Shell::Fish => Some(PathBuf::from("/usr/share/fish/completions")),
@@ -861,9 +857,8 @@ fn get_shell_completion_dir(shell: Shell, name: &str) -> Result<PathBuf> {
 
 /// Generate a shell completion script for the given shell.
 ///
-/// When `install` is `true`, the completion file is written to the appropriate
-/// shell-specific directory. When `false`, the completion script is printed to
-/// stdout.
+/// When `install` is `true`, the completion file is written to the appropriate shell-specific directory.
+/// When `false`, the completion script is printed to stdout.
 ///
 /// # Examples
 ///
@@ -991,8 +986,9 @@ mod tests {
 
     #[test]
     fn test_classify_path_drive_root() {
-        // Local drive roots should be classified as NTFS drive root OR MappedNetworkDrive
-        // depending on whether the drive is actually mapped. We test that it's one of these.
+        // Local drive roots should be classified as NTFS drive root
+        // OR MappedNetworkDrive depending on whether the drive is actually mapped.
+        // We test that it's one of these.
         let c_type = classify_path(Path::new("C:\\"));
         assert!(
             c_type == PathType::NtfsDriveRoot || c_type == PathType::MappedNetworkDrive,

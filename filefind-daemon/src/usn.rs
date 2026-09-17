@@ -1,8 +1,7 @@
 //! NTFS USN (Update Sequence Number) Journal monitor.
 //!
-//! This module provides efficient change tracking for NTFS volumes by monitoring
-//! the USN Journal. Instead of rescanning the entire file system, we can query
-//! "what changed since USN X" to get incremental updates.
+//! This module provides efficient change tracking for NTFS volumes by monitoring the USN Journal.
+//! Instead of rescanning the entire file system, we can query "what changed since USN X" to get incremental updates.
 //!
 //! # Requirements
 //! - Administrator privileges are required to read the USN Journal.
@@ -264,8 +263,8 @@ impl UsnMonitor {
     /// A vector of changes and the new last USN value.
     ///
     /// # Note
-    /// Returns `Result` for cross-platform API consistency - the non-Windows stub
-    /// returns an error since USN Journal only exists on Windows/NTFS.
+    /// Returns `Result` for cross-platform API consistency - the non-Windows stub returns an error
+    /// since USN Journal only exists on Windows/NTFS.
     #[cfg(windows)]
     #[allow(clippy::unnecessary_wraps)]
     pub fn read_changes(&mut self) -> Result<(Vec<UsnChange>, i64)> {
@@ -355,9 +354,8 @@ impl UsnMonitor {
     /// - `[0..8]`: Next USN value (`i64`, little-endian)
     /// - `[8..]`:  Packed `USN_RECORD_V2`/`USN_RECORD_V3` records, each 8-byte aligned
     ///
-    /// Each record's `RecordLength` field (first 4 bytes) gives the total size
-    /// including any alignment padding.  Walking stops when `RecordLength` is
-    /// zero or would exceed the buffer.
+    /// Each record's `RecordLength` field (first 4 bytes) gives the total size including any alignment padding.
+    /// Walking stops when `RecordLength` is zero or would exceed the buffer.
     ///
     /// Returns the parsed changes and the next USN from the buffer header.
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -654,12 +652,9 @@ mod tests {
         data[16..24].copy_from_slice(&parent_ref.to_le_bytes());
         // Usn (24..32)
         data[24..32].copy_from_slice(&usn.to_le_bytes());
-        // TimeStamp (32..40) — leave as zero
-        // Reason (40..44)
+        // TimeStamp (32..40): leave as zero Reason (40..44)
         data[40..44].copy_from_slice(&reason.to_le_bytes());
-        // SourceInfo (44..48) — leave as zero
-        // SecurityId (48..52) — leave as zero
-        // FileAttributes (52..56)
+        // SourceInfo (44..48): leave as zero SecurityId (48..52): leave as zero FileAttributes (52..56)
         data[52..56].copy_from_slice(&attributes.to_le_bytes());
         // FileNameLength (56..58)
         data[56..58].copy_from_slice(&(name_bytes_len as u16).to_le_bytes());
@@ -698,18 +693,13 @@ mod tests {
         data[6..8].copy_from_slice(&0u16.to_le_bytes());
         // FileReferenceNumber lower 64 bits (8..16)
         data[8..16].copy_from_slice(&file_ref.to_le_bytes());
-        // FileReferenceNumber upper 64 bits (16..24) — zero
-        // ParentFileReferenceNumber lower 64 bits (24..32)
+        // FileReferenceNumber upper 64 bits (16..24), zero ParentFileReferenceNumber lower 64 bits (24..32)
         data[24..32].copy_from_slice(&parent_ref.to_le_bytes());
-        // ParentFileReferenceNumber upper 64 bits (32..40) — zero
-        // Usn (40..48)
+        // ParentFileReferenceNumber upper 64 bits (32..40), zero Usn (40..48)
         data[40..48].copy_from_slice(&usn.to_le_bytes());
-        // TimeStamp (48..56) — zero
-        // Reason (56..60)
+        // TimeStamp (48..56), zero Reason (56..60)
         data[56..60].copy_from_slice(&reason.to_le_bytes());
-        // SourceInfo (60..64) — zero
-        // SecurityId (64..68) — zero
-        // FileAttributes (68..72)
+        // SourceInfo (60..64), zero SecurityId (64..68), zero FileAttributes (68..72)
         data[68..72].copy_from_slice(&attributes.to_le_bytes());
         // FileNameLength (72..74)
         data[72..74].copy_from_slice(&(name_bytes_len as u16).to_le_bytes());
@@ -1008,7 +998,7 @@ mod tests {
 
     #[test]
     fn test_parse_usn_record_too_short() {
-        // Less than 60 bytes — should be rejected immediately
+        // Less than 60 bytes. Should be rejected immediately
         let data = vec![0u8; 30];
         let result = UsnMonitor::parse_usn_record(&data);
         assert!(result.is_none(), "should return None for data shorter than 60 bytes");
@@ -1184,8 +1174,8 @@ mod tests {
 
     // ── Realistic golden data ───────────────────────────────────────────
     //
-    // Hand-crafted byte arrays that match the exact binary layout Windows
-    // produces, verified against the Microsoft USN_RECORD_V2 / V3 docs.
+    // Hand-crafted byte arrays that match the exact binary layout Windows produces,
+    // verified against the Microsoft USN_RECORD_V2 / V3 docs.
     // Every field offset is annotated so reviewers can cross-check against
     // https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v2
 
@@ -1431,8 +1421,8 @@ mod tests {
 
     #[test]
     fn test_realistic_rename_pair() {
-        // A rename produces TWO USN records: one with RENAME_OLD_NAME for the
-        // old filename, and one with RENAME_NEW_NAME | CLOSE for the new name.
+        // A rename produces TWO USN records:
+        // one with RENAME_OLD_NAME for the old filename, and one with RENAME_NEW_NAME | CLOSE for the new name.
         // Both share the same FileReferenceNumber.
         let file_ref: u64 = 0x0002_0000_0000_1234;
         let parent_ref: u64 = 0x0001_0000_0000_0005;
@@ -1708,7 +1698,7 @@ mod tests {
         let record = build_aligned_v2_record(100, 5, 1000, reason_flags::USN_REASON_FILE_CREATE, 0x20, "complete.txt");
         let buffer = build_usn_journal_buffer(2000, std::slice::from_ref(&record));
 
-        // Lie about bytes_returned — cut the last record short
+        // Lie about bytes_returned: cut the last record short
         let truncated_len = 8 + record.len() - 4;
         let (changes, _) = UsnMonitor::parse_usn_buffer(&buffer, truncated_len);
 

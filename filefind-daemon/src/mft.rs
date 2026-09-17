@@ -1,8 +1,7 @@
 //! NTFS Master File Table (MFT) scanner.
 //!
 //! This module provides direct MFT reading for fast file system indexing on Windows.
-//! Reading the MFT directly bypasses Windows file APIs and can scan millions of files
-//! in seconds.
+//! Reading the MFT directly bypasses Windows file APIs and can scan millions of files in seconds.
 //!
 //! # Requirements
 //! - Administrator privileges are required to read the MFT directly.
@@ -370,8 +369,7 @@ impl MftScanner {
     /// - `[0..8]`: Next file reference number (`u64`, little-endian)
     /// - `[8..]`:  Packed `USN_RECORD_V2`/`USN_RECORD_V3` records, each 8-byte aligned
     ///
-    /// System MFT entries (file reference < 24) and entries with empty names
-    /// are filtered out automatically.
+    /// System MFT entries (file reference < 24) and entries with empty names are filtered out automatically.
     ///
     /// Returns the parsed entries and the next file reference from the buffer header.
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -1091,8 +1089,8 @@ mod tests {
 
     #[test]
     fn test_parse_mft_v2_size_always_zero() {
-        // MFT entries parsed from USN records always have size 0;
-        // actual size is resolved later via `get_file_size`.
+        // MFT entries parsed from USN records always have size 0.
+        // Actual size is resolved later via `get_file_size`.
         let data = build_mft_v2_record(42, 5, 0x20, "file.txt");
         let entry = MftScanner::parse_usn_record(&data).expect("should parse");
         assert_eq!(entry.size, 0);
@@ -1179,7 +1177,7 @@ mod tests {
 
     #[test]
     fn test_build_full_path_orphaned_entry() {
-        // Entry whose parent is not in the ref_map — stops walking
+        // Entry whose parent is not in the ref_map: stops walking
         let scanner = make_test_scanner('C');
         let file = make_entry(100, 999, "orphan.txt", false);
 
@@ -1339,7 +1337,7 @@ mod tests {
     fn test_roundtrip_mixed_v2_v3_records() {
         let scanner = make_test_scanner('C');
 
-        // Parse a V2 directory and a V3 file — both should work together
+        // Parse a V2 directory and a V3 file. Both should work together
         let dir_data = build_mft_v2_record(30, 5, FILE_ATTRIBUTE_DIRECTORY, "MixedDir");
         let dir_entry = MftScanner::parse_usn_record(&dir_data).expect("should parse V2 dir");
 
@@ -1356,9 +1354,8 @@ mod tests {
 
     // ── Realistic golden data ───────────────────────────────────────────
     //
-    // Hand-crafted byte arrays that match the exact binary layout Windows
-    // produces via FSCTL_ENUM_USN_DATA, verified against the Microsoft
-    // USN_RECORD_V2 / V3 documentation.
+    // Hand-crafted byte arrays that match the exact binary layout Windows produces via FSCTL_ENUM_USN_DATA,
+    // verified against the Microsoft USN_RECORD_V2 / V3 documentation.
     // https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v2
 
     #[test]
@@ -1707,7 +1704,7 @@ mod tests {
         let record = build_aligned_v2_record(100, 5, 0x20, "complete.txt");
         let buffer = build_mft_enum_buffer(200, std::slice::from_ref(&record));
 
-        // Lie about bytes_returned — cut the record short
+        // Lie about bytes_returned: cut the record short
         let truncated_len = 8 + record.len() - 4;
         let (entries, _) = MftScanner::parse_mft_buffer(&buffer, truncated_len);
 
@@ -1743,8 +1740,7 @@ mod tests {
         //   │       └── main.go  (ref=501, parent=61)
         //   └── README.md        (ref=100, parent=5)
 
-        // Hand-build aligned records using realistic reference numbers
-        // with sequence numbers in the upper 16 bits.
+        // Hand-build aligned records using realistic reference numbers with sequence numbers in the upper 16 bits.
         let records = vec![
             build_aligned_v2_record(
                 0x0001_0000_0000_0032,
@@ -1809,8 +1805,8 @@ mod tests {
 
     #[test]
     fn test_golden_buffer_ignored_paths_filtered() {
-        // After parsing, entries under $Recycle.Bin should be excluded by
-        // the IGNORED_PATH_PATTERNS filter (applied in scan_filtered).
+        // After parsing, entries under $Recycle.Bin should be excluded by the IGNORED_PATH_PATTERNS filter
+        // (applied in scan_filtered).
         let scanner = make_test_scanner('C');
 
         let records = vec![

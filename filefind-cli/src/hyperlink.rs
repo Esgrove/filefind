@@ -1,11 +1,11 @@
 //! Clickable terminal hyperlinks for search results.
 //!
 //! Terminals that understand the OSC 8 escape sequence render printed text as a link.
-//! Clicking it (Ctrl+Click in Windows Terminal and Warp, Cmd+Click in iTerm2) hands the
-//! URI to the operating system, which opens the file with its default application.
+//! Clicking it (Ctrl+Click in Windows Terminal and Warp, Cmd+Click in iTerm2) hands the URI to the operating system,
+//! which opens the file with its default application.
 //!
-//! Links use the `file` scheme by default. A different scheme can be configured to route
-//! clicks to a custom protocol handler instead.
+//! Links use the `file` scheme by default.
+//! A different scheme can be configured to route clicks to a custom protocol handler instead.
 
 use std::borrow::Cow;
 use std::env;
@@ -73,7 +73,7 @@ impl Hyperlinker {
     ///
     /// Returns `text` unchanged when hyperlinks are disabled or the path is empty,
     /// so callers can print the result directly in either case.
-    /// The text may already contain ANSI color codes; they are preserved inside the link.
+    /// The text may already contain ANSI color codes. They are preserved inside the link.
     #[must_use]
     pub fn wrap<'a>(&self, path: &str, text: &'a str) -> Cow<'a, str> {
         if !self.enabled || path.is_empty() {
@@ -97,9 +97,9 @@ impl Hyperlinker {
 
     /// Build the URI for a file system path.
     ///
-    /// Windows separators are converted to forward slashes and unsafe characters are
-    /// percent-encoded. UNC paths become `file://server/share/...`, drive paths become
-    /// `file:///C:/...`, and Unix paths become `file:///path/...`.
+    /// Windows separators are converted to forward slashes and unsafe characters are percent-encoded.
+    /// UNC paths become `file://server/share/...`, drive paths become `file:///C:/...`,
+    /// and Unix paths become `file:///path/...`.
     fn build_uri(&self, path: &str) -> String {
         let encoded = encode_uri_path(&path.replace('\\', "/"));
         let scheme = &self.scheme;
@@ -116,8 +116,8 @@ impl Hyperlinker {
 
     /// Create a hyperlinker for the given mode and URI scheme.
     ///
-    /// In [`HyperlinkMode::Auto`] mode, links are only emitted when standard output is a
-    /// terminal that is known to support OSC 8 hyperlinks. An empty scheme falls back to `file`.
+    /// In [`HyperlinkMode::Auto`] mode, links are only emitted when standard output is a terminal
+    /// that is known to support OSC 8 hyperlinks. An empty scheme falls back to `file`.
     #[must_use]
     pub fn new(mode: HyperlinkMode, scheme: &str) -> Self {
         let enabled = match mode {

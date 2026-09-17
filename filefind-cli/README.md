@@ -15,7 +15,8 @@ This is the main user-facing tool for searching files indexed by the filefind da
   Defaults to logical OR search to match any single pattern with option to match all patterns (logical AND)
 - **Multiple display modes**: Grouped, list, name-only, and info output formats
 - **Sorting**: Sort results by name or file size
-- **File moving**: Move matching files to a directory with `--move`, with progress bar, disk space checks, and graceful abort
+- **File moving**: Move matching files to a directory with `--move`,
+  with progress bar, disk space checks, and graceful abort
 - **Duplicate detection**: Find files sharing the same name (ignoring extension, case-insensitive) with `filefind duplicates`
 
 ## Usage
@@ -227,40 +228,36 @@ filefind completion bash --install
 
 ## Move Feature
 
-The `--move <DIR>` option moves all matching **files** (not directories) to the
-specified destination directory after displaying the normal search results.
+The `--move <DIR>` option moves all matching **files** (not directories) to the specified destination directory
+after displaying the normal search results.
 
 ### Move behavior
 
-- **Confirmation prompt**: A summary of the move plan is shown before any files
-  are touched (file count, total size, skipped files). You must confirm with `y`.
+- **Confirmation prompt**: A summary of the move plan is shown
+  before any files are touched (file count, total size, skipped files). You must confirm with `y`.
 - **Same-device moves** use `fs::rename` (atomic and instant).
-- **Cross-device moves** (e.g., local drive → network share) fall back to
-  chunked copy + size verification + delete. The original is only deleted after
-  the copy is verified.
+- **Cross-device moves** (e.g., local drive → network share) fall back to chunked copy + size verification + delete.
+  The original is only deleted after the copy is verified.
 - **Disk space check**: Only cross-device files are counted against free space.
   Same-device renames consume no additional disk space.
 - **Progress bar** shows bytes transferred, ETA, and current filename.
-- **Ctrl+C** finishes the current file then stops. Press Ctrl+C a second time
-  to force-quit immediately.
-- **Database update**: After each successful move the file index is updated with
-  the new path.
+- **Ctrl+C** finishes the current file then stops. Press Ctrl+C a second time to force-quit immediately.
+- **Database update**: After each successful move the file index is updated with the new path.
 
 ### Conflict handling
 
-- **Duplicate filenames** in the search results: only the first occurrence is
-  moved; the rest are skipped and reported.
+- **Duplicate filenames** in the search results: only the first occurrence is moved.
+  The rest are skipped and reported.
 - **File already exists** at the destination: skipped unless `--force` is given.
-- **File already in the destination directory**: silently counted, not moved or
-  reported as a skip.
+- **File already in the destination directory**: silently counted, not moved or reported as a skip.
 
 ## Duplicates Feature
 
-The `duplicates` subcommand scans the entire file index for files that share the
-same **stem** (filename without extension), compared case-insensitively.
+The `duplicates` subcommand scans the entire file index for files that share the same **stem**
+(filename without extension), compared case-insensitively.
 
-For example, `report.txt`, `Report.pdf`, and `REPORT.docx` all share the stem
-"report" and would be shown as a duplicate group.
+For example, `report.txt`, `Report.pdf`, and `REPORT.docx` all share the stem "report"
+and would be shown as a duplicate group.
 
 ### Stem extraction rules
 
@@ -286,9 +283,8 @@ config (2)
        256 B  D:\project\config.yaml
 ```
 
-Each group header shows the stem and the number of files. Each file shows its
-size and full path. Groups are sorted alphabetically by stem; files within a
-group are sorted by full path.
+Each group header shows the stem and the number of files. Each file shows its size and full path.
+Groups are sorted alphabetically by stem. Files within a group are sorted by full path.
 
 ## Pattern Expansion
 

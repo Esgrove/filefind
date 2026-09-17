@@ -1,8 +1,7 @@
 //! File system watcher for non-NTFS drives.
 //!
-//! This module provides file system monitoring for drives that don't support
-//! MFT/USN Journal access (network drives, FAT32, exFAT, etc.) using the
-//! `notify` crate which wraps platform-native file watching APIs.
+//! This module provides file system monitoring for drives that don't support MFT/USN Journal access
+//! (network drives, FAT32, exFAT, etc.) using the `notify` crate which wraps platform-native file watching APIs.
 //!
 //! On Windows, this uses `ReadDirectoryChangesW`.
 
@@ -245,9 +244,8 @@ impl FileWatcher {
 
     /// Log a descriptive warning for a path that could not be watched.
     ///
-    /// Distinguishes between UNC network paths, mapped network drives (including
-    /// offline persistent mappings), and regular local paths so the user gets an
-    /// actionable message instead of a generic "does not exist".
+    /// Distinguishes between UNC network paths, mapped network drives (including offline persistent mappings),
+    /// and regular local paths so the user gets an actionable message instead of a generic "does not exist".
     fn log_inaccessible_path(path: &Path) {
         if is_unc_path(path) {
             warn!(
@@ -320,8 +318,7 @@ impl FileWatcher {
 
     /// Send debounced events that have aged past `debounce_duration`.
     ///
-    /// Returns `Err(())` when the receiver has been dropped and the caller
-    /// should stop the event loop.
+    /// Returns `Err(())` when the receiver has been dropped and the caller should stop the event loop.
     async fn flush_pending_events(
         pending_events: &mut HashMap<PathBuf, (FileChangeEvent, std::time::Instant)>,
         last_flush: &mut std::time::Instant,
