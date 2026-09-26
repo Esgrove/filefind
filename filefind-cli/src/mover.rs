@@ -30,7 +30,10 @@ use filefind::database::Database;
 #[cfg(windows)]
 use filefind::get_volume_prefix;
 use filefind::types::FileEntry;
-use filefind::{extract_drive_letter, format_size, get_unc_for_drive, print_error, print_success, print_warning};
+use filefind::{
+    extract_drive_letter, format_size, get_unc_for_drive, print_error, print_success, print_warning,
+    strip_prefix_ignore_case,
+};
 
 /// Size of the buffer used for chunked file copying (256 KB).
 const COPY_BUFFER_SIZE: usize = 256 * 1024;
@@ -247,6 +250,10 @@ pub fn move_files(files: &[FileEntry], destination: &Path, database: &Database, 
         if abort_flag_handler.load(Ordering::SeqCst) {
             // Second Ctrl+C: hard exit
             eprintln!("\nForce quitting...");
+            #[expect(
+                clippy::exit,
+                reason = "second Ctrl+C force-quits and the handler cannot return an error"
+            )]
             std::process::exit(1);
         }
         abort_flag_handler.store(true, Ordering::SeqCst);
@@ -836,7 +843,12 @@ fn copy_file_inner(
             break;
         }
 
-        dest_file.write_all(&buffer[..bytes_read]).map_err(|error| {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Read::read guarantees bytes_read <= buffer.len()"
+        )]
+        let chunk = &buffer[..bytes_read];
+        dest_file.write_all(chunk).map_err(|error| {
             MoveError::Failed(
                 anyhow::Error::new(error).context(format!("Failed to write to: {}", destination.display())),
             )
@@ -915,13 +927,9 @@ fn normalize_destination(canonical: &Path, original: &Path) -> std::path::PathBu
         // Try to resolve back to the original drive letter
         if let Some(drive) = extract_drive_letter(original)
             && let Some(unc_root) = get_unc_for_drive(drive)
+            && let Some(drive_path) = replace_unc_root_with_drive(&unc_path, &unc_root, drive)
         {
-            let unc_lower = unc_path.to_lowercase();
-            let root_lower = unc_root.to_lowercase();
-            if unc_lower.starts_with(&root_lower) {
-                let remainder = &unc_path[unc_root.len()..];
-                return std::path::PathBuf::from(format!("{drive}:{remainder}"));
-            }
+            return drive_path;
         }
 
         return std::path::PathBuf::from(unc_path);
@@ -933,6 +941,15 @@ fn normalize_destination(canonical: &Path, original: &Path) -> std::path::PathBu
     }
 
     canonical.to_path_buf()
+}
+
+/// Replace the UNC root of a path with a drive letter, e.g. `\\server\share\dir` → `Z:\dir`.
+///
+/// The UNC root is matched case-insensitively.
+/// Returns `None` if `unc_path` does not start with `unc_root`.
+fn replace_unc_root_with_drive(unc_path: &str, unc_root: &str, drive: char) -> Option<std::path::PathBuf> {
+    strip_prefix_ignore_case(unc_path, &unc_root.to_lowercase())
+        .map(|remainder| std::path::PathBuf::from(format!("{drive}:{remainder}")))
 }
 
 /// Normalize a path string by stripping the `\\?\` or `\\?\UNC\` extended-length prefix
@@ -1974,6 +1991,44 @@ mod tests {
         let result = normalize_destination(&canonical, &original);
         // No drive letter in original, so can't resolve back, but \\?\UNC\ is fixed
         assert_eq!(result, PathBuf::from(r"\\server\share\data"));
+    }
+
+    #[test]
+    fn test_replace_unc_root_with_drive() {
+        let result = replace_unc_root_with_drive(r"\\192.168.1.107\NAS\DATA", r"\\192.168.1.107\NAS", 'Z');
+        assert_eq!(result, Some(PathBuf::from(r"Z:\DATA")));
+    }
+
+    #[test]
+    fn test_replace_unc_root_with_drive_case_insensitive() {
+        let result = replace_unc_root_with_drive(r"\\SERVER\Share\Data", r"\\server\SHARE", 'Z');
+        assert_eq!(result, Some(PathBuf::from(r"Z:\Data")));
+    }
+
+    #[test]
+    fn test_replace_unc_root_with_drive_root_only() {
+        let result = replace_unc_root_with_drive(r"\\server\share", r"\\server\share", 'Z');
+        assert_eq!(result, Some(PathBuf::from("Z:")));
+    }
+
+    #[test]
+    fn test_replace_unc_root_with_drive_no_match() {
+        assert_eq!(
+            replace_unc_root_with_drive(r"\\other\share\data", r"\\server\share", 'Z'),
+            None
+        );
+        assert_eq!(replace_unc_root_with_drive(r"\\server", r"\\server\share", 'Z'), None);
+    }
+
+    #[test]
+    fn test_replace_unc_root_with_drive_lowercase_changes_byte_length() {
+        // "Ⱥ" is 2 bytes but lowercases to the 3-byte "ⱥ".
+        // Slicing the path by the root length used to cut inside the second "Ⱥ" and panic.
+        let result = replace_unc_root_with_drive(r"\\nas\ⱥȺ\dir", r"\\NAS\ȺȺ", 'Z');
+        assert_eq!(result, Some(PathBuf::from(r"Z:\dir")));
+
+        let result = replace_unc_root_with_drive(r"\\nas\ȺȺ", r"\\nas\Ⱥ", 'Z');
+        assert_eq!(result, Some(PathBuf::from("Z:Ⱥ")));
     }
 
     // --- filter_files with normalized paths tests ---

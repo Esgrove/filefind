@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use filefind::Database;
+use filefind::{Database, extract_drive_letter_from_str};
 use rayon::prelude::*;
 use tracing::{debug, info, trace};
 
@@ -385,15 +385,15 @@ fn extract_volume_key(path: &str) -> String {
     // Handle UNC paths: \\server\share -> \\server\share
     if path.starts_with("\\\\") {
         let parts: Vec<&str> = path.trim_start_matches("\\\\").splitn(3, '\\').collect();
-        if parts.len() >= 2 {
-            return format!("\\\\{}\\{}", parts[0], parts[1]);
+        if let [server, share, ..] = parts.as_slice() {
+            return format!("\\\\{server}\\{share}");
         }
         return path.to_string();
     }
 
     // Handle drive letters: C:\... -> C:
-    if path.len() >= 2 && path.chars().nth(1) == Some(':') {
-        return path[..2].to_uppercase();
+    if let Some(drive_letter) = extract_drive_letter_from_str(path) {
+        return format!("{drive_letter}:");
     }
 
     // Handle absolute Unix paths: group by macOS mount point under /Volumes,
@@ -722,6 +722,28 @@ mod tests {
     #[test]
     fn test_extract_volume_key_unknown_format() {
         assert_eq!(extract_volume_key("relative/path/file.txt"), "UNKNOWN");
+    }
+
+    #[test]
+    fn test_extract_volume_key_short_drive_paths() {
+        assert_eq!(extract_volume_key("C:"), "C:");
+        assert_eq!(extract_volume_key("z:file.txt"), "Z:");
+        assert_eq!(extract_volume_key("C"), "UNKNOWN");
+        assert_eq!(extract_volume_key(""), "UNKNOWN");
+    }
+
+    #[test]
+    fn test_extract_volume_key_non_ascii_prefix() {
+        // A multibyte first character used to panic when slicing the first two bytes
+        assert_eq!(extract_volume_key("日:\\file.txt"), "UNKNOWN");
+        assert_eq!(extract_volume_key("é:\\file.txt"), "UNKNOWN");
+        assert_eq!(extract_volume_key("1:\\file.txt"), "UNKNOWN");
+    }
+
+    #[test]
+    fn test_extract_volume_key_malformed_unc() {
+        assert_eq!(extract_volume_key("\\\\server"), "\\\\server");
+        assert_eq!(extract_volume_key("\\\\server\\share"), "\\\\server\\share");
     }
 
     #[test]

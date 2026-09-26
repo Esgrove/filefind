@@ -35,20 +35,38 @@ const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 /// assert!(matches!(result, Cow::Owned(_)));
 /// ```
 pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
-    if patterns.is_empty() {
+    // Lowercase each pattern per character to match how the text is lowercased below
+    let patterns_lower: Vec<String> = patterns
+        .iter()
+        .filter(|pattern| !pattern.is_empty())
+        .map(|pattern| pattern.chars().flat_map(char::to_lowercase).collect())
+        .collect();
+
+    if patterns_lower.is_empty() {
         return Cow::Borrowed(text);
     }
 
-    let text_lower = text.to_lowercase();
+    // Lowercasing can change the UTF-8 byte length of a character (e.g. "Ⱥ" is 2 bytes, "ⱥ" is 3),
+    // so match offsets in the lowercased text cannot be used to slice the original text directly.
+    // For every byte of the lowercased text, record the byte span of the original character it came from.
+    let mut text_lower = String::with_capacity(text.len());
+    let mut original_spans: Vec<(usize, usize)> = Vec::with_capacity(text.len());
+    for (start, character) in text.char_indices() {
+        let end = start + character.len_utf8();
+        text_lower.extend(character.to_lowercase());
+        original_spans.resize(text_lower.len(), (start, end));
+    }
 
-    // Pre-lowercase all patterns once instead of per-match
-    let patterns_lower: Vec<String> = patterns.iter().map(|pattern| pattern.to_lowercase()).collect();
-
-    // Collect all match ranges (start, end) for all patterns
+    // Collect all match ranges (start, end) for all patterns, in original text byte offsets
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     for pattern_lower in &patterns_lower {
-        for (start, matched) in text_lower.match_indices(pattern_lower.as_str()) {
-            ranges.push((start, start + matched.len()));
+        for (lower_start, matched) in text_lower.match_indices(pattern_lower.as_str()) {
+            let lower_last = lower_start + matched.len() - 1;
+            if let (Some(&(start, _)), Some(&(_, end))) =
+                (original_spans.get(lower_start), original_spans.get(lower_last))
+            {
+                ranges.push((start, end));
+            }
         }
     }
 
@@ -79,16 +97,19 @@ pub fn highlight_match<'a>(text: &'a str, patterns: &[&str]) -> Cow<'a, str> {
     let mut last_end = 0;
 
     for (start, end) in merged {
+        // Ranges come from `char_indices`, so they always fall on character boundaries
+        let (Some(before), Some(matched_text)) = (text.get(last_end..start), text.get(start..end)) else {
+            return Cow::Borrowed(text);
+        };
         // Add text before the match
-        result.push_str(&text[last_end..start]);
+        result.push_str(before);
         // Add highlighted match using original case from text
-        let matched_text = &text[start..end];
         result.push_str(&matched_text.green().bold().to_string());
         last_end = end;
     }
 
     // Add remaining text
-    result.push_str(&text[last_end..]);
+    result.push_str(text.get(last_end..).unwrap_or_default());
     Cow::Owned(result)
 }
 
@@ -365,6 +386,75 @@ mod tests {
         let result = highlight_match(text, &["world"]);
         assert!(matches!(result, Cow::Owned(_)));
         assert!(result.contains("world"));
+    }
+
+    /// Apply the same styling `highlight_match` uses to a matched segment.
+    fn highlighted(text: &str) -> String {
+        text.green().bold().to_string()
+    }
+
+    #[test]
+    fn test_highlight_match_exact_output_preserves_case() {
+        let result = highlight_match("MyDocument.TXT", &["document"]);
+        assert_eq!(result, format!("My{}.TXT", highlighted("Document")));
+    }
+
+    #[test]
+    fn test_highlight_match_empty_pattern_ignored() {
+        let result = highlight_match("abc", &[""]);
+        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_eq!(result, "abc");
+
+        let result = highlight_match("abc", &["", "b"]);
+        assert_eq!(result, format!("a{}c", highlighted("b")));
+    }
+
+    #[test]
+    fn test_highlight_match_lowercase_longer_than_original() {
+        // "Ⱥ" is 2 bytes but lowercases to the 3-byte "ⱥ".
+        // Offsets from the lowercased text used to highlight the wrong characters.
+        let result = highlight_match("ȺȺ-report.txt", &["report"]);
+        assert_eq!(result, format!("ȺȺ-{}.txt", highlighted("report")));
+    }
+
+    #[test]
+    fn test_highlight_match_lowercase_longer_does_not_panic() {
+        // Offsets from the lowercased text used to run past the end of the original text
+        let result = highlight_match("Ⱥx", &["x"]);
+        assert_eq!(result, format!("Ⱥ{}", highlighted("x")));
+
+        let result = highlight_match("ȺȺȺ", &["ⱥ"]);
+        assert_eq!(result, highlighted("ȺȺȺ"));
+    }
+
+    #[test]
+    fn test_highlight_match_lowercase_shorter_than_original() {
+        // "ẞ" is 3 bytes but lowercases to the 2-byte "ß"
+        let result = highlight_match("ẞẞ-file.txt", &["file"]);
+        assert_eq!(result, format!("ẞẞ-{}.txt", highlighted("file")));
+    }
+
+    #[test]
+    fn test_highlight_match_multi_char_lowercase() {
+        // "İ" lowercases to two characters: "i" followed by a combining dot above
+        let result = highlight_match("İstanbul.txt", &["stanbul"]);
+        assert_eq!(result, format!("İ{}.txt", highlighted("stanbul")));
+
+        let result = highlight_match("İstanbul.txt", &["İst"]);
+        assert_eq!(result, format!("{}anbul.txt", highlighted("İst")));
+
+        // A match covering only part of a character's lowercase form highlights the whole character
+        let result = highlight_match("İstanbul.txt", &["i"]);
+        assert_eq!(result, format!("{}stanbul.txt", highlighted("İ")));
+    }
+
+    #[test]
+    fn test_highlight_match_non_ascii_case_insensitive() {
+        let result = highlight_match("Ärger.txt", &["ÄRGER"]);
+        assert_eq!(result, format!("{}.txt", highlighted("Ärger")));
+
+        let result = highlight_match("ΟΔΟΣ.txt", &["ΟΔΟΣ"]);
+        assert_eq!(result, format!("{}.txt", highlighted("ΟΔΟΣ")));
     }
 
     // ── calculate_directory_sizes ─────────────────────────────────

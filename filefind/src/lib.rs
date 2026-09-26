@@ -137,7 +137,7 @@ pub fn is_mapped_network_drive(path: &Path) -> bool {
         let prefix_str = prefix.as_os_str();
         // Create a root path like "X:\"
         let mut root: Vec<u16> = prefix_str.encode_wide().collect();
-        if root.len() >= 2 && root[1] == u16::from(b':') {
+        if root.get(1) == Some(&u16::from(b':')) {
             root.push(u16::from(b'\\'));
             root.push(0); // null terminator
 
@@ -188,15 +188,12 @@ pub const fn is_mapped_network_drive(_path: &Path) -> bool {
 /// ```
 #[must_use]
 pub fn is_drive_root(path: &Path) -> bool {
-    let bytes = path.to_string_lossy();
-    let bytes = bytes.as_bytes();
+    let path_str = path.to_string_lossy();
 
     // Check if it's a drive root like "C:\", "C:", "C:/"
     matches!(
-        bytes,
-        [letter, b':', ..] if letter.is_ascii_alphabetic() && (
-            bytes.len() == 2 || (bytes.len() == 3 && (bytes[2] == b'\\' || bytes[2] == b'/'))
-        )
+        path_str.as_bytes(),
+        [letter, b':'] | [letter, b':', b'\\' | b'/'] if letter.is_ascii_alphabetic()
     )
 }
 
@@ -273,7 +270,7 @@ pub fn normalize_drive_root(path: &Path) -> PathBuf {
         return path.to_path_buf();
     };
 
-    let remainder = &path_str[2..];
+    let remainder = path_str.get(2..).unwrap_or_default();
     if remainder.is_empty() {
         PathBuf::from(format!("{drive_letter}:\\"))
     } else {
@@ -336,12 +333,7 @@ pub fn get_volume_prefix(path: &str) -> Option<String> {
     }
 
     // Drive letter path: C:\..., C:/..., C:...
-    let bytes = path.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return Some(path[..2].to_lowercase());
-    }
-
-    None
+    extract_drive_letter_from_str(path).map(|drive_letter| format!("{}:", drive_letter.to_ascii_lowercase()))
 }
 
 /// Get the UNC path that a mapped network drive letter points to.
@@ -384,9 +376,7 @@ pub fn get_unc_for_drive(drive_letter: char) -> Option<String> {
         return None;
     }
 
-    // Find the null terminator and convert to String
-    let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-    String::from_utf16(&buffer[..len]).ok()
+    utf16_until_nul(&buffer)
 }
 
 /// Get the UNC path for a mapped network drive letter (non-Windows stub).
@@ -481,9 +471,7 @@ pub fn get_persistent_drive_mapping(drive_letter: char) -> Option<String> {
 
     // buffer_size is in bytes. Convert to u16 count and trim null terminator
     let char_count = (buffer_size as usize) / 2;
-    let len = buffer[..char_count].iter().position(|&c| c == 0).unwrap_or(char_count);
-
-    String::from_utf16(&buffer[..len]).ok()
+    utf16_until_nul(buffer.get(..char_count)?)
 }
 
 /// Get the UNC path for a persistent mapped network drive (non-Windows stub).
@@ -605,14 +593,41 @@ pub fn build_path_mappings(drive_letters: &[char], manual_mappings: &[PathMappin
 /// ```
 #[must_use]
 pub fn resolve_unc_to_mapped_path<S: BuildHasher>(path: &str, mappings: &HashMap<String, String, S>) -> Option<String> {
-    let path_lower = path.to_lowercase();
-    for (unc_prefix, drive_prefix) in mappings {
-        if path_lower.starts_with(unc_prefix) {
-            let remainder = &path[unc_prefix.len()..];
-            return Some(format!("{drive_prefix}{remainder}"));
+    mappings.iter().find_map(|(unc_prefix, drive_prefix)| {
+        strip_prefix_ignore_case(path, unc_prefix).map(|remainder| format!("{drive_prefix}{remainder}"))
+    })
+}
+
+/// Strip a lowercase prefix from the start of `text`, comparing case-insensitively.
+///
+/// Each character of `text` is lowercased individually and compared against `prefix_lower`,
+/// so the returned remainder is always sliced from `text` at a valid character boundary.
+/// This stays correct when lowercasing changes the UTF-8 byte length of a character,
+/// where slicing the original text with an offset from its lowercased copy would not.
+///
+/// Returns `None` if `text` does not start with the prefix,
+/// or if the prefix ends in the middle of a character's multi-character lowercase form.
+///
+/// # Examples
+///
+/// ```
+/// use filefind::strip_prefix_ignore_case;
+///
+/// assert_eq!(strip_prefix_ignore_case(r"\\Server\Share\File.txt", r"\\server\share"), Some(r"\File.txt"));
+/// assert_eq!(strip_prefix_ignore_case(r"\\other\share", r"\\server"), None);
+/// ```
+#[must_use]
+pub fn strip_prefix_ignore_case<'a>(text: &'a str, prefix_lower: &str) -> Option<&'a str> {
+    let mut remaining_prefix = prefix_lower;
+    for (index, character) in text.char_indices() {
+        if remaining_prefix.is_empty() {
+            return text.get(index..);
+        }
+        for lower in character.to_lowercase() {
+            remaining_prefix = remaining_prefix.strip_prefix(lower)?;
         }
     }
-    None
+    remaining_prefix.is_empty().then_some("")
 }
 
 /// Print an error message in red to stderr.
@@ -931,6 +946,16 @@ pub fn generate_shell_completion(
     Ok(())
 }
 
+/// Decode a UTF-16 buffer filled by a Windows API call, stopping at the first null terminator.
+///
+/// The whole buffer is decoded if it has no null terminator.
+/// Returns `None` if the text is not valid UTF-16.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn utf16_until_nul(buffer: &[u16]) -> Option<String> {
+    let text = buffer.split(|&code_unit| code_unit == 0).next().unwrap_or_default();
+    String::from_utf16(text).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,6 +1035,14 @@ mod tests {
         assert!(!is_drive_root(Path::new("1:")));
         assert!(!is_drive_root(Path::new("@:")));
         assert!(!is_drive_root(Path::new(" :")));
+
+        // Three character paths with a non-separator third character
+        assert!(!is_drive_root(Path::new("C:a")));
+        assert!(!is_drive_root(Path::new("C:|")));
+
+        // Non-ASCII first character
+        assert!(!is_drive_root(Path::new("é:")));
+        assert!(!is_drive_root(Path::new("é:\\")));
     }
 
     #[test]
@@ -1377,6 +1410,88 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_unc_to_mapped_path_lowercase_changes_byte_length() {
+        // "Ⱥ" is 2 bytes in UTF-8 but its lowercase "ⱥ" is 3 bytes,
+        // so the prefix length in the lowercased key does not match the original path.
+        let mut mappings = HashMap::new();
+        mappings.insert(r"\\nas\ⱥ".to_string(), "X:".to_string());
+
+        let result = resolve_unc_to_mapped_path(r"\\NAS\Ⱥ\file.txt", &mappings);
+        assert_eq!(result, Some(r"X:\file.txt".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_unc_to_mapped_path_does_not_panic_on_char_boundary() {
+        // The lowercased prefix length (9 bytes) falls inside the second "Ⱥ" of the original path
+        let mut mappings = HashMap::new();
+        mappings.insert(r"\\nas\ⱥ".to_string(), "X:".to_string());
+
+        let result = resolve_unc_to_mapped_path(r"\\nas\ȺȺ.txt", &mappings);
+        assert_eq!(result, Some("X:Ⱥ.txt".to_string()));
+    }
+
+    #[test]
+    fn test_strip_prefix_ignore_case_ascii() {
+        assert_eq!(
+            strip_prefix_ignore_case(r"\\Server\Share\File.txt", r"\\server\share"),
+            Some(r"\File.txt")
+        );
+        assert_eq!(strip_prefix_ignore_case("ABC", "abc"), Some(""));
+        assert_eq!(strip_prefix_ignore_case("abc", "abd"), None);
+    }
+
+    #[test]
+    fn test_strip_prefix_ignore_case_empty_inputs() {
+        assert_eq!(strip_prefix_ignore_case("abc", ""), Some("abc"));
+        assert_eq!(strip_prefix_ignore_case("", ""), Some(""));
+        assert_eq!(strip_prefix_ignore_case("", "a"), None);
+    }
+
+    #[test]
+    fn test_strip_prefix_ignore_case_prefix_longer_than_text() {
+        assert_eq!(strip_prefix_ignore_case("ab", "abc"), None);
+    }
+
+    #[test]
+    fn test_strip_prefix_ignore_case_lowercase_changes_byte_length() {
+        assert_eq!(strip_prefix_ignore_case("ȺB", "ⱥ"), Some("B"));
+        assert_eq!(strip_prefix_ignore_case("ẞtraße", "ß"), Some("traße"));
+    }
+
+    #[test]
+    fn test_strip_prefix_ignore_case_multi_char_lowercase() {
+        // "İ" lowercases to two characters: "i" followed by a combining dot above
+        assert_eq!(strip_prefix_ignore_case("İstanbul", "i\u{307}"), Some("stanbul"));
+        assert_eq!(strip_prefix_ignore_case("İstanbul", "i\u{307}st"), Some("anbul"));
+        // A prefix ending inside the lowercase expansion of a character does not match
+        assert_eq!(strip_prefix_ignore_case("İstanbul", "i"), None);
+    }
+
+    #[test]
+    fn test_utf16_until_nul_stops_at_terminator() {
+        let buffer: Vec<u16> = r"\\server\share".encode_utf16().chain([0, 0x41, 0x42]).collect();
+        assert_eq!(utf16_until_nul(&buffer), Some(r"\\server\share".to_string()));
+    }
+
+    #[test]
+    fn test_utf16_until_nul_without_terminator() {
+        let buffer: Vec<u16> = "no terminator".encode_utf16().collect();
+        assert_eq!(utf16_until_nul(&buffer), Some("no terminator".to_string()));
+    }
+
+    #[test]
+    fn test_utf16_until_nul_empty() {
+        assert_eq!(utf16_until_nul(&[]), Some(String::new()));
+        assert_eq!(utf16_until_nul(&[0, 0x41]), Some(String::new()));
+    }
+
+    #[test]
+    fn test_utf16_until_nul_invalid_utf16() {
+        // Unpaired high surrogate
+        assert_eq!(utf16_until_nul(&[0xD800, 0x41, 0]), None);
+    }
+
+    #[test]
     fn test_build_path_mappings_manual_only() {
         let manual = vec![PathMapping {
             unc: r"\\myserver\data".to_string(),
@@ -1497,6 +1612,21 @@ mod tests {
         assert_eq!(get_volume_prefix(r"\\server\"), None);
         // Malformed UNC: nothing after \\
         assert_eq!(get_volume_prefix(r"\\"), None);
+    }
+
+    #[test]
+    fn test_get_volume_prefix_non_ascii_and_short_paths() {
+        assert_eq!(get_volume_prefix("C:"), Some("c:".to_string()));
+        assert_eq!(get_volume_prefix("1:\\"), None);
+        assert_eq!(get_volume_prefix("é:\\file"), None);
+        assert_eq!(get_volume_prefix("é"), None);
+    }
+
+    #[test]
+    fn test_normalize_drive_root_non_ascii_paths_unchanged() {
+        assert_eq!(normalize_drive_root(Path::new("é:")), PathBuf::from("é:"));
+        assert_eq!(normalize_drive_root(Path::new("é")), PathBuf::from("é"));
+        assert_eq!(normalize_drive_root(Path::new("C:é")), PathBuf::from("C:é"));
     }
 
     #[test]
