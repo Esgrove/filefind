@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use filefind::types::FileChangeEvent;
-use filefind::{extract_drive_letter, get_persistent_drive_mapping, is_unc_path};
+use filefind::{extract_drive_letter, get_persistent_drive_mapping, is_unc_path, normalize_drive_root};
 
 /// Default debounce duration to coalesce rapid file changes.
 const DEFAULT_DEBOUNCE_MS: u64 = 1000;
@@ -71,7 +71,7 @@ impl FileWatcher {
     #[must_use]
     pub fn new(paths: Vec<PathBuf>, exclude_patterns: Vec<String>, debounce_ms: u64, recursive: bool) -> Self {
         Self {
-            watched_paths: paths,
+            watched_paths: paths.into_iter().map(|path| normalize_drive_root(&path)).collect(),
             exclude_patterns,
             debounce_ms,
             recursive,
@@ -394,7 +394,7 @@ pub async fn scan_directory_with_concurrency(
 ) -> Result<Vec<ScanEntry>> {
     debug!("{} Starting file scan", root.display());
 
-    let root = root.to_path_buf();
+    let root = normalize_drive_root(root);
     let exclude_patterns: Arc<[String]> = exclude_patterns.to_vec().into();
     let entries: Arc<tokio::sync::Mutex<Vec<ScanEntry>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
@@ -464,7 +464,7 @@ pub async fn scan_directory_with_concurrency(
 /// - `pattern*` - matches paths starting with "pattern"
 /// - `*pattern*` - matches paths containing "pattern"
 /// - `pattern` - matches whole path components, so `Epic` excludes `D:\Games\Epic\...`
-///   but not `D:\Videos\EpicAaron.mp4`. Multi-component patterns such as `C:\Windows`
+///   but not `D:\Videos\EpicTrailer.mp4`. Multi-component patterns such as `C:\Windows`
 ///   or `Vortex Mods\cache` match a contiguous run of components.
 ///
 /// # Examples
@@ -1092,10 +1092,13 @@ mod tests {
         assert!(matches_exclude_patterns("D:\\games\\rockstar\\gta.exe", &patterns));
 
         assert!(!matches_exclude_patterns(
-            "Z:\\DATA\\OnlyFans.TheEpicAaron.Mila.Delvina.1080p.mp4",
+            "Z:\\Data\\Holiday.TheEpicJourney.Part.One.1080p.mp4",
             &patterns
         ));
-        assert!(!matches_exclude_patterns("X:\\Videos\\Epic.Aaron.1080p.mp4", &patterns));
+        assert!(!matches_exclude_patterns(
+            "X:\\Videos\\Epic.Sample.Clip.1080p.mp4",
+            &patterns
+        ));
         assert!(!matches_exclude_patterns(
             "X:\\Videos\\Epic Games Trailer\\clip.mp4",
             &patterns
@@ -1128,7 +1131,7 @@ mod tests {
         let patterns = vec!["\\\\server\\share\\".to_string(), "#Recycle\\".to_string()];
 
         assert!(matches_exclude_patterns("\\\\server\\share\\docs\\file.txt", &patterns));
-        assert!(matches_exclude_patterns("X:\\#Recycle\\Trans\\file.mp4", &patterns));
+        assert!(matches_exclude_patterns("X:\\#Recycle\\Videos\\file.mp4", &patterns));
         assert!(!matches_exclude_patterns("\\\\server\\shared\\file.txt", &patterns));
     }
 

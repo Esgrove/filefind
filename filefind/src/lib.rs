@@ -245,6 +245,42 @@ pub fn extract_drive_letter(path: &Path) -> Option<char> {
     extract_drive_letter_from_str(&path_str)
 }
 
+/// Normalize a drive-letter path so it is fully qualified and uses an uppercase drive letter.
+///
+/// On Windows, a bare `X:` is drive-relative and means "the current directory on drive X",
+/// so joining a child onto it produces `X:child` instead of `X:\child`.
+/// A bare drive letter is therefore expanded to its root directory `X:\`.
+///
+/// Drive letters are case-insensitive on Windows, but the system reports them in uppercase,
+/// so a lowercase drive letter is uppercased for consistent display.
+/// Paths without a drive letter are returned unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::{Path, PathBuf};
+/// use filefind::normalize_drive_root;
+///
+/// assert_eq!(normalize_drive_root(Path::new("X:")), PathBuf::from(r"X:\"));
+/// assert_eq!(normalize_drive_root(Path::new("x:")), PathBuf::from(r"X:\"));
+/// assert_eq!(normalize_drive_root(Path::new(r"z:\Data")), PathBuf::from(r"Z:\Data"));
+/// assert_eq!(normalize_drive_root(Path::new(r"\\server\share")), PathBuf::from(r"\\server\share"));
+/// ```
+#[must_use]
+pub fn normalize_drive_root(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    let Some(drive_letter) = extract_drive_letter_from_str(&path_str) else {
+        return path.to_path_buf();
+    };
+
+    let remainder = &path_str[2..];
+    if remainder.is_empty() {
+        PathBuf::from(format!("{drive_letter}:\\"))
+    } else {
+        PathBuf::from(format!("{drive_letter}:{remainder}"))
+    }
+}
+
 /// Check if a path is on a network drive (either UNC or mapped).
 ///
 /// On Windows, detects mapped network drives and UNC paths.
@@ -898,6 +934,43 @@ pub fn generate_shell_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_drive_root_bare_letter() {
+        assert_eq!(normalize_drive_root(Path::new("X:")), PathBuf::from("X:\\"));
+        assert_eq!(normalize_drive_root(Path::new("c:")), PathBuf::from("C:\\"));
+    }
+
+    #[test]
+    fn test_normalize_drive_root_uppercases_drive_letter() {
+        assert_eq!(normalize_drive_root(Path::new("x:\\")), PathBuf::from("X:\\"));
+        assert_eq!(normalize_drive_root(Path::new("z:\\Data")), PathBuf::from("Z:\\Data"));
+        assert_eq!(
+            normalize_drive_root(Path::new("d:\\Mixed\\case")),
+            PathBuf::from("D:\\Mixed\\case")
+        );
+    }
+
+    #[test]
+    fn test_normalize_drive_root_joins_with_separator() {
+        let joined = normalize_drive_root(Path::new("X:")).join("Videos");
+        assert_eq!(joined.to_string_lossy(), "X:\\Videos");
+    }
+
+    #[test]
+    fn test_normalize_drive_root_leaves_other_paths_unchanged() {
+        assert_eq!(normalize_drive_root(Path::new("X:\\")), PathBuf::from("X:\\"));
+        assert_eq!(normalize_drive_root(Path::new("Z:\\Data")), PathBuf::from("Z:\\Data"));
+        assert_eq!(
+            normalize_drive_root(Path::new("\\\\server\\share")),
+            PathBuf::from("\\\\server\\share")
+        );
+        assert_eq!(
+            normalize_drive_root(Path::new("/home/user")),
+            PathBuf::from("/home/user")
+        );
+        assert_eq!(normalize_drive_root(Path::new("ab")), PathBuf::from("ab"));
+    }
 
     #[test]
     fn test_is_drive_root() {
