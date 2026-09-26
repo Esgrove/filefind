@@ -8,6 +8,7 @@ mod mft;
 mod pruner;
 mod scanner;
 mod usn;
+mod usn_buffer;
 mod watcher;
 
 use std::io::IsTerminal;

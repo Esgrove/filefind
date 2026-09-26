@@ -36,6 +36,8 @@ use windows::core::PCWSTR;
 #[cfg(windows)]
 use filefind::types::VolumeType;
 
+use crate::usn_buffer;
+
 /// Size of the buffer for reading MFT records.
 #[cfg_attr(not(windows), allow(dead_code))]
 const MFT_BUFFER_SIZE: usize = 64 * 1024;
@@ -374,35 +376,17 @@ impl MftScanner {
     /// Returns the parsed entries and the next file reference from the buffer header.
     #[cfg_attr(not(windows), allow(dead_code))]
     fn parse_mft_buffer(buffer: &[u8], bytes_returned: usize) -> (Vec<MftEntry>, u64) {
-        let mut entries = Vec::new();
+        let buffer = buffer.get(..bytes_returned).unwrap_or(buffer);
+        let Some(header) = usn_buffer::read_header(buffer) else {
+            return (Vec::new(), 0);
+        };
+        let next_ref = u64::from_le_bytes(header);
 
-        if bytes_returned < 8 || buffer.len() < 8 {
-            return (entries, 0);
-        }
-
-        let next_ref = u64::from_le_bytes(buffer[0..8].try_into().unwrap_or([0; 8]));
-
-        let mut offset = 8usize;
-        while offset < bytes_returned {
-            if offset + 4 > bytes_returned {
-                break;
-            }
-
-            let record_length = u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
-
-            if record_length == 0 || offset + record_length > bytes_returned {
-                break;
-            }
-
-            if let Some(entry) = Self::parse_usn_record(&buffer[offset..offset + record_length]) {
-                // Skip system files and special entries
-                if entry.file_reference >= 24 && !entry.name.is_empty() {
-                    entries.push(entry);
-                }
-            }
-
-            offset += record_length;
-        }
+        let entries = usn_buffer::records(buffer)
+            .filter_map(Self::parse_usn_record)
+            // Skip system files and special entries
+            .filter(|entry| entry.file_reference >= 24 && !entry.name.is_empty())
+            .collect();
 
         (entries, next_ref)
     }
@@ -415,7 +399,7 @@ impl MftScanner {
         }
 
         // Check record version (offset 4-5)
-        let major_version = u16::from_le_bytes(data[4..6].try_into().ok()?);
+        let major_version = usn_buffer::read_u16_le(data, 4)?;
 
         match major_version {
             2 => Self::parse_usn_record_v2(data),
@@ -431,25 +415,12 @@ impl MftScanner {
             return None;
         }
 
-        let file_reference = u64::from_le_bytes(data[8..16].try_into().ok()?) & 0x0000_FFFF_FFFF_FFFF;
-        let parent_reference = u64::from_le_bytes(data[16..24].try_into().ok()?) & 0x0000_FFFF_FFFF_FFFF;
-        let file_attributes = u32::from_le_bytes(data[52..56].try_into().ok()?);
-        let file_name_length = u16::from_le_bytes(data[56..58].try_into().ok()?) as usize;
-        let file_name_offset = u16::from_le_bytes(data[58..60].try_into().ok()?) as usize;
-
-        if file_name_offset + file_name_length > data.len() {
-            return None;
-        }
-
-        let name_bytes = &data[file_name_offset..file_name_offset + file_name_length];
-        let name = String::from_utf16_lossy(
-            &name_bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|code_unit| u16::from_le_bytes([code_unit[0], code_unit[1]]))
-                .collect::<Vec<_>>(),
-        );
+        let file_reference = usn_buffer::read_u64_le(data, 8)? & 0x0000_FFFF_FFFF_FFFF;
+        let parent_reference = usn_buffer::read_u64_le(data, 16)? & 0x0000_FFFF_FFFF_FFFF;
+        let file_attributes = usn_buffer::read_u32_le(data, 52)?;
+        let file_name_length = usn_buffer::read_u16_le(data, 56)? as usize;
+        let file_name_offset = usn_buffer::read_u16_le(data, 58)? as usize;
+        let name = usn_buffer::read_utf16_le_string(data, file_name_offset, file_name_length)?;
 
         let is_directory = (file_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
@@ -471,25 +442,12 @@ impl MftScanner {
         }
 
         // V3 uses 128-bit file references, but we only use the lower 64 bits
-        let file_reference = u64::from_le_bytes(data[8..16].try_into().ok()?) & 0x0000_FFFF_FFFF_FFFF;
-        let parent_reference = u64::from_le_bytes(data[24..32].try_into().ok()?) & 0x0000_FFFF_FFFF_FFFF;
-        let file_attributes = u32::from_le_bytes(data[68..72].try_into().ok()?);
-        let file_name_length = u16::from_le_bytes(data[72..74].try_into().ok()?) as usize;
-        let file_name_offset = u16::from_le_bytes(data[74..76].try_into().ok()?) as usize;
-
-        if file_name_offset + file_name_length > data.len() {
-            return None;
-        }
-
-        let name_bytes = &data[file_name_offset..file_name_offset + file_name_length];
-        let name = String::from_utf16_lossy(
-            &name_bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|code_unit| u16::from_le_bytes([code_unit[0], code_unit[1]]))
-                .collect::<Vec<_>>(),
-        );
+        let file_reference = usn_buffer::read_u64_le(data, 8)? & 0x0000_FFFF_FFFF_FFFF;
+        let parent_reference = usn_buffer::read_u64_le(data, 24)? & 0x0000_FFFF_FFFF_FFFF;
+        let file_attributes = usn_buffer::read_u32_le(data, 68)?;
+        let file_name_length = usn_buffer::read_u16_le(data, 72)? as usize;
+        let file_name_offset = usn_buffer::read_u16_le(data, 74)? as usize;
+        let name = usn_buffer::read_utf16_le_string(data, file_name_offset, file_name_length)?;
 
         let is_directory = (file_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
@@ -1725,6 +1683,30 @@ mod tests {
         let (entries, next_ref) = MftScanner::parse_mft_buffer(&buffer, buffer.len());
 
         assert_eq!(next_ref, 42);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_mft_buffer_bytes_returned_greater_than_buffer() {
+        // A bytes_returned larger than the buffer used to slice past the end and panic
+        let record = build_aligned_v2_record(100, 5, 0x20, "file.txt");
+        let buffer = build_mft_enum_buffer(200, std::slice::from_ref(&record));
+
+        let (entries, next_ref) = MftScanner::parse_mft_buffer(&buffer, buffer.len() + 100);
+
+        assert_eq!(next_ref, 200);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "file.txt");
+    }
+
+    #[test]
+    fn test_parse_mft_buffer_bytes_returned_smaller_than_header() {
+        let record = build_aligned_v2_record(100, 5, 0x20, "file.txt");
+        let buffer = build_mft_enum_buffer(200, std::slice::from_ref(&record));
+
+        let (entries, next_ref) = MftScanner::parse_mft_buffer(&buffer, 7);
+
+        assert_eq!(next_ref, 0);
         assert!(entries.is_empty());
     }
 

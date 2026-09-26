@@ -55,6 +55,7 @@ cargo test -p filefind
     - `src/pruner.rs` - Database pruning for stale entries
     - `src/scanner.rs` - File scanning logic (MFT and directory walking)
     - `src/usn.rs` - USN Journal monitoring
+    - `src/usn_buffer.rs` - Bounds-checked readers for raw USN record buffers (shared by MFT and USN parsing)
     - `src/watcher.rs` - File system watcher for non-NTFS drives
 - `filefind-cli/` - Command-line search interface
     - `src/main.rs` - CLI entry point and search logic
