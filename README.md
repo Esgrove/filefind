@@ -192,7 +192,9 @@ See `filefind.toml` in the repository root for an example configuration file.
 # Network drives are NOT auto-detected - add them explicitly if needed.
 paths = ["C:", "D:", "E:"]
 
-# Directories to exclude from indexing
+# Directories to exclude from indexing (case-insensitive).
+# Plain entries match whole path components: "Epic" skips "D:\Games\Epic\..."
+# but not "D:\Videos\EpicTrailer.mp4". Use "*text*" to match any substring.
 exclude = [
     "C:\\Windows",
     "C:\\$Recycle.Bin",

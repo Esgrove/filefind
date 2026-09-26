@@ -111,36 +111,7 @@ impl FileWatcher {
     /// Check if a path should be excluded based on the exclusion patterns.
     #[cfg(test)]
     fn should_exclude(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-
-        for pattern in &self.exclude_patterns {
-            // Simple glob matching for common cases
-            if pattern.starts_with('*') && pattern.ends_with('*') {
-                // *pattern* - contains
-                let inner = &pattern[1..pattern.len() - 1];
-                if path_str.contains(inner) {
-                    return true;
-                }
-            } else if let Some(suffix) = pattern.strip_prefix('*') {
-                // *pattern - ends with
-                if path_str.ends_with(suffix) {
-                    return true;
-                }
-            } else if pattern.ends_with('*') {
-                // pattern* - starts with
-                let prefix = &pattern[..pattern.len() - 1];
-                if path_str.starts_with(prefix) {
-                    return true;
-                }
-            } else {
-                // Exact match or contains
-                if path_str.contains(pattern.as_str()) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        matches_exclude_patterns(&path.to_string_lossy(), &self.exclude_patterns)
     }
 
     /// Start watching for file changes with debouncing.
@@ -290,10 +261,7 @@ impl FileWatcher {
         let now = std::time::Instant::now();
 
         for path in event.paths {
-            if exclude_patterns.iter().any(|pattern| {
-                let path_str = path.to_string_lossy();
-                path_str.contains(pattern.as_str())
-            }) {
+            if matches_exclude_patterns(&path.to_string_lossy(), exclude_patterns) {
                 continue;
             }
 
@@ -489,11 +457,15 @@ pub async fn scan_directory_with_concurrency(
 
 /// Check if a path matches any of the exclusion patterns.
 ///
+/// Matching is case-insensitive and treats `/` and `\` as equivalent separators.
+///
 /// Supports glob-style patterns:
 /// - `*pattern` - matches paths ending with "pattern"
 /// - `pattern*` - matches paths starting with "pattern"
 /// - `*pattern*` - matches paths containing "pattern"
-/// - `pattern` - matches paths containing "pattern" anywhere
+/// - `pattern` - matches whole path components, so `Epic` excludes `D:\Games\Epic\...`
+///   but not `D:\Videos\EpicAaron.mp4`. Multi-component patterns such as `C:\Windows`
+///   or `Vortex Mods\cache` match a contiguous run of components.
 ///
 /// # Examples
 ///
@@ -510,27 +482,40 @@ pub async fn scan_directory_with_concurrency(
 /// assert!(!matches_exclude_patterns(r"C:\project\src\main.rs", &patterns));
 /// ```
 pub fn matches_exclude_patterns(path_str: &str, exclude_patterns: &[String]) -> bool {
-    for pattern in exclude_patterns {
-        if pattern.starts_with('*') && pattern.ends_with('*') {
-            let inner = &pattern[1..pattern.len() - 1];
-            if path_str.contains(inner) {
-                return true;
-            }
-        } else if let Some(suffix) = pattern.strip_prefix('*') {
-            if path_str.ends_with(suffix) {
-                return true;
-            }
-        } else if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len() - 1];
-            if path_str.starts_with(prefix) {
-                return true;
-            }
-        } else if path_str.contains(pattern) {
-            return true;
-        }
+    if exclude_patterns.is_empty() {
+        return false;
     }
 
-    false
+    let normalized_path = normalize_for_exclude_matching(path_str);
+    exclude_patterns
+        .iter()
+        .any(|pattern| matches_exclude_pattern(&normalized_path, pattern))
+}
+
+/// Check a normalized path against a single exclusion pattern.
+fn matches_exclude_pattern(normalized_path: &str, pattern: &str) -> bool {
+    let pattern = normalize_for_exclude_matching(pattern);
+    if pattern.is_empty() {
+        return false;
+    }
+
+    if pattern.len() > 1 && pattern.starts_with('*') && pattern.ends_with('*') {
+        normalized_path.contains(&pattern[1..pattern.len() - 1])
+    } else if let Some(suffix) = pattern.strip_prefix('*') {
+        normalized_path.ends_with(suffix)
+    } else if let Some(prefix) = pattern.strip_suffix('*') {
+        normalized_path.starts_with(prefix)
+    } else {
+        // Wrap both sides in separators so only whole path components can match.
+        let bounded_path = format!("\\{}\\", normalized_path.trim_matches('\\'));
+        let bounded_pattern = format!("\\{}\\", pattern.trim_matches('\\'));
+        bounded_path.contains(&bounded_pattern)
+    }
+}
+
+/// Lowercase a path or pattern and unify separators for exclusion matching.
+fn normalize_for_exclude_matching(value: &str) -> String {
+    value.replace('/', "\\").to_lowercase()
 }
 
 /// Scan a single directory and return its subdirectories.
@@ -671,8 +656,8 @@ mod tests {
     }
 
     #[test]
-    fn test_should_exclude_exact_substring_pattern() {
-        // Pattern without wildcards matches if path contains the pattern anywhere
+    fn test_should_exclude_whole_component_pattern() {
+        // Pattern without wildcards matches whole path components only
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec!["Thumbs.db".to_string(), ".git".to_string()],
@@ -681,14 +666,14 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
-        // Should match - contains exact substring
         assert!(watcher.should_exclude(Path::new("Thumbs.db")));
         assert!(watcher.should_exclude(Path::new("C:\\photos\\Thumbs.db")));
         assert!(watcher.should_exclude(Path::new("C:\\project\\.git\\config")));
+        assert!(watcher.should_exclude(Path::new("thumbs.db")));
 
-        // Should not match
-        assert!(!watcher.should_exclude(Path::new("thumbs.db"))); // case sensitive
         assert!(!watcher.should_exclude(Path::new("file.txt")));
+        assert!(!watcher.should_exclude(Path::new("C:\\project\\.gitignore")));
+        assert!(!watcher.should_exclude(Path::new("C:\\photos\\OldThumbs.db")));
     }
 
     #[test]
@@ -1039,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn test_should_exclude_is_case_sensitive() {
+    fn test_should_exclude_is_case_insensitive() {
         let watcher = FileWatcher {
             watched_paths: vec![],
             exclude_patterns: vec!["*.TMP".to_string(), "README.md".to_string()],
@@ -1048,14 +1033,11 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
         };
 
-        // Exact case matches
         assert!(watcher.should_exclude(Path::new("file.TMP")));
         assert!(watcher.should_exclude(Path::new("README.md")));
-
-        // Different case does not match
-        assert!(!watcher.should_exclude(Path::new("file.tmp")));
-        assert!(!watcher.should_exclude(Path::new("readme.md")));
-        assert!(!watcher.should_exclude(Path::new("README.MD")));
+        assert!(watcher.should_exclude(Path::new("file.tmp")));
+        assert!(watcher.should_exclude(Path::new("readme.md")));
+        assert!(watcher.should_exclude(Path::new("README.MD")));
     }
 
     #[test]
@@ -1086,12 +1068,75 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_exclude_patterns_exact_substring() {
+    fn test_matches_exclude_patterns_whole_component() {
         let patterns = vec!["node_modules".to_string()];
 
         assert!(matches_exclude_patterns("C:\\project\\node_modules\\pkg", &patterns));
         assert!(matches_exclude_patterns("node_modules", &patterns));
         assert!(!matches_exclude_patterns("C:\\project\\modules", &patterns));
+        assert!(!matches_exclude_patterns(
+            "C:\\project\\my_node_modules_backup",
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_does_not_match_inside_file_names() {
+        let patterns = vec!["Epic".to_string(), "GOG".to_string(), "Rockstar".to_string()];
+
+        assert!(matches_exclude_patterns(
+            "D:\\Games\\Epic\\Fortnite\\game.exe",
+            &patterns
+        ));
+        assert!(matches_exclude_patterns("D:\\GOG", &patterns));
+        assert!(matches_exclude_patterns("D:\\games\\rockstar\\gta.exe", &patterns));
+
+        assert!(!matches_exclude_patterns(
+            "Z:\\DATA\\OnlyFans.TheEpicAaron.Mila.Delvina.1080p.mp4",
+            &patterns
+        ));
+        assert!(!matches_exclude_patterns("X:\\Videos\\Epic.Aaron.1080p.mp4", &patterns));
+        assert!(!matches_exclude_patterns(
+            "X:\\Videos\\Epic Games Trailer\\clip.mp4",
+            &patterns
+        ));
+        assert!(!matches_exclude_patterns("X:\\Music\\Rockstar.Remix.mp3", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_multi_component() {
+        let patterns = vec!["C:\\Windows".to_string(), "Vortex Mods\\cache".to_string()];
+
+        assert!(matches_exclude_patterns("C:\\Windows", &patterns));
+        assert!(matches_exclude_patterns("C:\\Windows\\System32\\cmd.exe", &patterns));
+        assert!(matches_exclude_patterns("c:/windows/system32", &patterns));
+        assert!(matches_exclude_patterns(
+            "D:\\Games\\Vortex Mods\\cache\\file.bin",
+            &patterns
+        ));
+
+        assert!(!matches_exclude_patterns("C:\\WindowsApps\\app.exe", &patterns));
+        assert!(!matches_exclude_patterns("D:\\Windows\\file.txt", &patterns));
+        assert!(!matches_exclude_patterns(
+            "D:\\Games\\Vortex Mods\\mods\\file.bin",
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_trailing_separator_and_unc() {
+        let patterns = vec!["\\\\server\\share\\".to_string(), "#Recycle\\".to_string()];
+
+        assert!(matches_exclude_patterns("\\\\server\\share\\docs\\file.txt", &patterns));
+        assert!(matches_exclude_patterns("X:\\#Recycle\\Trans\\file.mp4", &patterns));
+        assert!(!matches_exclude_patterns("\\\\server\\shared\\file.txt", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_lone_wildcard_matches_everything() {
+        let patterns = vec!["*".to_string()];
+
+        assert!(matches_exclude_patterns("C:\\anything.txt", &patterns));
     }
 
     #[test]

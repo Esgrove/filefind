@@ -22,7 +22,9 @@
 # paths = ["C:", "\\\\nas\\media"]                       # Local drive + UNC path
 # paths = []
 
-# Directories to exclude from indexing
+# Directories to exclude from indexing (case-insensitive).
+# Plain entries match whole path components: "Epic" skips "D:\Games\Epic\..."
+# but not "D:\Videos\EpicTrailer.mp4". Use "*text*" to match any substring.
 exclude = [
     "C:\\Windows",
     "C:\\$Recycle.Bin",
