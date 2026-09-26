@@ -499,18 +499,22 @@ fn matches_exclude_pattern(normalized_path: &str, pattern: &str) -> bool {
         return false;
     }
 
-    if pattern.len() > 1 && pattern.starts_with('*') && pattern.ends_with('*') {
-        normalized_path.contains(&pattern[1..pattern.len() - 1])
-    } else if let Some(suffix) = pattern.strip_prefix('*') {
-        normalized_path.ends_with(suffix)
-    } else if let Some(prefix) = pattern.strip_suffix('*') {
-        normalized_path.starts_with(prefix)
-    } else {
-        // Wrap both sides in separators so only whole path components can match.
-        let bounded_path = format!("\\{}\\", normalized_path.trim_matches('\\'));
-        let bounded_pattern = format!("\\{}\\", pattern.trim_matches('\\'));
-        bounded_path.contains(&bounded_pattern)
+    if let Some(rest) = pattern.strip_prefix('*') {
+        // "*pattern*" matches anywhere, "*pattern" matches the end
+        return rest.strip_suffix('*').map_or_else(
+            || normalized_path.ends_with(rest),
+            |inner| normalized_path.contains(inner),
+        );
     }
+
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return normalized_path.starts_with(prefix);
+    }
+
+    // Wrap both sides in separators so only whole path components can match.
+    let bounded_path = format!("\\{}\\", normalized_path.trim_matches('\\'));
+    let bounded_pattern = format!("\\{}\\", pattern.trim_matches('\\'));
+    bounded_path.contains(&bounded_pattern)
 }
 
 /// Lowercase a path or pattern and unify separators for exclusion matching.
@@ -1140,6 +1144,32 @@ mod tests {
         let patterns = vec!["*".to_string()];
 
         assert!(matches_exclude_patterns("C:\\anything.txt", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_double_wildcard_matches_everything() {
+        let patterns = vec!["**".to_string()];
+
+        assert!(matches_exclude_patterns("C:\\anything.txt", &patterns));
+        assert!(matches_exclude_patterns("", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_contains_non_ascii() {
+        let patterns = vec!["*äöü*".to_string(), "*日本*".to_string()];
+
+        assert!(matches_exclude_patterns("C:\\Daten\\ÄÖÜ\\file.txt", &patterns));
+        assert!(matches_exclude_patterns("C:\\日本語\\file.txt", &patterns));
+        assert!(!matches_exclude_patterns("C:\\Daten\\aou\\file.txt", &patterns));
+    }
+
+    #[test]
+    fn test_matches_exclude_patterns_non_ascii_prefix_and_suffix() {
+        let patterns = vec!["*.été".to_string(), "日本*".to_string()];
+
+        assert!(matches_exclude_patterns("C:\\photos\\vacances.ÉTÉ", &patterns));
+        assert!(matches_exclude_patterns("日本語\\file.txt", &patterns));
+        assert!(!matches_exclude_patterns("C:\\日本\\file.txt", &patterns));
     }
 
     #[test]

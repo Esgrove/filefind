@@ -276,7 +276,7 @@ pub fn show_duplicates(
     let total_files: usize = groups.iter().map(|(_, files)| files.len()).sum();
 
     // Apply limit to number of groups shown
-    let display_groups = limit.map_or(groups.as_slice(), |max| &groups[..max.min(groups.len())]);
+    let display_groups = limit.map_or(groups.as_slice(), |max| groups.get(..max).unwrap_or(&groups));
 
     for (index, (stem, files)) in display_groups.iter().enumerate() {
         if index > 0 {
@@ -794,7 +794,9 @@ fn search_all_patterns(config: &CliConfig, database: &Database) -> Result<Vec<Fi
 ///
 /// Falls back to multiple queries with intersection.
 fn search_all_patterns_mixed(config: &CliConfig, database: &Database) -> Result<Vec<FileEntry>> {
-    let first_pattern = &config.patterns[0];
+    let Some(first_pattern) = config.patterns.first() else {
+        return Ok(Vec::new());
+    };
     let mut results: Vec<FileEntry> = if first_pattern.contains('*') || first_pattern.contains('?') {
         database.search_by_glob(first_pattern, usize::MAX)?
     } else {
@@ -1210,6 +1212,15 @@ mod tests {
         let mut config = search_config(vec!["*.json", "readme"]);
         config.match_all = true;
         let results = search_all_patterns(&config, &database).expect("Search failed");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_all_patterns_mixed_empty_patterns() {
+        let database = setup_database();
+        let mut config = search_config(vec![]);
+        config.match_all = true;
+        let results = search_all_patterns_mixed(&config, &database).expect("Search failed");
         assert!(results.is_empty());
     }
 

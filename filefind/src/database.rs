@@ -1117,10 +1117,10 @@ where
 ///
 /// The stem is the portion before the final dot.
 /// Dotfiles such as `.gitignore` keep their full name as the stem.
-fn file_stem(name: &str) -> String {
-    match name.rfind('.') {
-        None | Some(0) => name.to_string(),
-        Some(dot_position) => name[..dot_position].to_string(),
+fn file_stem(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem,
+        _ => name,
     }
 }
 
@@ -3856,6 +3856,24 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, ".gitignore");
         assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_file_stem() {
+        assert_eq!(file_stem("report.pdf"), "report");
+        assert_eq!(file_stem("archive.tar.gz"), "archive.tar");
+        assert_eq!(file_stem("Makefile"), "Makefile");
+        assert_eq!(file_stem(".gitignore"), ".gitignore");
+        assert_eq!(file_stem("trailing."), "trailing");
+        assert_eq!(file_stem("."), ".");
+        assert_eq!(file_stem(""), "");
+    }
+
+    #[test]
+    fn test_file_stem_multibyte_characters() {
+        assert_eq!(file_stem("äöü.txt"), "äöü");
+        assert_eq!(file_stem("日本語.文書"), "日本語");
+        assert_eq!(file_stem("😀.😀.png"), "😀.😀");
     }
 
     #[test]
