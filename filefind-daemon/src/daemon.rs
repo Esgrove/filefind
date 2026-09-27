@@ -2392,6 +2392,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn test_usn_created_file_can_be_deleted_by_reference() {
         let temp_dir = TempDir::new().expect("create temp directory");
         let file_path = temp_dir.path().join("indexed.txt");
