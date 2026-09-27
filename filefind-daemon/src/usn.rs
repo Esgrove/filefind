@@ -274,6 +274,14 @@ impl UsnMonitor {
         let mut buffer = vec![0u8; USN_BUFFER_SIZE];
         let mut current_usn = self.last_usn;
 
+        let journal_info = self.query_journal()?;
+        if Self::journal_position_invalid(&journal_info, self.journal_id, current_usn) {
+            bail!(
+                "USN Journal reset or expired for {}: full rescan required",
+                self.drive_letter
+            );
+        }
+
         // Prepare read request
         let mut read_data = READ_USN_JOURNAL_DATA_V0 {
             StartUsn: current_usn,
@@ -302,16 +310,10 @@ impl UsnMonitor {
             };
 
             if !success {
-                // Check if journal was reset
-                if let Ok(journal_info) = self.query_journal()
-                    && journal_info.journal_id != self.journal_id
-                {
-                    tracing::warn!("USN Journal was reset, need full rescan");
-                    self.journal_id = journal_info.journal_id;
-                    self.last_usn = journal_info.first_usn;
-                    return Ok((changes, self.last_usn));
-                }
-                break;
+                bail!(
+                    "Failed to read USN Journal for {}: full rescan required",
+                    self.drive_letter
+                );
             }
 
             if bytes_returned < 8 {
@@ -337,6 +339,11 @@ impl UsnMonitor {
 
         self.last_usn = current_usn;
         Ok((changes, current_usn))
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    const fn journal_position_invalid(info: &UsnJournalInfo, journal_id: u64, last_usn: i64) -> bool {
+        info.journal_id != journal_id || last_usn != 0 && (last_usn < info.lowest_valid_usn || last_usn > info.next_usn)
     }
 
     /// Read changes from the USN Journal (non-Windows stub).
@@ -1724,6 +1731,24 @@ mod tests {
         assert_eq!(info.first_usn, 100);
         assert_eq!(info.next_usn, 50_000);
         assert!(info.next_usn >= info.first_usn);
+    }
+
+    #[test]
+    fn test_journal_position_requires_rescan_on_reset_or_expiry() {
+        let info = UsnJournalInfo {
+            journal_id: 12,
+            first_usn: 100,
+            next_usn: 500,
+            lowest_valid_usn: 100,
+            max_usn: 1_000,
+            maximum_size: 1024,
+            allocation_delta: 128,
+        };
+        assert!(!UsnMonitor::journal_position_invalid(&info, 12, 250));
+        assert!(!UsnMonitor::journal_position_invalid(&info, 12, 0));
+        assert!(UsnMonitor::journal_position_invalid(&info, 13, 250));
+        assert!(UsnMonitor::journal_position_invalid(&info, 12, 99));
+        assert!(UsnMonitor::journal_position_invalid(&info, 12, 501));
     }
 
     #[test]

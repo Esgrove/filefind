@@ -591,37 +591,10 @@ fn execute_moves(
         let dest_path = context.destination.join(&*file_name);
         let source_path = Path::new(&file.full_path);
 
-        // If force overwrite and destination exists, remove it first
-        if context.force_overwrite
-            && dest_path.exists()
-            && let Err(error) = fs::remove_file(&dest_path)
-        {
-            summary.failed += 1;
-            progress_bar.suspend(|| {
-                print_error!(
-                    "Failed to remove existing file at destination {}: {error}",
-                    dest_path.display()
-                );
-            });
-            progress_bar.inc(file.size);
-            continue;
-        }
-
-        match move_single_file(source_path, &dest_path, file.size, &progress_bar, context.abort_flag) {
+        match move_indexed_file(file, source_path, &dest_path, &file_name, &progress_bar, context) {
             Ok(()) => {
                 summary.moved += 1;
                 summary.total_size_moved += file.size;
-
-                // Update the database: change the stored path to the new location
-                let new_path = dest_path.to_string_lossy();
-                if let Err(error) = context
-                    .database
-                    .update_file_path(&file.full_path, &new_path, &file_name)
-                {
-                    progress_bar.suspend(|| {
-                        print_warning!("Moved file but failed to update database for {}: {error}", file_name);
-                    });
-                }
             }
             Err(MoveError::Aborted) => {
                 summary.aborted = true;
@@ -644,6 +617,132 @@ fn execute_moves(
     }
 
     summary
+}
+
+fn restore_destination_backup(
+    backup: Option<(tempfile::TempDir, std::path::PathBuf)>,
+    destination: &Path,
+) -> Result<()> {
+    if let Some((directory, backup_path)) = backup {
+        if destination.exists() {
+            let preserved = directory.keep();
+            return Err(anyhow::anyhow!(
+                "Could not restore {} because another file appeared. Original destination is preserved at {}",
+                destination.display(),
+                preserved.display()
+            ));
+        }
+        if let Err(error) = fs::rename(&backup_path, destination) {
+            let preserved = directory.keep();
+            return Err(anyhow::anyhow!(
+                "Could not restore {}: {}. Original destination is preserved at {}",
+                destination.display(),
+                error,
+                preserved.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn move_indexed_file(
+    file: &FileEntry,
+    source: &Path,
+    destination: &Path,
+    file_name: &str,
+    progress_bar: &ProgressBar,
+    context: &MoveContext<'_>,
+) -> Result<(), MoveError> {
+    if destination.exists() && !context.force_overwrite {
+        return Err(MoveError::Failed(anyhow::anyhow!(
+            "Destination appeared after filtering: {}",
+            destination.display()
+        )));
+    }
+
+    let backup = if destination.exists() {
+        let directory = tempfile::Builder::new()
+            .prefix(".filefind-backup-")
+            .tempdir_in(context.destination)
+            .map_err(|error| MoveError::Failed(error.into()))?;
+        let backup_path = directory.path().join(file_name);
+        fs::rename(destination, &backup_path).map_err(|error| MoveError::Failed(error.into()))?;
+        Some((directory, backup_path))
+    } else {
+        None
+    };
+
+    if let Err(error) = move_single_file(source, destination, file.size, progress_bar, context.abort_flag) {
+        if destination.exists() {
+            if let Some((directory, _)) = backup {
+                let preserved = directory.keep();
+                return Err(MoveError::Failed(anyhow::anyhow!(
+                    "Move failed with a destination still present at {}. Original destination preserved at {}",
+                    destination.display(),
+                    preserved.display()
+                )));
+            }
+        } else if let Err(restore_error) = restore_destination_backup(backup, destination) {
+            return Err(MoveError::Failed(restore_error));
+        }
+        return Err(error);
+    }
+
+    let reconciliation = context.database.reconcile_moved_file(
+        &file.full_path,
+        &destination.to_string_lossy(),
+        file_name,
+        backup.is_some(),
+    );
+    if matches!(reconciliation, Ok(true)) {
+        if let Some((directory, backup_path)) = backup
+            && let Err(error) = fs::remove_file(&backup_path)
+        {
+            let preserved = directory.keep();
+            print_warning!(
+                "Moved file, but failed to remove old destination backup at {}: {}",
+                preserved.display(),
+                error
+            );
+        }
+        return Ok(());
+    }
+
+    let error = match reconciliation {
+        Ok(false) => anyhow::anyhow!("Source path was absent from the index: {}", file.full_path),
+        Err(error) => error,
+        Ok(true) => unreachable!("successful reconciliation returned above"),
+    };
+    let rollback = if source.exists() {
+        Err(anyhow::anyhow!("Source path already exists; cannot safely roll back"))
+    } else {
+        move_single_file(
+            destination,
+            source,
+            file.size,
+            &ProgressBar::hidden(),
+            &AtomicBool::new(false),
+        )
+        .map_err(|move_error| match move_error {
+            MoveError::Aborted => anyhow::anyhow!("Rollback aborted"),
+            MoveError::Failed(error) => error,
+        })
+    };
+    if let Err(rollback_error) = rollback {
+        let backup_location = backup.map(|(directory, _)| directory.keep());
+        return Err(MoveError::Failed(anyhow::anyhow!(
+            "Moved {}, but index reconciliation failed: {}. Rollback failed: {}. Old destination backup: {:?}",
+            destination.display(),
+            error,
+            rollback_error,
+            backup_location
+        )));
+    }
+    progress_bar.set_position(progress_bar.position().saturating_sub(file.size));
+    if let Err(restore_error) = restore_destination_backup(backup, destination) {
+        return Err(MoveError::Failed(restore_error));
+    }
+    Err(MoveError::Failed(error))
 }
 
 /// Errors that can occur when moving a single file.
@@ -1057,6 +1156,7 @@ mod tests {
 
     use super::*;
     use crate::test_utils::{make_file, native_path};
+    use filefind::types::{IndexedVolume, VolumeType};
 
     // --- cross_device_size tests ---
     // The volume-prefix comparison tests are Windows-only.
@@ -2395,6 +2495,190 @@ mod tests {
             fs::read(&source_file).expect("failed to read source"),
             content,
             "source content must be intact"
+        );
+    }
+
+    fn overwrite_test_database() -> Database {
+        let database = Database::open_in_memory().expect("open database");
+        database
+            .upsert_volume(&IndexedVolume {
+                id: None,
+                serial_number: "MOVE-TEST".into(),
+                label: None,
+                mount_point: "C:".into(),
+                volume_type: VolumeType::Ntfs,
+                is_online: true,
+                last_scan_time: None,
+                last_usn: None,
+            })
+            .expect("insert volume");
+        database
+    }
+
+    #[test]
+    fn test_force_overwrite_replaces_file_and_indexed_destination() {
+        let temp = TempDir::new().expect("temp directory");
+        let source_dir = temp.path().join("source");
+        let dest_dir = temp.path().join("destination");
+        fs::create_dir_all(&source_dir).expect("source directory");
+        fs::create_dir_all(&dest_dir).expect("destination directory");
+        let source = source_dir.join("data.txt");
+        let destination = dest_dir.join("data.txt");
+        fs::write(&source, "new contents").expect("write source");
+        fs::write(&destination, "old contents").expect("write destination");
+        let database = overwrite_test_database();
+        let source_entry = make_file("data.txt", &source.to_string_lossy(), 12);
+        let dest_entry = make_file("data.txt", &destination.to_string_lossy(), 12);
+        database.insert_file(&source_entry).expect("index source");
+        database.insert_file(&dest_entry).expect("index destination");
+        let abort_flag = AtomicBool::new(false);
+        let context = MoveContext {
+            destination: &dest_dir,
+            force_overwrite: true,
+            database: &database,
+            abort_flag: &abort_flag,
+        };
+
+        assert!(
+            move_indexed_file(
+                &source_entry,
+                &source,
+                &destination,
+                "data.txt",
+                &ProgressBar::hidden(),
+                &context
+            )
+            .is_ok()
+        );
+
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(&destination).expect("read destination"),
+            "new contents"
+        );
+        assert!(
+            database
+                .search_by_path(&source.to_string_lossy(), 10)
+                .expect("search source")
+                .is_empty()
+        );
+        assert_eq!(
+            database
+                .search_by_path(&destination.to_string_lossy(), 10)
+                .expect("search destination")
+                .len(),
+            1
+        );
+        assert_eq!(fs::read_dir(&dest_dir).expect("list directory").count(), 1);
+    }
+
+    #[test]
+    fn test_force_overwrite_missing_source_row_restores_both_files() {
+        let temp = TempDir::new().expect("temp directory");
+        let source_dir = temp.path().join("source");
+        let dest_dir = temp.path().join("destination");
+        fs::create_dir_all(&source_dir).expect("source directory");
+        fs::create_dir_all(&dest_dir).expect("destination directory");
+        let source = source_dir.join("data.txt");
+        let destination = dest_dir.join("data.txt");
+        fs::write(&source, "new contents").expect("write source");
+        fs::write(&destination, "old contents").expect("write destination");
+        let database = overwrite_test_database();
+        database
+            .insert_file(&make_file("data.txt", &destination.to_string_lossy(), 12))
+            .expect("index destination");
+        let source_entry = make_file("data.txt", &source.to_string_lossy(), 12);
+        let abort_flag = AtomicBool::new(false);
+        let context = MoveContext {
+            destination: &dest_dir,
+            force_overwrite: true,
+            database: &database,
+            abort_flag: &abort_flag,
+        };
+
+        assert!(
+            move_indexed_file(
+                &source_entry,
+                &source,
+                &destination,
+                "data.txt",
+                &ProgressBar::hidden(),
+                &context
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&source).expect("read source"), "new contents");
+        assert_eq!(
+            fs::read_to_string(&destination).expect("read destination"),
+            "old contents"
+        );
+        assert_eq!(
+            database
+                .search_by_path(&destination.to_string_lossy(), 10)
+                .expect("search destination")
+                .len(),
+            1
+        );
+        assert_eq!(fs::read_dir(&dest_dir).expect("list directory").count(), 1);
+    }
+
+    #[test]
+    fn test_force_overwrite_missing_source_file_preserves_destination() {
+        let temp = TempDir::new().expect("temp directory");
+        let dest_dir = temp.path().join("destination");
+        fs::create_dir_all(&dest_dir).expect("destination directory");
+        let source = temp.path().join("missing.txt");
+        let destination = dest_dir.join("missing.txt");
+        fs::write(&destination, "old contents").expect("write destination");
+        let database = overwrite_test_database();
+        let abort_flag = AtomicBool::new(false);
+        let context = MoveContext {
+            destination: &dest_dir,
+            force_overwrite: true,
+            database: &database,
+            abort_flag: &abort_flag,
+        };
+        let source_entry = make_file("missing.txt", &source.to_string_lossy(), 12);
+
+        assert!(
+            move_indexed_file(
+                &source_entry,
+                &source,
+                &destination,
+                "missing.txt",
+                &ProgressBar::hidden(),
+                &context
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(&destination).expect("read destination"),
+            "old contents"
+        );
+        assert_eq!(fs::read_dir(&dest_dir).expect("list directory").count(), 1);
+    }
+
+    #[test]
+    fn test_restore_backup_does_not_replace_new_destination() {
+        let temp = TempDir::new().expect("temp directory");
+        let destination = temp.path().join("data.txt");
+        let backup_dir = tempfile::Builder::new()
+            .tempdir_in(temp.path())
+            .expect("backup directory");
+        let backup_path = backup_dir.path().join("data.txt");
+        fs::write(&backup_path, "original").expect("write backup");
+        fs::write(&destination, "new arrival").expect("write concurrent destination");
+
+        let result = restore_destination_backup(Some((backup_dir, backup_path.clone())), &destination);
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(&destination).expect("read destination"),
+            "new arrival"
+        );
+        assert_eq!(
+            fs::read_to_string(&backup_path).expect("read preserved backup"),
+            "original"
         );
     }
 }

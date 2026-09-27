@@ -363,6 +363,10 @@ This allows indexing millions of files in seconds.
 
 After the initial scan, the daemon monitors the NTFS Update Sequence Number Journal to efficiently detect file system changes
 without rescanning.
+The scan records a pre-enumeration journal position so changes during the scan can be replayed.
+Directory references are scoped by drive and updated on create, rename, and delete.
+If the journal has reset or expired, or an indexed USN change cannot be applied,
+the daemon requests a clean rescan and restarts its USN monitors from the stored position.
 
 ### File System Watcher
 

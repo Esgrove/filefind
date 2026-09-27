@@ -67,7 +67,10 @@ pub struct Daemon {
     watcher_receiver: Option<mpsc::Receiver<FileChangeEvent>>,
 
     /// Cache of MFT file reference to full path (for path resolution).
-    path_cache: HashMap<u64, String>,
+    path_cache: HashMap<(char, u64), String>,
+
+    /// Drive letter to indexed volume ID for change processing.
+    volume_ids: HashMap<char, i64>,
 
     /// Shared state for IPC server.
     ipc_state: Arc<IpcServerState>,
@@ -132,6 +135,7 @@ impl Daemon {
             file_watcher: None,
             watcher_receiver: None,
             path_cache: HashMap::new(),
+            volume_ids: HashMap::new(),
             ipc_state: Arc::new(IpcServerState::new()),
             ipc_receiver: None,
             is_paused: false,
@@ -287,8 +291,12 @@ impl Daemon {
             self.process_ipc_commands().await?;
 
             // Process any pending file changes (unless paused)
-            if !self.is_paused {
-                self.process_changes();
+            if !self.is_paused && self.process_changes() {
+                self.ipc_state.state.store(DaemonStateInfo::Scanning);
+                if let Err(error) = self.rescan_and_restart_usn(true).await {
+                    error!("USN recovery scan failed: {}", error);
+                }
+                self.ipc_state.state.store(DaemonStateInfo::Running);
             }
 
             // Sleep for the configured poll interval
@@ -305,12 +313,8 @@ impl Daemon {
         // Capture verbose flag before borrowing receiver to avoid borrow conflicts
         let verbose = self.verbose();
 
-        let Some(ref mut receiver) = self.ipc_receiver else {
-            return Ok(());
-        };
-
         // Process all available commands without blocking
-        while let Ok(command) = receiver.try_recv() {
+        while let Some(command) = self.ipc_receiver.as_mut().and_then(|receiver| receiver.try_recv().ok()) {
             match command {
                 IpcToDaemon::Stop => {
                     info!("Received stop command via IPC");
@@ -319,7 +323,7 @@ impl Daemon {
                 IpcToDaemon::Rescan => {
                     info!("Received rescan command via IPC");
                     self.ipc_state.state.store(DaemonStateInfo::Scanning);
-                    if let Err(error) = run_scan(None, &self.config).await {
+                    if let Err(error) = self.rescan_and_restart_usn(false).await {
                         error!("Rescan failed: {}", error);
                     }
                     // Update stats after rescan
@@ -362,6 +366,31 @@ impl Daemon {
         }
 
         Ok(())
+    }
+
+    async fn rescan_and_restart_usn(&mut self, clean: bool) -> Result<()> {
+        let mut scan_config = self.config.clone();
+        if clean {
+            scan_config.daemon.force_clean_scan = true;
+        }
+        let result = run_scan(None, &scan_config).await;
+        let cache_result = if result.is_ok() {
+            self.build_path_cache()
+        } else {
+            Ok(())
+        };
+        let drives: Vec<char> = self.volume_monitors.keys().copied().collect();
+        for drive in drives {
+            let previous = self.volume_monitors.remove(&drive);
+            if let Err(error) = self.start_usn_monitor(drive) {
+                if let Some(monitor) = previous {
+                    self.volume_monitors.insert(drive, monitor);
+                }
+                return Err(error);
+            }
+        }
+        result?;
+        cache_result
     }
 
     /// Check if an initial scan should be performed.
@@ -489,9 +518,10 @@ impl Daemon {
     }
 
     /// Process any pending file changes.
-    fn process_changes(&mut self) {
+    fn process_changes(&mut self) -> bool {
         // Collect raw USN changes first to avoid borrow issues
         let mut raw_changes: Vec<(char, Vec<crate::usn::UsnChange>, i64)> = Vec::new();
+        let mut needs_rescan = false;
 
         for monitor in self.volume_monitors.values_mut() {
             if let Some(ref mut usn) = monitor.usn_monitor {
@@ -506,13 +536,13 @@ impl Daemon {
                     }
                     Err(error) => {
                         error!("Error reading USN changes: {}", error);
+                        needs_rescan = true;
                     }
                 }
             }
         }
 
         // Now process the collected changes (no longer borrowing volume_monitors)
-        let mut usn_events: Vec<FileChangeEvent> = Vec::new();
         let mut usn_updates: Vec<(char, i64)> = Vec::new();
         // Collect deletions by volume for batch processing via MFT reference
         let mut deletions_by_drive: HashMap<char, Vec<u64>> = HashMap::new();
@@ -521,6 +551,24 @@ impl Daemon {
             for change in &changes {
                 // Handle deletions specially - use MFT reference directly since path may not be resolvable
                 if change.is_delete() {
+                    if change.is_directory {
+                        let path = self
+                            .path_cache
+                            .get(&(drive_letter, change.file_reference))
+                            .cloned()
+                            .or_else(|| {
+                                let volume_id = self.get_volume_id_for_path(Path::new(&format!("{drive_letter}:")))?;
+                                self.database
+                                    .as_ref()?
+                                    .get_path_by_mft_reference(volume_id, change.file_reference)
+                                    .ok()?
+                            });
+                        if let Some(path) = path {
+                            needs_rescan |= !self.update_directory_index(drive_letter, change, &path);
+                        } else {
+                            needs_rescan = true;
+                        }
+                    }
                     deletions_by_drive
                         .entry(drive_letter)
                         .or_default()
@@ -529,64 +577,63 @@ impl Daemon {
                     continue;
                 }
 
+                if change.is_rename_old() {
+                    continue;
+                }
+
                 // For non-delete events, try to resolve the path from parent reference and name
                 let full_path = self.resolve_usn_path_inner(drive_letter, change.parent_reference, &change.name);
 
                 if let Some(path) = full_path {
+                    if change.is_directory {
+                        needs_rescan |= !self.update_directory_index(drive_letter, change, &path);
+                    } else if change.is_rename_new()
+                        && let Some(volume_id) = self.get_volume_id_for_path(Path::new(&path))
+                        && let Some(ref database) = self.database
+                    {
+                        match database.get_path_by_mft_reference(volume_id, change.file_reference) {
+                            Ok(Some(old_path)) if old_path != path => {
+                                if let Err(error) = database.update_file_path(&old_path, &path, &change.name) {
+                                    error!("Failed to move indexed path {}: {}", old_path, error);
+                                    needs_rescan = true;
+                                }
+                            }
+                            Err(error) => {
+                                error!("Failed to find old path for renamed file {}: {}", path, error);
+                                needs_rescan = true;
+                            }
+                            _ => {}
+                        }
+                    }
                     // Convert to event
                     if let Some(event) = Self::usn_change_to_event(change, &path) {
-                        usn_events.push(event);
+                        needs_rescan |= !self.handle_change_event_with_reference(event, Some(change.file_reference));
                     }
+                } else if change.is_create() || change.is_rename_new() {
+                    warn!("Cannot resolve USN path for {}, requesting rescan", change.name);
+                    needs_rescan = true;
                 }
             }
             usn_updates.push((drive_letter, new_usn));
         }
 
-        // Process deletions by MFT reference (more reliable than path resolution)
-        if let Some(ref db) = self.database
-            && !deletions_by_drive.is_empty()
-        {
-            // Query all volumes once instead of per drive letter
-            let volumes = db.get_all_volumes().unwrap_or_default();
-            for (drive_letter, mft_refs) in &deletions_by_drive {
-                // Find volume_id for this drive from the cached list
-                if let Some(volume) = volumes.iter().find(|volume| {
-                    volume
-                        .mount_point
-                        .chars()
-                        .next()
-                        .is_some_and(|ch| ch.eq_ignore_ascii_case(drive_letter))
-                }) && let Some(volume_id) = volume.id
-                {
-                    match db.delete_files_by_mft_references(volume_id, mft_refs) {
-                        Ok(deleted) => {
-                            if deleted > 0 {
-                                debug!("Deleted {} files from {}:", deleted, drive_letter);
-                            }
-                        }
-                        Err(error) => {
-                            debug!("Failed to delete files by MFT reference: {}", error);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process collected USN events
-        for event in usn_events {
-            self.handle_change_event(event);
-        }
+        needs_rescan |= self.apply_usn_deletions(&deletions_by_drive);
 
         // Update USN values in database
-        if let Some(ref db) = self.database {
+        if !needs_rescan && let Some(ref db) = self.database {
             for (drive_letter, new_usn) in usn_updates {
                 if let Err(error) = db.update_volume_usn_by_drive(drive_letter, new_usn) {
                     error!("Failed to update USN for drive {}: {}", drive_letter, error);
+                    needs_rescan = true;
                 }
             }
         }
 
-        // Collect file watcher events
+        self.process_watcher_events();
+        needs_rescan
+    }
+
+    fn process_watcher_events(&mut self) {
         let mut watcher_events: Vec<FileChangeEvent> = Vec::new();
         if let Some(ref mut receiver) = self.watcher_receiver {
             while let Ok(event) = receiver.try_recv() {
@@ -594,10 +641,32 @@ impl Daemon {
             }
         }
 
-        // Process collected watcher events
         for event in watcher_events {
             self.handle_change_event(event);
         }
+    }
+
+    fn apply_usn_deletions(&self, deletions_by_drive: &HashMap<char, Vec<u64>>) -> bool {
+        let Some(ref database) = self.database else {
+            return !deletions_by_drive.is_empty();
+        };
+        let mut needs_rescan = false;
+        for (drive_letter, references) in deletions_by_drive {
+            let Some(volume_id) = self.get_volume_id_for_path(Path::new(&format!("{drive_letter}:"))) else {
+                error!("No indexed volume for USN deletions on {}:", drive_letter);
+                needs_rescan = true;
+                continue;
+            };
+            match database.delete_files_by_mft_references(volume_id, references) {
+                Ok(deleted) if deleted > 0 => debug!("Deleted {} files from {}:", deleted, drive_letter),
+                Ok(_) => {}
+                Err(error) => {
+                    error!("Failed to delete files by MFT reference: {}", error);
+                    needs_rescan = true;
+                }
+            }
+        }
+        needs_rescan
     }
 
     /// Convert a USN change to a file change event.
@@ -622,7 +691,7 @@ impl Daemon {
     /// Resolve a full path from USN change data (inner version that borrows `path_cache`).
     fn resolve_usn_path_inner(&self, drive_letter: char, parent_reference: u64, name: &str) -> Option<String> {
         // Try to get parent path from cache
-        if let Some(parent_path) = self.path_cache.get(&parent_reference) {
+        if let Some(parent_path) = self.path_cache.get(&(drive_letter, parent_reference)) {
             return Some(format!("{parent_path}\\{name}"));
         }
 
@@ -631,8 +700,13 @@ impl Daemon {
             return Some(format!("{drive_letter}:\\{name}"));
         }
 
-        // Could not resolve path - would need MFT lookup
-        // This is common for files in directories not in our cache, so use trace level
+        if let Some(volume_id) = self.get_volume_id_for_path(Path::new(&format!("{drive_letter}:")))
+            && let Some(ref database) = self.database
+            && let Ok(Some(parent_path)) = database.get_path_by_mft_reference(volume_id, parent_reference)
+        {
+            return Some(format!("{parent_path}\\{name}"));
+        }
+
         trace!(
             "Could not resolve path for file '{}' with parent ref {}",
             name, parent_reference
@@ -640,10 +714,65 @@ impl Daemon {
         None
     }
 
+    fn update_directory_index(&mut self, drive_letter: char, change: &crate::usn::UsnChange, path: &str) -> bool {
+        let key = (drive_letter, change.file_reference);
+        if change.is_delete() {
+            if let Some(ref database) = self.database
+                && let Err(error) = database.delete_files_under_path(path)
+            {
+                error!("Failed to remove deleted directory subtree {}: {}", path, error);
+                return false;
+            }
+            self.path_cache
+                .retain(|(drive, _), cached_path| *drive != drive_letter || !Self::path_is_within(cached_path, path));
+        } else if change.is_rename_new() {
+            let old_path = self.path_cache.get(&key).cloned().or_else(|| {
+                let volume_id = self.get_volume_id_for_path(Path::new(path))?;
+                self.database
+                    .as_ref()?
+                    .get_path_by_mft_reference(volume_id, change.file_reference)
+                    .ok()?
+            });
+            if let Some(old_path) = old_path
+                && old_path != path
+            {
+                if let Some(ref database) = self.database
+                    && let Err(error) = database.rebase_files_under_path(&old_path, path, &change.name)
+                {
+                    error!("Failed to rebase renamed directory {}: {}", old_path, error);
+                    return false;
+                }
+                for ((drive, _), cached_path) in &mut self.path_cache {
+                    if *drive == drive_letter
+                        && Self::path_is_within(cached_path, &old_path)
+                        && let Some(suffix) = cached_path.strip_prefix(&old_path)
+                    {
+                        *cached_path = format!("{path}{suffix}");
+                    }
+                }
+            }
+            self.path_cache.insert(key, path.to_string());
+        } else if change.is_create() {
+            self.path_cache.insert(key, path.to_string());
+        }
+        true
+    }
+
+    fn path_is_within(candidate: &str, parent: &str) -> bool {
+        candidate == parent
+            || candidate
+                .strip_prefix(parent)
+                .is_some_and(|suffix| suffix.starts_with(['\\', '/']))
+    }
+
     /// Handle a file change event by updating the database.
     fn handle_change_event(&self, event: FileChangeEvent) {
+        let _ = self.handle_change_event_with_reference(event, None);
+    }
+
+    fn handle_change_event_with_reference(&self, event: FileChangeEvent, file_reference: Option<u64>) -> bool {
         let Some(ref db) = self.database else {
-            return;
+            return false;
         };
 
         match event {
@@ -653,15 +782,17 @@ impl Daemon {
                 // Get volume_id from drive letter
                 let Some(volume_id) = self.get_volume_id_for_path(&path) else {
                     trace!("No volume found for path: {}", path.display());
-                    return;
+                    return false;
                 };
 
                 // Get file metadata and insert into database
                 if let Ok(metadata) = std::fs::metadata(&path) {
-                    let entry = FileEntry::from_metadata(volume_id, &path, &metadata);
+                    let mut entry = FileEntry::from_metadata(volume_id, &path, &metadata);
+                    entry.mft_reference = file_reference;
 
                     if let Err(error) = db.insert_file(&entry) {
-                        debug!("Failed to insert file {}: {}", path.display(), error);
+                        error!("Failed to insert file {}: {}", path.display(), error);
+                        return false;
                     }
                 }
             }
@@ -674,6 +805,7 @@ impl Daemon {
                 let path_str = path.to_string_lossy();
                 if let Err(error) = db.delete_file_by_path(&path_str) {
                     error!("Failed to delete file {}: {}", path.display(), error);
+                    return false;
                 }
             }
             FileChangeEvent::Renamed { from, to } => {
@@ -683,24 +815,28 @@ impl Daemon {
                 let from_str = from.to_string_lossy();
                 if let Err(error) = db.delete_file_by_path(&from_str) {
                     error!("Failed to delete old path {}: {}", from.display(), error);
+                    return false;
                 }
 
                 // Get volume_id from drive letter
                 let Some(volume_id) = self.get_volume_id_for_path(&to) else {
                     trace!("No volume found for renamed path: {}", to.display());
-                    return;
+                    return false;
                 };
 
                 // Insert new entry
                 if let Ok(metadata) = std::fs::metadata(&to) {
-                    let entry = FileEntry::from_metadata(volume_id, &to, &metadata);
+                    let mut entry = FileEntry::from_metadata(volume_id, &to, &metadata);
+                    entry.mft_reference = file_reference;
 
                     if let Err(error) = db.insert_file(&entry) {
                         error!("Failed to insert renamed file {}: {}", to.display(), error);
+                        return false;
                     }
                 }
             }
         }
+        true
     }
 
     /// Get the volume ID for a given path by looking up the drive letter.
@@ -712,6 +848,9 @@ impl Daemon {
 
         // Query volume by mount point (drive letter)
         let mount_point = format!("{}:", drive_letter.to_ascii_uppercase());
+        if let Some(volume_id) = self.volume_ids.get(&drive_letter.to_ascii_uppercase()) {
+            return Some(*volume_id);
+        }
         let volumes = db.get_all_volumes().ok()?;
 
         volumes
@@ -726,20 +865,39 @@ impl Daemon {
             return Ok(());
         };
 
+        let volumes = db.get_all_volumes()?;
+        self.volume_ids.clear();
+        for volume in volumes {
+            if let Some((drive, volume_id)) = volume.mount_point.chars().next().zip(volume.id) {
+                self.volume_ids.insert(drive.to_ascii_uppercase(), volume_id);
+            }
+        }
+
         // Query all directories with MFT references
+        self.path_cache.clear();
         let connection = db.connection();
         let mut stmt = connection.prepare(
-            "SELECT mft_reference, full_path FROM files WHERE is_directory = 1 AND mft_reference IS NOT NULL",
+            "SELECT volumes.mount_point, files.mft_reference, files.full_path FROM files \
+             JOIN volumes ON files.volume_id = volumes.id \
+             WHERE files.is_directory = 1 AND files.mft_reference IS NOT NULL",
         )?;
 
         let entries = stmt.query_map([], |row| {
-            let mft_ref: i64 = row.get(0)?;
-            let path: String = row.get(1)?;
-            Ok((mft_ref as u64, path))
+            let mount_point: String = row.get(0)?;
+            let mft_ref: i64 = row.get(1)?;
+            let path: String = row.get(2)?;
+            Ok((
+                mount_point.chars().next().map(|drive| drive.to_ascii_uppercase()),
+                mft_ref as u64,
+                path,
+            ))
         })?;
 
-        for entry in entries.flatten() {
-            self.path_cache.insert(entry.0, entry.1);
+        for entry in entries {
+            let entry = entry?;
+            if let Some(drive) = entry.0 {
+                self.path_cache.insert((drive, entry.1), entry.2);
+            }
         }
 
         info!("Built path cache with {} directory entries", self.path_cache.len());
@@ -1764,10 +1922,132 @@ mod tests {
         let options = DaemonOptions::default();
         let mut daemon = Daemon::new(config, options);
 
-        daemon.path_cache.insert(100, "C:\\Users\\Documents".to_string());
+        daemon.path_cache.insert(('C', 100), "C:\\Users\\Documents".to_string());
 
         let result = daemon.resolve_usn_path_inner('C', 100, "report.pdf");
         assert_eq!(result, Some("C:\\Users\\Documents\\report.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_usn_path_inner_reference_shared_by_drives() {
+        let mut daemon = Daemon::new(Config::default(), DaemonOptions::default());
+        daemon.path_cache.insert(('C', 100), "C:\\Data".to_string());
+        daemon.path_cache.insert(('D', 100), "D:\\Backup".to_string());
+
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 100, "file.txt").as_deref(),
+            Some("C:\\Data\\file.txt")
+        );
+        assert_eq!(
+            daemon.resolve_usn_path_inner('D', 100, "file.txt").as_deref(),
+            Some("D:\\Backup\\file.txt")
+        );
+    }
+
+    #[test]
+    fn test_resolve_usn_path_inner_uncached_parent_in_database() {
+        let mut daemon = Daemon::new(Config::default(), DaemonOptions::default());
+        let database = Database::open_in_memory().expect("open database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "PARENT".into(),
+            label: None,
+            mount_point: "C:".into(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("insert volume");
+        let mut directory = FileEntry::new(volume_id, "parent".into(), "C:\\parent".into(), true);
+        directory.mft_reference = Some(123);
+        database.insert_file(&directory).expect("insert parent");
+        daemon.database = Some(database);
+
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 123, "new.txt").as_deref(),
+            Some("C:\\parent\\new.txt")
+        );
+        assert!(daemon.resolve_usn_path_inner('D', 123, "new.txt").is_none());
+    }
+
+    #[test]
+    fn test_usn_directory_create_rename_and_delete_subtree() {
+        let mut daemon = Daemon::new(Config::default(), DaemonOptions::default());
+        let database = Database::open_in_memory().expect("open database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "USN-DIRECTORY".into(),
+            label: None,
+            mount_point: "C:".into(),
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("insert volume");
+        for (name, path) in [
+            ("old", "C:\\old"),
+            ("child", "C:\\old\\child"),
+            ("file.txt", "C:\\old\\child\\file.txt"),
+            ("other.txt", "C:\\old_extra\\other.txt"),
+        ] {
+            database
+                .insert_file(&FileEntry::new(
+                    volume_id,
+                    name.into(),
+                    path.into(),
+                    name != "file.txt" && name != "other.txt",
+                ))
+                .expect("insert entry");
+        }
+        daemon.database = Some(database);
+
+        let mut directory = make_usn_change(0x0000_0100);
+        directory.is_directory = true;
+        directory.file_reference = 100;
+        daemon.update_directory_index('C', &directory, "C:\\old");
+        directory.file_reference = 200;
+        daemon.update_directory_index('C', &directory, "C:\\old\\child");
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 200, "file.txt").as_deref(),
+            Some("C:\\old\\child\\file.txt")
+        );
+
+        directory.file_reference = 100;
+        directory.reason = 0x0000_2000;
+        directory.name = "new".into();
+        daemon.update_directory_index('C', &directory, "C:\\new");
+        assert_eq!(
+            daemon.resolve_usn_path_inner('C', 200, "file.txt").as_deref(),
+            Some("C:\\new\\child\\file.txt")
+        );
+        let database = daemon.database.as_ref().expect("database");
+        assert_eq!(
+            database
+                .search_by_path("C:\\new\\child\\file.txt", 10)
+                .expect("search")
+                .len(),
+            1
+        );
+
+        directory.reason = 0x0000_0200;
+        daemon.update_directory_index('C', &directory, "C:\\new");
+        assert!(!daemon.path_cache.contains_key(&('C', 200)));
+        let database = daemon.database.as_ref().expect("database");
+        assert!(
+            database
+                .search_by_path("C:\\new\\child\\file.txt", 10)
+                .expect("search")
+                .is_empty()
+        );
+        assert_eq!(
+            database
+                .search_by_path("C:\\old_extra\\other.txt", 10)
+                .expect("search")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1808,9 +2088,9 @@ mod tests {
         let options = DaemonOptions::default();
         let mut daemon = Daemon::new(config, options);
 
-        daemon.path_cache.insert(10, "C:\\Users".to_string());
-        daemon.path_cache.insert(20, "C:\\Users\\Documents".to_string());
-        daemon.path_cache.insert(30, "C:\\Program Files".to_string());
+        daemon.path_cache.insert(('C', 10), "C:\\Users".to_string());
+        daemon.path_cache.insert(('C', 20), "C:\\Users\\Documents".to_string());
+        daemon.path_cache.insert(('C', 30), "C:\\Program Files".to_string());
 
         assert_eq!(
             daemon.resolve_usn_path_inner('C', 10, "file1.txt"),
@@ -1945,6 +2225,44 @@ mod tests {
         // The drive letter won't match our volume mount point, so volume_id lookup will fail
         // (no volume for the temp path's drive), but the code path is still exercised without panic.
         daemon.handle_change_event(FileChangeEvent::Created(temp_file));
+    }
+
+    #[test]
+    fn test_usn_created_file_can_be_deleted_by_reference() {
+        let temp_dir = TempDir::new().expect("create temp directory");
+        let file_path = temp_dir.path().join("indexed.txt");
+        std::fs::write(&file_path, "contents").expect("create test file");
+        let mount_point = file_path.to_string_lossy().chars().take(2).collect::<String>();
+        let mut daemon = Daemon::new(Config::default(), DaemonOptions::default());
+        let database = Database::open_in_memory().expect("open database");
+        let volume = IndexedVolume {
+            id: None,
+            serial_number: "SN-USN-CREATE".to_string(),
+            label: None,
+            mount_point,
+            volume_type: VolumeType::Ntfs,
+            is_online: true,
+            last_scan_time: None,
+            last_usn: None,
+        };
+        let volume_id = database.upsert_volume(&volume).expect("insert volume");
+        daemon.database = Some(database);
+
+        daemon.handle_change_event_with_reference(FileChangeEvent::Created(file_path.clone()), Some(9876));
+
+        let database = daemon.database.as_ref().expect("database exists");
+        assert_eq!(
+            database
+                .delete_files_by_mft_references(volume_id, &[9876])
+                .expect("delete file"),
+            1
+        );
+        assert!(
+            database
+                .search_by_path(&file_path.to_string_lossy(), 10)
+                .expect("search file")
+                .is_empty()
+        );
     }
 
     // --- get_volume_id_for_path() tests ---
@@ -2170,9 +2488,12 @@ mod tests {
 
         // Only directories with mft_reference should be in cache
         assert_eq!(daemon.path_cache.len(), 2);
-        assert_eq!(daemon.path_cache.get(&100), Some(&"C:\\Users".to_string()));
-        assert_eq!(daemon.path_cache.get(&200), Some(&"C:\\Users\\Documents".to_string()));
-        assert!(!daemon.path_cache.contains_key(&300));
+        assert_eq!(daemon.path_cache.get(&('C', 100)), Some(&"C:\\Users".to_string()));
+        assert_eq!(
+            daemon.path_cache.get(&('C', 200)),
+            Some(&"C:\\Users\\Documents".to_string())
+        );
+        assert!(!daemon.path_cache.contains_key(&('C', 300)));
     }
 
     #[test]

@@ -315,19 +315,34 @@ impl Database {
         } else {
             Cow::Borrowed(path)
         };
-        let path_prefix_backslash = format!("{normalized_path}\\%");
-        let path_prefix_forward = format!("{normalized_path}/%");
-
         let rows_affected = self
             .connection
             .execute(
-                "DELETE FROM files WHERE full_path = ?1 OR full_path LIKE ?2 OR full_path LIKE ?3",
-                rusqlite::params![normalized_path, path_prefix_backslash, path_prefix_forward],
+                "DELETE FROM files WHERE full_path = ?1 OR substr(full_path, 1, length(?1) + 1) = ?1 || '\\' \
+                 OR substr(full_path, 1, length(?1) + 1) = ?1 || '/'",
+                rusqlite::params![normalized_path],
             )
             .context("Failed to delete files under path")?;
 
         debug!("Deleted {} entries under path {}", rows_affected, path);
         Ok(rows_affected)
+    }
+
+    /// Move the indexed directory and its descendants to a new path.
+    ///
+    /// # Errors
+    /// Returns an error if the update conflicts with another indexed path.
+    pub fn rebase_files_under_path(&self, old_path: &str, new_path: &str, new_name: &str) -> Result<usize> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let updated = transaction.execute(
+            "UPDATE files SET full_path = ?2 || substr(full_path, length(?1) + 1), \
+             name = CASE WHEN full_path = ?1 THEN ?3 ELSE name END \
+             WHERE full_path = ?1 OR substr(full_path, 1, length(?1) + 1) = ?1 || '\\' \
+             OR substr(full_path, 1, length(?1) + 1) = ?1 || '/'",
+            rusqlite::params![old_path, new_path, new_name],
+        )?;
+        transaction.commit()?;
+        Ok(updated)
     }
 
     /// Delete files by their MFT reference numbers for a specific volume.
@@ -379,6 +394,22 @@ impl Database {
         }
 
         Ok(total_deleted)
+    }
+
+    /// Find an indexed path by volume and MFT reference.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_path_by_mft_reference(&self, volume_id: i64, reference: u64) -> Result<Option<String>> {
+        let reference = i64::try_from(reference).context("MFT reference exceeds SQLite integer range")?;
+        self.connection
+            .query_row(
+                "SELECT full_path FROM files WHERE volume_id = ?1 AND mft_reference = ?2 LIMIT 1",
+                rusqlite::params![volume_id, reference],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("Failed to look up MFT reference")
     }
 
     /// Search for files by name pattern (case-insensitive).
@@ -874,6 +905,52 @@ impl Database {
             .context("Failed to update file path")?;
 
         Ok(rows_affected > 0)
+    }
+
+    /// Reconcile a moved file and optionally replace the indexed destination in one transaction.
+    ///
+    /// Returns false without changing the index if the source row is missing.
+    ///
+    /// # Errors
+    /// Returns an error if the database update cannot be committed.
+    pub fn reconcile_moved_file(
+        &self,
+        old_path: &str,
+        new_path: &str,
+        new_name: &str,
+        overwrite: bool,
+    ) -> Result<bool> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let source_exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM files WHERE full_path = ?1)",
+            rusqlite::params![old_path],
+            |row| row.get(0),
+        )?;
+        if !source_exists {
+            return Ok(false);
+        }
+
+        let destination_volume_id: Option<i64> = transaction
+            .query_row(
+                "SELECT volume_id FROM files WHERE full_path = ?1",
+                rusqlite::params![new_path],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if overwrite {
+            transaction.execute("DELETE FROM files WHERE full_path = ?1", rusqlite::params![new_path])?;
+        }
+
+        let rows_affected = transaction.execute(
+            "UPDATE files SET full_path = ?1, name = ?2, mft_reference = NULL, \
+             volume_id = COALESCE(?4, volume_id) WHERE full_path = ?3",
+            rusqlite::params![new_path, new_name, old_path, destination_volume_id],
+        )?;
+        if rows_affected != 1 {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
     }
 
     /// Get the underlying connection for advanced operations.
@@ -3668,6 +3745,136 @@ mod tests {
         assert_eq!(new_results[0].size, 500);
         // MFT reference should be cleared since the file moved to a different volume
         assert!(new_results[0].mft_reference.is_none());
+    }
+
+    #[test]
+    fn test_rebase_directory_preserves_children_and_other_paths() {
+        let database = Database::open_in_memory().expect("open database");
+        let volume_id = database
+            .upsert_volume(&create_test_volume("REBASE", "C:"))
+            .expect("insert volume");
+        for (name, path) in [
+            ("old", "C:\\old"),
+            ("child.txt", "C:\\old\\child.txt"),
+            ("nested.txt", "C:\\old\\sub\\nested.txt"),
+            ("unrelated.txt", "C:\\old_extra\\unrelated.txt"),
+        ] {
+            database
+                .insert_file(&create_test_file(volume_id, name, path, 1))
+                .expect("insert file");
+        }
+
+        assert_eq!(
+            database
+                .rebase_files_under_path("C:\\old", "C:\\new", "new")
+                .expect("rename directory"),
+            3
+        );
+        assert_eq!(
+            database
+                .search_by_path("C:\\new\\sub\\nested.txt", 10)
+                .expect("search child")
+                .len(),
+            1
+        );
+        assert_eq!(
+            database
+                .search_by_path("C:\\old_extra\\unrelated.txt", 10)
+                .expect("search other")
+                .len(),
+            1
+        );
+        assert!(
+            database
+                .search_by_path("C:\\old\\child.txt", 10)
+                .expect("search old")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_reconcile_moved_file_replaces_indexed_destination() {
+        let database = Database::open_in_memory().expect("open database");
+        let source_volume = database
+            .upsert_volume(&create_test_volume("MOVE-SOURCE", "C:"))
+            .expect("source volume");
+        let dest_volume = database
+            .upsert_volume(&create_test_volume("MOVE-DEST", "D:"))
+            .expect("dest volume");
+        database
+            .insert_file(&create_test_file(source_volume, "data.txt", "C:\\data.txt", 12))
+            .expect("source");
+        database
+            .insert_file(&create_test_file(dest_volume, "data.txt", "D:\\data.txt", 4))
+            .expect("dest");
+
+        assert!(
+            database
+                .reconcile_moved_file("C:\\data.txt", "D:\\data.txt", "data.txt", true)
+                .expect("reconcile")
+        );
+        assert!(
+            database
+                .search_by_path("C:\\data.txt", 10)
+                .expect("search source")
+                .is_empty()
+        );
+        let destination = database.search_by_path("D:\\data.txt", 10).expect("search dest");
+        assert_eq!(destination.len(), 1);
+        assert_eq!(destination[0].size, 12);
+        assert_eq!(destination[0].volume_id, dest_volume);
+    }
+
+    #[test]
+    fn test_reconcile_moved_file_missing_source_preserves_destination() {
+        let database = Database::open_in_memory().expect("open database");
+        let volume_id = database
+            .upsert_volume(&create_test_volume("MOVE-MISSING", "C:"))
+            .expect("volume");
+        database
+            .insert_file(&create_test_file(volume_id, "data.txt", "C:\\dest\\data.txt", 4))
+            .expect("dest");
+
+        assert!(
+            !database
+                .reconcile_moved_file("C:\\missing\\data.txt", "C:\\dest\\data.txt", "data.txt", true)
+                .expect("reconcile")
+        );
+        assert_eq!(
+            database.search_by_path("C:\\dest\\data.txt", 10).expect("search dest")[0].size,
+            4
+        );
+    }
+
+    #[test]
+    fn test_reconcile_moved_file_conflict_rolls_back() {
+        let database = Database::open_in_memory().expect("open database");
+        let volume_id = database
+            .upsert_volume(&create_test_volume("MOVE-CONFLICT", "C:"))
+            .expect("volume");
+        database
+            .insert_file(&create_test_file(volume_id, "data.txt", "C:\\source\\data.txt", 12))
+            .expect("source");
+        database
+            .insert_file(&create_test_file(volume_id, "data.txt", "C:\\dest\\data.txt", 4))
+            .expect("dest");
+
+        assert!(
+            database
+                .reconcile_moved_file("C:\\source\\data.txt", "C:\\dest\\data.txt", "data.txt", false)
+                .is_err()
+        );
+        assert_eq!(
+            database
+                .search_by_path("C:\\source\\data.txt", 10)
+                .expect("search source")[0]
+                .size,
+            12
+        );
+        assert_eq!(
+            database.search_by_path("C:\\dest\\data.txt", 10).expect("search dest")[0].size,
+            4
+        );
     }
 
     #[test]

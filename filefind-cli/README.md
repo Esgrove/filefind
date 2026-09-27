@@ -242,13 +242,17 @@ after displaying the normal search results.
   Same-device renames consume no additional disk space.
 - **Progress bar** shows bytes transferred, ETA, and current filename.
 - **Ctrl+C** finishes the current file then stops. Press Ctrl+C a second time to force-quit immediately.
-- **Database update**: After each successful move the file index is updated with the new path.
+- **Database update**: A move is counted as successful only after its index row is reconciled.
+  On a reconciliation failure, the tool attempts to move the file back and reports any rollback failure.
 
 ### Conflict handling
 
 - **Duplicate filenames** in the search results: only the first occurrence is moved.
   The rest are skipped and reported.
 - **File already exists** at the destination: skipped unless `--force` is given.
+- **Forced overwrite**: The previous destination is staged in a temporary sibling directory until the move
+  and index update succeed. On failure it is restored when possible; if restoration fails, the preserved path
+  is reported. Filesystem and SQLite operations cannot share a single atomic transaction.
 - **File already in the destination directory**: silently counted, not moved or reported as a skip.
 
 ## Duplicates Feature

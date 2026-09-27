@@ -329,6 +329,11 @@ pub fn scan_ntfs_volume_filtered(
     let volume_info = scanner.get_volume_info()?;
     let volume_id = database.upsert_volume(&volume_info)?;
 
+    let starting_usn = UsnMonitor::new(drive_letter, 0)
+        .ok()
+        .and_then(|monitor| monitor.query_journal().ok())
+        .map(|info| info.next_usn);
+
     // Scan the MFT with optional path filtering
     let mut entries = scanner.scan_filtered(path_filters)?;
 
@@ -341,12 +346,10 @@ pub fn scan_ntfs_volume_filtered(
     let count = entries.len();
     database.insert_files_batch(&entries)?;
 
-    // Get and store current USN for future incremental updates
-    if let Ok(usn_monitor) = UsnMonitor::new(drive_letter, 0)
-        && let Ok(journal_info) = usn_monitor.query_journal()
-    {
-        database.update_volume_usn(volume_id, journal_info.next_usn)?;
-        debug!("Stored USN {} for volume {}", journal_info.next_usn, drive_letter);
+    // Replay changes since before enumeration on the next monitor poll.
+    if let Some(usn) = starting_usn {
+        database.update_volume_usn(volume_id, usn)?;
+        debug!("Stored pre-scan USN {} for volume {}", usn, drive_letter);
     }
 
     Ok(count)
@@ -780,13 +783,6 @@ fn process_scan_result(database: &mut Database, result: ScanResult, clean_scan: 
                 if deleted > 0 {
                     debug!("{} - Clean scan: deleted {} existing entries", label, deleted);
                 }
-            } else if let (Some(prev_usn), Some(_curr_usn)) = (previous_usn, current_usn) {
-                // Incremental scan for NTFS: use USN journal to clean up stale entries
-                let drive_letter = volume_info.mount_point.chars().next().unwrap_or('C');
-                let stale_removed = cleanup_stale_entries_usn(database, volume_id, drive_letter, prev_usn)?;
-                if stale_removed > 0 {
-                    debug!("{} - Removed {} stale entries via USN journal", label, stale_removed);
-                }
             }
             // For non-NTFS without USN, pruning will be done after all scans complete
 
@@ -795,6 +791,14 @@ fn process_scan_result(database: &mut Database, result: ScanResult, clean_scan: 
             }
             let count = entries.len();
             database.insert_files_batch(&entries)?;
+
+            if !clean_scan && let (Some(prev_usn), Some(_)) = (previous_usn, current_usn) {
+                let drive_letter = volume_info.mount_point.chars().next().unwrap_or('C');
+                let stale_removed = cleanup_stale_entries_usn(database, volume_id, drive_letter, prev_usn)?;
+                if stale_removed > 0 {
+                    debug!("{} - Removed {} stale entries via USN journal", label, stale_removed);
+                }
+            }
 
             // Store the current USN for future incremental updates
             if let Some(usn) = current_usn {
@@ -841,12 +845,7 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
         return Ok(0);
     }
 
-    // Collect MFT references for entries that were deleted or renamed (old name)
-    let stale_refs: Vec<u64> = changes
-        .iter()
-        .filter(|change| change.is_delete() || change.is_rename_old())
-        .map(|change| change.file_reference)
-        .collect();
+    let stale_refs = deleted_references(&changes);
 
     if stale_refs.is_empty() {
         return Ok(0);
@@ -863,6 +862,18 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
     let deleted = database.delete_files_by_mft_references(volume_id, &stale_refs)?;
 
     Ok(deleted)
+}
+
+fn deleted_references(changes: &[crate::usn::UsnChange]) -> Vec<u64> {
+    let mut deleted = std::collections::HashSet::new();
+    for change in changes {
+        if change.is_delete() {
+            deleted.insert(change.file_reference);
+        } else if change.is_create() || change.is_rename_new() {
+            deleted.remove(&change.file_reference);
+        }
+    }
+    deleted.into_iter().collect()
 }
 
 /// Run volume pruning for non-NTFS volumes after incremental scan.
@@ -902,13 +913,11 @@ fn scan_ntfs_volume_sync(
 ) -> Result<(IndexedVolume, Vec<FileEntry>, Option<i64>)> {
     let scanner = MftScanner::new(drive_letter)?;
     let volume_info = scanner.get_volume_info()?;
-    let entries = scanner.scan_filtered(path_filters)?;
-
-    // Get current USN for future incremental updates
     let current_usn = UsnMonitor::new(drive_letter, 0)
         .ok()
         .and_then(|monitor| monitor.query_journal().ok())
         .map(|info| info.next_usn);
+    let entries = scanner.scan_filtered(path_filters)?;
 
     Ok((volume_info, entries, current_usn))
 }
@@ -918,6 +927,25 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_deleted_references_respects_later_creates() {
+        let mut change = crate::usn::UsnChange {
+            usn: 10,
+            file_reference: 42,
+            parent_reference: 5,
+            name: "old.txt".into(),
+            reason: 0x0000_0200,
+            attributes: 0,
+            is_directory: false,
+        };
+        let deleted = change.clone();
+        change.usn = 11;
+        change.name = "new.txt".into();
+        change.reason = 0x0000_0100;
+        assert!(deleted_references(&[deleted.clone(), change.clone()]).is_empty());
+        assert_eq!(deleted_references(&[change, deleted]), vec![42]);
+    }
 
     #[tokio::test]
     async fn test_scan_directory_to_db() {

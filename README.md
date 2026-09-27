@@ -306,11 +306,46 @@ cargo llvm-cov nextest
 cargo llvm-cov nextest --open
 ```
 
-## TODO
+### Database Benchmarks
 
-- Fix "Moved file but failed to update database for" error when overwriting a file that already existed in the targed dir
-- Compare hash of existing duplicate file against target file
-  before overwriting and delete source file instead of moving when matches
+The shared `filefind` crate has Criterion benchmarks for batch insertion, name/glob/regex search,
+and duplicate detection using deterministic in-memory SQLite indexes.
+Fixtures are built outside the measured search and duplicate operations.
+Batch insertion uses a fresh in-memory database for each measurement.
+No live index, filesystem scan, or administrator privileges are required.
+
+```shell
+cargo bench -p filefind --bench database -- --quick
+cargo bench -p filefind --bench database
+# Include an optional 1,000,000-row search and duplicates fixture:
+$env:FILEFIND_BENCH_LARGE = '1'; cargo bench -p filefind --bench database
+```
+
+The default search and duplicate fixtures contain 10,000 and 100,000 rows.
+Insert measurements use 1,000 and 10,000 rows.
+Search queries return at most 100 rows, and duplicate fixtures vary the repeated-stem density.
+Criterion writes HTML reports to `target/criterion/`.
+For comparisons, run the standard benchmark on the same machine with the same fixture sizes.
+
+An initial `--quick` run on an AMD Ryzen 9 7950X with a 100,000-row in-memory fixture measured approximately
+7.3 ms for common-name search, 8.2 ms for glob search, 8.9 ms for regex search,
+and 86 to 118 ms for duplicate detection depending on duplicate density.
+These are local quick-run baselines, not performance targets or an optimization comparison.
+
+## Review Follow-Ups
+
+- **P1, feature:** Compare file contents before a forced overwrite and define whether identical files should keep
+  the existing destination and remove the source. The current `--force` behavior replaces it.
+- **P1, reliability:** Add non-NTFS watcher overflow and interrupted-scan reconciliation tests,
+  especially for network paths. Investigate recovery from dropped watcher events.
+- **P1, correctness:** Track destination volume IDs for moves to a volume with no already-indexed destination row.
+  The database currently retains the source volume ID until a later scan.
+- **P1, correctness:** Verify how USN events outside a configured NTFS subdirectory interact with path filtering
+  and excludes. Unresolved creates request a rescan, which may be expensive on a busy drive.
+- **P2, validation:** Add disposable elevated NTFS end-to-end tests for journal reset, nested directory rename,
+  create/delete bursts, and concurrent rescan. Current automated tests use synthetic records and SQLite fixtures.
+- **P2, coverage:** Add a non-Windows CI job for portable database and directory-walk code;
+  the existing workflow runs only on Windows.
 
 ## License
 
