@@ -82,6 +82,8 @@ All Rust source files should be organized in this order:
 Within implementation blocks:
 
 - Public methods before private methods
+- Methods creating a new instance of Self should be first,
+  `new` always first when there is one and other similar methods such as `from_*` after that
 - Associated functions (those without `self` parameter) last
 
 ## Updating CLI Usage
