@@ -442,10 +442,7 @@ pub async fn scan_directory_with_concurrency(
 
         // Collect results (subdirectories to process next)
         for task in tasks {
-            match task.await {
-                Ok(subdirs) => dirs_to_process.extend(subdirs),
-                Err(error) => warn!("Directory scan task failed: {error}"),
-            }
+            dirs_to_process.extend(task.await.context("Directory scan task failed")??);
         }
     }
 
@@ -530,19 +527,19 @@ async fn scan_single_directory(
     dir: PathBuf,
     exclude_patterns: Arc<[String]>,
     entries: Arc<tokio::sync::Mutex<Vec<ScanEntry>>>,
-) -> Vec<PathBuf> {
-    let mut read_dir = match tokio::fs::read_dir(&dir).await {
-        Ok(read_dir) => read_dir,
-        Err(error) => {
-            warn!("Error reading directory {}: {error}", dir.display());
-            return Vec::new();
-        }
-    };
+) -> Result<Vec<PathBuf>> {
+    let mut read_dir = tokio::fs::read_dir(&dir)
+        .await
+        .with_context(|| format!("Error reading directory {}", dir.display()))?;
 
     let mut subdirs = Vec::new();
     let mut local_entries = Vec::new();
 
-    while let Ok(Some(entry)) = read_dir.next_entry().await {
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .with_context(|| format!("Error listing {}", dir.display()))?
+    {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
 
@@ -556,13 +553,10 @@ async fn scan_single_directory(
             continue;
         }
 
-        let metadata = match entry.metadata().await {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                warn!("Error reading metadata for {}: {error}", path.display());
-                continue;
-            }
-        };
+        let metadata = entry
+            .metadata()
+            .await
+            .with_context(|| format!("Error reading metadata for {}", path.display()))?;
 
         let is_directory = metadata.is_dir();
 
@@ -588,7 +582,7 @@ async fn scan_single_directory(
         guard.extend(local_entries);
     }
 
-    subdirs
+    Ok(subdirs)
 }
 
 #[cfg(test)]
@@ -597,6 +591,15 @@ mod tests {
     use std::fs;
     use std::time::SystemTime;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_scan_single_directory_reports_missing_directory() {
+        let temp = tempdir().expect("create temp directory");
+        let missing = temp.path().join("missing");
+        let entries = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+        assert!(scan_single_directory(missing, Arc::from([]), entries).await.is_err());
+    }
 
     #[test]
     fn test_should_exclude() {
