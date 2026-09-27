@@ -100,7 +100,7 @@ impl Database {
                     mount_point = excluded.mount_point,
                     volume_type = excluded.volume_type,
                     last_scan_time = excluded.last_scan_time,
-                    last_usn = excluded.last_usn,
+                    last_usn = COALESCE(excluded.last_usn, volumes.last_usn),
                     is_online = excluded.is_online
                 ",
                 rusqlite::params![
@@ -1747,6 +1747,18 @@ mod tests {
         // Should still be only one volume
         let all_volumes = database.get_all_volumes().unwrap();
         assert_eq!(all_volumes.len(), 1);
+    }
+
+    #[test]
+    fn test_upsert_volume_without_bookmark_preserves_last_usn() {
+        let database = Database::open_in_memory().expect("open database");
+        let mut volume = create_test_volume("USN-PRESERVE", "C:");
+        volume.last_usn = Some(120);
+        database.upsert_volume(&volume).expect("insert volume");
+        volume.last_usn = None;
+        database.upsert_volume(&volume).expect("refresh volume");
+
+        assert_eq!(database.get_volume_last_usn('C').expect("read bookmark"), Some(120));
     }
 
     #[test]

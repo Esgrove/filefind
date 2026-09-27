@@ -395,6 +395,9 @@ pub async fn scan_directory_with_concurrency(
     debug!("{} Starting file scan", root.display());
 
     let root = normalize_drive_root(root);
+    let _root_directory = tokio::fs::read_dir(&root)
+        .await
+        .with_context(|| format!("Cannot scan directory root {}", root.display()))?;
     let exclude_patterns: Arc<[String]> = exclude_patterns.to_vec().into();
     let entries: Arc<tokio::sync::Mutex<Vec<ScanEntry>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));

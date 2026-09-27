@@ -281,7 +281,7 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
                 total_entries += process_scan_result(database, scan_result, clean_scan)?;
             }
             Err(error) => {
-                error!("Scan task panicked: {}", error);
+                return Err(error.into());
             }
         }
     }
@@ -432,7 +432,10 @@ async fn scan_local_directories(drive_letter: char, paths: Vec<String>, exclude:
                         all_entries.extend(scan_entries.into_iter().map(|entry| entry.into_file_entry(0)));
                     }
                     Err(error) => {
-                        warn!("{}: Directory scan failed: {}", path_str, error);
+                        return ScanResult::Failed {
+                            label,
+                            error: format!("Directory scan failed for {path_str}: {error}"),
+                        };
                     }
                 }
             }
@@ -815,8 +818,7 @@ fn process_scan_result(database: &mut Database, result: ScanResult, clean_scan: 
             Ok(count)
         }
         ScanResult::Failed { label, error } => {
-            error!("{} - Failed: {}", label, error);
-            Ok(0)
+            anyhow::bail!("{label} - Scan failed: {error}")
         }
     }
 }
@@ -827,16 +829,7 @@ fn process_scan_result(database: &mut Database, result: ScanResult, clean_scan: 
 /// or renamed (old name) from the database.
 fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: char, last_usn: i64) -> Result<usize> {
     // Create USN monitor starting from the last known USN
-    let mut usn_monitor = match UsnMonitor::new(drive_letter, last_usn) {
-        Ok(monitor) => monitor,
-        Err(error) => {
-            debug!(
-                "Could not open USN journal for {}: - skipping USN-based cleanup: {}",
-                drive_letter, error
-            );
-            return Ok(0);
-        }
-    };
+    let mut usn_monitor = UsnMonitor::new(drive_letter, last_usn)?;
 
     // Read changes since last scan
     let (changes, _new_usn) = usn_monitor.read_changes()?;
@@ -864,7 +857,7 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
     Ok(deleted)
 }
 
-fn deleted_references(changes: &[crate::usn::UsnChange]) -> Vec<u64> {
+pub fn deleted_references(changes: &[crate::usn::UsnChange]) -> Vec<u64> {
     let mut deleted = std::collections::HashSet::new();
     for change in changes {
         if change.is_delete() {
@@ -945,6 +938,17 @@ mod tests {
         change.reason = 0x0000_0100;
         assert!(deleted_references(&[deleted.clone(), change.clone()]).is_empty());
         assert_eq!(deleted_references(&[change, deleted]), vec![42]);
+    }
+
+    #[tokio::test]
+    async fn test_local_directory_fallback_rejects_partial_scan() {
+        let temp = tempdir().expect("create test directory");
+        let valid_path = temp.path().to_string_lossy().into_owned();
+        let missing_path = temp.path().join("missing").to_string_lossy().into_owned();
+
+        let result = scan_local_directories('?', vec![valid_path, missing_path], Arc::from([])).await;
+
+        assert!(matches!(result, ScanResult::Failed { .. }));
     }
 
     #[tokio::test]
@@ -1729,14 +1733,14 @@ mod tests {
     // ── process_scan_result ───────────────────────────────────────
 
     #[test]
-    fn test_process_scan_result_failed_returns_zero() {
+    fn test_process_scan_result_failed_returns_error() {
         let mut database = Database::open_in_memory().expect("Failed to open in-memory database");
         let result = ScanResult::Failed {
             label: "X:".to_string(),
             error: "Drive not found".to_string(),
         };
-        let count = process_scan_result(&mut database, result, false).expect("process_scan_result failed");
-        assert_eq!(count, 0, "Failed scan result should return 0 entries");
+        let error = process_scan_result(&mut database, result, false).expect_err("Failed scan must propagate");
+        assert!(error.to_string().contains("Drive not found"));
     }
 
     #[test]

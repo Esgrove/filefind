@@ -294,7 +294,8 @@ impl Daemon {
             if !self.is_paused && self.process_changes() {
                 self.ipc_state.state.store(DaemonStateInfo::Scanning);
                 if let Err(error) = self.rescan_and_restart_usn(true).await {
-                    error!("USN recovery scan failed: {}", error);
+                    self.stop();
+                    return Err(error.context("USN recovery scan failed"));
                 }
                 self.ipc_state.state.store(DaemonStateInfo::Running);
             }
@@ -324,7 +325,8 @@ impl Daemon {
                     info!("Received rescan command via IPC");
                     self.ipc_state.state.store(DaemonStateInfo::Scanning);
                     if let Err(error) = self.rescan_and_restart_usn(false).await {
-                        error!("Rescan failed: {}", error);
+                        self.stop();
+                        return Err(error.context("Rescan failed"));
                     }
                     // Update stats after rescan
                     if let Some(ref database) = self.database {
@@ -569,10 +571,6 @@ impl Daemon {
                             needs_rescan = true;
                         }
                     }
-                    deletions_by_drive
-                        .entry(drive_letter)
-                        .or_default()
-                        .push(change.file_reference);
                     debug!("File deleted: {} (MFT ref {})", change.name, change.file_reference);
                     continue;
                 }
@@ -614,6 +612,7 @@ impl Daemon {
                     needs_rescan = true;
                 }
             }
+            deletions_by_drive.insert(drive_letter, crate::scanner::deleted_references(&changes));
             usn_updates.push((drive_letter, new_usn));
         }
 
