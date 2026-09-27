@@ -31,8 +31,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::mft::{MftScanner, detect_ntfs_volumes};
 use crate::pruner::prune_multiple_volumes;
-use crate::usn::UsnMonitor;
-use crate::watcher::scan_directory;
+use crate::usn::{UsnChange, UsnMonitor};
+use crate::watcher::{matches_exclude_patterns, scan_directory};
 
 /// Categorized paths for scanning.
 struct CategorizedPaths {
@@ -214,11 +214,14 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
     let mut non_ntfs_volume_ids: Vec<i64> = Vec::new();
 
     // Build all scan tasks - each task fully handles its path
-    let mut tasks: Vec<tokio::task::JoinHandle<ScanResult>> = Vec::with_capacity(total_tasks);
+    let mut tasks: Vec<tokio::task::JoinHandle<Vec<ScanResult>>> = Vec::with_capacity(total_tasks);
 
     // NTFS drive roots (blocking, no fallback needed)
     for drive_letter in categorized.ntfs_drive_roots {
-        tasks.push(tokio::task::spawn_blocking(move || scan_ntfs_drive(drive_letter)));
+        let exclude = Arc::clone(&exclude_patterns);
+        tasks.push(tokio::task::spawn_blocking(move || {
+            vec![scan_ntfs_drive(drive_letter, &exclude)]
+        }));
     }
 
     // Local directories (MFT with filtering, fallback to directory walk)
@@ -233,7 +236,7 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
     for (drive_letter, scan_path) in categorized.mapped_network_drives {
         let exclude = Arc::clone(&exclude_patterns);
         tasks.push(tokio::spawn(async move {
-            scan_mapped_drive(drive_letter, scan_path, exclude).await
+            vec![scan_mapped_drive(drive_letter, scan_path, exclude).await]
         }));
     }
 
@@ -242,7 +245,7 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
         let label = scan_path.to_string_lossy().into_owned();
         let exclude = Arc::clone(&exclude_patterns);
         tasks.push(tokio::spawn(async move {
-            scan_path_directory(scan_path, label, exclude).await
+            vec![scan_path_directory(scan_path, label, exclude).await]
         }));
     }
 
@@ -259,29 +262,44 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
     // Process results as they complete using FuturesUnordered
     let mut futures: FuturesUnordered<_> = tasks.into_iter().collect();
     let mut total_entries = 0usize;
+    let mut failed_paths = 0usize;
 
     while let Some(result) = futures.next().await {
         match result {
-            Ok(scan_result) => {
-                // Track non-NTFS volumes for pruning in incremental mode
-                if !clean_scan
-                    && let ScanResult::Success {
-                        ref volume_info,
-                        current_usn: None,
-                        ..
-                    } = scan_result
-                {
-                    // No USN means non-NTFS - will need pruning
-                    if let Some(existing_volume) = database.get_volume_by_serial(&volume_info.serial_number)?
-                        && let Some(vol_id) = existing_volume.id
-                    {
-                        non_ntfs_volume_ids.push(vol_id);
+            Ok(scan_results) => {
+                let partial = scan_results
+                    .iter()
+                    .any(|result| matches!(result, ScanResult::Failed { .. }));
+                for scan_result in scan_results {
+                    let non_ntfs_serial = match &scan_result {
+                        ScanResult::Success {
+                            volume_info,
+                            current_usn: None,
+                            ..
+                        } if !clean_scan && !partial => Some(volume_info.serial_number.clone()),
+                        _ => None,
+                    };
+                    match process_scan_result(database, scan_result, clean_scan && !partial) {
+                        Ok(count) => {
+                            total_entries += count;
+                            if let Some(serial) = non_ntfs_serial {
+                                match database.get_volume_by_serial(&serial) {
+                                    Ok(Some(volume)) => non_ntfs_volume_ids.extend(volume.id),
+                                    Ok(None) => {}
+                                    Err(error) => warn!("Could not identify volume to prune {serial}: {error}"),
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warn!("Scan result could not be indexed: {error:#}");
+                            failed_paths += 1;
+                        }
                     }
                 }
-                total_entries += process_scan_result(database, scan_result, clean_scan)?;
             }
             Err(error) => {
-                return Err(error.into());
+                warn!("Scan task failed: {error}");
+                failed_paths += 1;
             }
         }
     }
@@ -298,15 +316,7 @@ pub async fn scan_configured_paths(database: &mut Database, config: &Config) -> 
         );
     }
 
-    let total_elapsed = total_start.elapsed();
-
-    info!(
-        "Scan complete: {} entries in {:.2}s",
-        format_number(total_entries as u64),
-        total_elapsed.as_secs_f64()
-    );
-
-    Ok(())
+    report_scan_completion(total_entries, failed_paths, total_start)
 }
 
 /// Scan an NTFS volume using the MFT scanner.
@@ -371,6 +381,8 @@ pub async fn scan_directory_to_db(
     let volume_info = create_directory_volume_info(path);
     let volume_id = database.upsert_volume(&volume_info)?;
 
+    let scan_entries = scan_directory(path, exclude_patterns).await?;
+
     // Delete existing entries for this volume if doing a clean scan
     if clean_scan {
         let deleted = database.delete_files_for_volume(volume_id)?;
@@ -382,9 +394,6 @@ pub async fn scan_directory_to_db(
             );
         }
     }
-
-    // Scan the directory
-    let scan_entries = scan_directory(path, exclude_patterns).await?;
 
     // Convert to file entries
     let file_entries: Vec<_> = scan_entries
@@ -399,19 +408,31 @@ pub async fn scan_directory_to_db(
 }
 
 /// Scan local directories using MFT with path filtering, fallback to directory walking.
-async fn scan_local_directories(drive_letter: char, paths: Vec<String>, exclude: Arc<[String]>) -> ScanResult {
+fn report_scan_completion(total_entries: usize, failed_paths: usize, started: Instant) -> Result<()> {
+    info!(
+        "Scan complete: {} entries in {:.2}s",
+        format_number(total_entries as u64),
+        started.elapsed().as_secs_f64()
+    );
+    if failed_paths > 0 {
+        anyhow::bail!("{failed_paths} scan path(s) failed; other paths were indexed");
+    }
+    Ok(())
+}
+
+async fn scan_local_directories(drive_letter: char, paths: Vec<String>, exclude: Arc<[String]>) -> Vec<ScanResult> {
     let label = format!("{drive_letter}:");
     let start = Instant::now();
 
     // Try MFT scan first
     match scan_ntfs_volume_sync(drive_letter, &paths) {
-        Ok((volume_info, entries, current_usn)) => ScanResult::Success {
+        Ok((volume_info, entries, current_usn)) => vec![ScanResult::Success {
             label,
             volume_info,
-            entries,
+            entries: filter_excluded_entries(entries, &exclude),
             elapsed: start.elapsed(),
             current_usn,
-        },
+        }],
         Err(mft_error) => {
             // Fallback to directory walking for each path
             debug!(
@@ -419,40 +440,24 @@ async fn scan_local_directories(drive_letter: char, paths: Vec<String>, exclude:
                 label, mft_error
             );
 
-            let mut all_entries = Vec::new();
-            let mut volume_info = None;
-
-            for path_str in &paths {
-                let scan_path = PathBuf::from(path_str);
-                match scan_directory(&scan_path, &exclude).await {
-                    Ok(scan_entries) => {
-                        if volume_info.is_none() {
-                            volume_info = Some(create_directory_volume_info(&scan_path));
-                        }
-                        all_entries.extend(scan_entries.into_iter().map(|entry| entry.into_file_entry(0)));
-                    }
-                    Err(error) => {
-                        return ScanResult::Failed {
-                            label,
-                            error: format!("Directory scan failed for {path_str}: {error}"),
-                        };
-                    }
-                }
+            let mut results = Vec::with_capacity(paths.len());
+            for path_str in paths {
+                let scan_path = PathBuf::from(&path_str);
+                results.push(match scan_directory(&scan_path, &exclude).await {
+                    Ok(scan_entries) => ScanResult::Success {
+                        label: path_str,
+                        volume_info: create_directory_volume_info(&scan_path),
+                        entries: scan_entries.into_iter().map(|entry| entry.into_file_entry(0)).collect(),
+                        elapsed: start.elapsed(),
+                        current_usn: None,
+                    },
+                    Err(error) => ScanResult::Failed {
+                        label: path_str,
+                        error: error.to_string(),
+                    },
+                });
             }
-
-            match volume_info {
-                Some(info) => ScanResult::Success {
-                    label,
-                    volume_info: info,
-                    entries: all_entries,
-                    elapsed: start.elapsed(),
-                    current_usn: None,
-                },
-                None => ScanResult::Failed {
-                    label,
-                    error: "All paths failed to scan".to_string(),
-                },
-            }
+            results
         }
     }
 }
@@ -467,7 +472,7 @@ async fn scan_mapped_drive(drive_letter: char, scan_path: PathBuf, exclude: Arc<
         Ok((volume_info, entries, current_usn)) => ScanResult::Success {
             label,
             volume_info,
-            entries,
+            entries: filter_excluded_entries(entries, &exclude),
             elapsed: start.elapsed(),
             current_usn,
         },
@@ -741,14 +746,14 @@ fn log_inaccessible_scan_path(path: &Path) {
 }
 
 /// Scan an NTFS drive root (full drive, no filtering).
-fn scan_ntfs_drive(drive_letter: char) -> ScanResult {
+fn scan_ntfs_drive(drive_letter: char, exclude: &[String]) -> ScanResult {
     let label = format!("{drive_letter}:");
     let start = Instant::now();
     match scan_ntfs_volume_sync(drive_letter, &[]) {
         Ok((volume_info, entries, current_usn)) => ScanResult::Success {
             label,
             volume_info,
-            entries,
+            entries: filter_excluded_entries(entries, exclude),
             elapsed: start.elapsed(),
             current_usn,
         },
@@ -757,6 +762,13 @@ fn scan_ntfs_drive(drive_letter: char) -> ScanResult {
             error: error.to_string(),
         },
     }
+}
+
+fn filter_excluded_entries(entries: Vec<FileEntry>, exclude: &[String]) -> Vec<FileEntry> {
+    entries
+        .into_iter()
+        .filter(|entry| !matches_exclude_patterns(&entry.full_path, exclude))
+        .collect()
 }
 
 /// Process a single scan result and write it to the database.
@@ -857,7 +869,7 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
     Ok(deleted)
 }
 
-pub fn deleted_references(changes: &[crate::usn::UsnChange]) -> Vec<u64> {
+pub fn deleted_references(changes: &[UsnChange]) -> Vec<u64> {
     let mut deleted = std::collections::HashSet::new();
     for change in changes {
         if change.is_delete() {
@@ -921,9 +933,41 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires elevated access to a disposable NTFS scan directory"]
+    async fn test_live_scan_with_concurrent_file_creation() {
+        let temp = tempdir().expect("create disposable directory");
+        let drive = extract_drive_letter(temp.path()).expect("drive letter");
+        let filter = temp.path().to_string_lossy().into_owned();
+        let writer_path = temp.path().to_path_buf();
+        let writer = std::thread::spawn(move || {
+            for index in 0..16 {
+                fs::write(
+                    writer_path.join(format!("filefind-concurrent-{index}.txt")),
+                    b"disposable",
+                )
+                .expect("write temporary file");
+            }
+        });
+
+        let mut database = Database::open_in_memory().expect("open database");
+        scan_ntfs_volume_filtered(&mut database, drive, std::slice::from_ref(&filter)).expect("scan NTFS directory");
+        writer.join().expect("writer thread");
+        scan_ntfs_volume_filtered(&mut database, drive, &[filter]).expect("reconcile concurrent files");
+
+        assert_eq!(
+            database
+                .search_by_name("filefind-concurrent-", 32)
+                .expect("search files")
+                .len(),
+            16
+        );
+    }
+
     #[test]
     fn test_deleted_references_respects_later_creates() {
-        let mut change = crate::usn::UsnChange {
+        let mut change = UsnChange {
             usn: 10,
             file_reference: 42,
             parent_reference: 5,
@@ -940,6 +984,24 @@ mod tests {
         assert_eq!(deleted_references(&[change, deleted]), vec![42]);
     }
 
+    #[test]
+    fn test_filter_excluded_entries_matches_watcher_rules() {
+        let entries = [
+            "C:\\Docs\\keep.txt",
+            "C:\\Docs\\scratch.tmp",
+            "C:\\Cache\\nested.txt",
+            "C:\\Cached\\keep.txt",
+        ]
+        .into_iter()
+        .map(|path| FileEntry::new(1, "file".into(), path.into(), false))
+        .collect();
+        let filtered = filter_excluded_entries(entries, &["*.tmp".into(), "Cache".into()]);
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].full_path, "C:\\Docs\\keep.txt");
+        assert_eq!(filtered[1].full_path, "C:\\Cached\\keep.txt");
+    }
+
     #[tokio::test]
     async fn test_local_directory_fallback_rejects_partial_scan() {
         let temp = tempdir().expect("create test directory");
@@ -948,7 +1010,29 @@ mod tests {
 
         let result = scan_local_directories('?', vec![valid_path, missing_path], Arc::from([])).await;
 
-        assert!(matches!(result, ScanResult::Failed { .. }));
+        assert_eq!(result.len(), 2);
+        assert!(matches!(result[0], ScanResult::Success { .. }));
+        assert!(matches!(result[1], ScanResult::Failed { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_failed_clean_directory_scan_preserves_existing_index() {
+        let temp = tempdir().expect("create temporary directory");
+        let missing = temp.path().join("missing");
+        let mut database = Database::open_in_memory().expect("open database");
+        let volume_id = database
+            .upsert_volume(&create_directory_volume_info(&missing))
+            .expect("index volume");
+        let path = missing.join("previous.txt").to_string_lossy().into_owned();
+        database
+            .insert_file(&FileEntry::new(volume_id, "previous.txt".into(), path.clone(), false))
+            .expect("index file");
+
+        assert!(scan_directory_to_db(&mut database, &missing, &[], true).await.is_err());
+        assert_eq!(
+            database.search_by_path(&path, 1).expect("search previous file").len(),
+            1
+        );
     }
 
     #[tokio::test]

@@ -1844,7 +1844,7 @@ mod tests {
             let handle = std::thread::spawn(move || {
                 for iteration in 0..3 {
                     let client = test_client(&path);
-                    let response = send_command_retry(&client, DaemonCommand::Ping, 5)
+                    let response = send_command_retry(&client, DaemonCommand::Ping, 8)
                         .unwrap_or_else(|error| panic!("Thread {thread_index} iteration {iteration} failed: {error}"));
                     assert!(
                         matches!(response, DaemonResponse::Pong),

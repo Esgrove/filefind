@@ -16,7 +16,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -30,9 +30,9 @@ use tracing::{debug, error, info, trace, warn};
 use crate::ipc_server::{IpcServerState, IpcToDaemon, spawn_ipc_server};
 use crate::mft::detect_ntfs_volumes;
 use crate::pruner::prune_missing_entries;
-use crate::scanner::run_scan;
-use crate::usn::UsnMonitor;
-use crate::watcher::FileWatcher;
+use crate::scanner::{deleted_references, run_scan};
+use crate::usn::{UsnChange, UsnMonitor};
+use crate::watcher::{FileWatcher, matches_exclude_patterns};
 
 /// Default USN Journal poll interval in milliseconds.
 const DEFAULT_USN_POLL_INTERVAL_MS: u64 = 1000;
@@ -80,6 +80,12 @@ pub struct Daemon {
 
     /// Whether indexing is currently paused.
     is_paused: bool,
+
+    /// A failed reconciliation scan must be retried before consuming more changes.
+    recovery_pending: bool,
+
+    /// Last periodic reconciliation of watched paths.
+    last_periodic_scan: Instant,
 }
 
 /// Configuration for the daemon.
@@ -139,6 +145,8 @@ impl Daemon {
             ipc_state: Arc::new(IpcServerState::new()),
             ipc_receiver: None,
             is_paused: false,
+            recovery_pending: false,
+            last_periodic_scan: Instant::now(),
         }
     }
 
@@ -208,7 +216,10 @@ impl Daemon {
             info!("Performing scan");
             self.ipc_state.state.store(DaemonStateInfo::Scanning);
 
-            run_scan(None, &self.config).await?;
+            if let Err(error) = run_scan(None, &self.config).await {
+                error!("Initial scan incomplete, retrying while running: {error:#}");
+                self.recovery_pending = true;
+            }
 
             // Update stats after scan
             if let Some(ref database) = self.database {
@@ -220,7 +231,8 @@ impl Daemon {
         self.build_path_cache()?;
 
         // Start monitoring
-        self.start_monitors()?;
+        self.start_monitors();
+        self.last_periodic_scan = Instant::now();
 
         // Update monitored volumes count
         self.ipc_state
@@ -291,13 +303,33 @@ impl Daemon {
             self.process_ipc_commands().await?;
 
             // Process any pending file changes (unless paused)
-            if !self.is_paused && self.process_changes() {
+            let retry_interval = Duration::from_secs(self.config.daemon.scan_interval_seconds.clamp(5, 60));
+            if self.recovery_pending && self.last_periodic_scan.elapsed() >= retry_interval
+                || !self.recovery_pending && !self.is_paused && self.process_changes()
+            {
+                self.last_periodic_scan = Instant::now();
                 self.ipc_state.state.store(DaemonStateInfo::Scanning);
-                if let Err(error) = self.rescan_and_restart_usn(true).await {
-                    self.stop();
-                    return Err(error.context("USN recovery scan failed"));
+                match self.rescan_and_restart_usn(true).await {
+                    Ok(()) => self.recovery_pending = false,
+                    Err(error) => {
+                        warn!("Recovery scan incomplete, will retry: {error:#}");
+                        self.recovery_pending = true;
+                    }
                 }
                 self.ipc_state.state.store(DaemonStateInfo::Running);
+            } else if !self.recovery_pending && !self.is_paused && self.file_watcher.is_some() {
+                let watcher_error = self.file_watcher.as_ref().is_some_and(FileWatcher::take_rescan_request);
+                let periodic = self.last_periodic_scan.elapsed()
+                    >= Duration::from_secs(self.config.daemon.scan_interval_seconds.max(1));
+                if watcher_error || periodic {
+                    self.last_periodic_scan = Instant::now();
+                    self.ipc_state.state.store(DaemonStateInfo::Scanning);
+                    if let Err(error) = self.rescan_and_restart_usn(false).await {
+                        warn!("Watched paths could not be reconciled: {error:#}");
+                        self.recovery_pending = true;
+                    }
+                    self.ipc_state.state.store(DaemonStateInfo::Running);
+                }
             }
 
             // Sleep for the configured poll interval
@@ -325,8 +357,8 @@ impl Daemon {
                     info!("Received rescan command via IPC");
                     self.ipc_state.state.store(DaemonStateInfo::Scanning);
                     if let Err(error) = self.rescan_and_restart_usn(false).await {
-                        self.stop();
-                        return Err(error.context("Rescan failed"));
+                        warn!("Requested rescan incomplete, will retry: {error:#}");
+                        self.recovery_pending = true;
                     }
                     // Update stats after rescan
                     if let Some(ref database) = self.database {
@@ -382,17 +414,34 @@ impl Daemon {
             Ok(())
         };
         let drives: Vec<char> = self.volume_monitors.keys().copied().collect();
+        let mut failed_monitors = 0usize;
         for drive in drives {
             let previous = self.volume_monitors.remove(&drive);
             if let Err(error) = self.start_usn_monitor(drive) {
+                warn!("Could not restart USN monitor for {drive}: {error:#}");
+                failed_monitors += 1;
                 if let Some(monitor) = previous {
                     self.volume_monitors.insert(drive, monitor);
                 }
-                return Err(error);
             }
         }
+        let non_ntfs_paths = self.get_non_ntfs_paths();
+        if let Some(watcher) = self.file_watcher.take() {
+            watcher.stop();
+        }
+        self.watcher_receiver = None;
+        if !non_ntfs_paths.is_empty()
+            && let Err(error) = self.start_file_watcher(non_ntfs_paths)
+        {
+            warn!("File watcher could not restart: {error:#}");
+            failed_monitors += 1;
+        }
         result?;
-        cache_result
+        cache_result?;
+        if failed_monitors > 0 {
+            anyhow::bail!("{failed_monitors} USN monitor(s) could not restart");
+        }
+        Ok(())
     }
 
     /// Check if an initial scan should be performed.
@@ -406,7 +455,7 @@ impl Daemon {
     }
 
     /// Start all monitors (USN Journal and file watcher).
-    fn start_monitors(&mut self) -> Result<()> {
+    fn start_monitors(&mut self) {
         // Get drives that are referenced in configured paths
         let configured_drives = self.get_configured_drives();
 
@@ -424,11 +473,12 @@ impl Daemon {
 
         // Start file watcher for non-NTFS paths
         let non_ntfs_paths = self.get_non_ntfs_paths();
-        if !non_ntfs_paths.is_empty() {
-            self.start_file_watcher(non_ntfs_paths)?;
+        if !non_ntfs_paths.is_empty()
+            && let Err(error) = self.start_file_watcher(non_ntfs_paths)
+        {
+            warn!("File watcher could not start, will retry: {error:#}");
+            self.recovery_pending = true;
         }
-
-        Ok(())
     }
 
     /// Start USN Journal monitor for a specific drive.
@@ -474,6 +524,7 @@ impl Daemon {
         let (receiver, _shutdown) = watcher.start()?;
 
         self.watcher_receiver = Some(receiver);
+        self.file_watcher = Some(watcher);
 
         Ok(())
     }
@@ -522,7 +573,7 @@ impl Daemon {
     /// Process any pending file changes.
     fn process_changes(&mut self) -> bool {
         // Collect raw USN changes first to avoid borrow issues
-        let mut raw_changes: Vec<(char, Vec<crate::usn::UsnChange>, i64)> = Vec::new();
+        let mut raw_changes: Vec<(char, Vec<UsnChange>, i64)> = Vec::new();
         let mut needs_rescan = false;
 
         for monitor in self.volume_monitors.values_mut() {
@@ -583,25 +634,14 @@ impl Daemon {
                 let full_path = self.resolve_usn_path_inner(drive_letter, change.parent_reference, &change.name);
 
                 if let Some(path) = full_path {
+                    if !self.should_index_path(&path) {
+                        needs_rescan |= !self.handle_out_of_scope_change(drive_letter, change, path);
+                        continue;
+                    }
                     if change.is_directory {
                         needs_rescan |= !self.update_directory_index(drive_letter, change, &path);
-                    } else if change.is_rename_new()
-                        && let Some(volume_id) = self.get_volume_id_for_path(Path::new(&path))
-                        && let Some(ref database) = self.database
-                    {
-                        match database.get_path_by_mft_reference(volume_id, change.file_reference) {
-                            Ok(Some(old_path)) if old_path != path => {
-                                if let Err(error) = database.update_file_path(&old_path, &path, &change.name) {
-                                    error!("Failed to move indexed path {}: {}", old_path, error);
-                                    needs_rescan = true;
-                                }
-                            }
-                            Err(error) => {
-                                error!("Failed to find old path for renamed file {}: {}", path, error);
-                                needs_rescan = true;
-                            }
-                            _ => {}
-                        }
+                    } else if change.is_rename_new() {
+                        needs_rescan |= !self.update_renamed_file(change, &path);
                     }
                     // Convert to event
                     if let Some(event) = Self::usn_change_to_event(change, &path) {
@@ -612,7 +652,7 @@ impl Daemon {
                     needs_rescan = true;
                 }
             }
-            deletions_by_drive.insert(drive_letter, crate::scanner::deleted_references(&changes));
+            deletions_by_drive.insert(drive_letter, deleted_references(&changes));
             usn_updates.push((drive_letter, new_usn));
         }
 
@@ -630,6 +670,54 @@ impl Daemon {
 
         self.process_watcher_events();
         needs_rescan
+    }
+
+    fn handle_out_of_scope_change(&mut self, drive_letter: char, change: &UsnChange, path: String) -> bool {
+        if change.is_directory {
+            if change.is_rename_new()
+                && let Some(old_path) = self.path_cache.get(&(drive_letter, change.file_reference)).cloned()
+            {
+                if let Some(ref database) = self.database
+                    && let Err(error) = database.delete_files_under_path(&old_path)
+                {
+                    warn!("Could not remove directory moved out of scope: {error:#}");
+                    return false;
+                }
+                self.rebase_cached_paths(drive_letter, &old_path, &path);
+            }
+            self.path_cache.insert((drive_letter, change.file_reference), path);
+        } else if change.is_rename_new()
+            && let Some(volume_id) = self.get_volume_id_for_path(Path::new(&path))
+            && let Some(ref database) = self.database
+            && let Err(error) = database.delete_files_by_mft_references(volume_id, &[change.file_reference])
+        {
+            warn!("Could not remove file moved out of scope: {error:#}");
+            return false;
+        }
+        true
+    }
+
+    fn update_renamed_file(&self, change: &UsnChange, path: &str) -> bool {
+        let Some(volume_id) = self.get_volume_id_for_path(Path::new(path)) else {
+            return false;
+        };
+        let Some(ref database) = self.database else {
+            return false;
+        };
+        match database.get_path_by_mft_reference(volume_id, change.file_reference) {
+            Ok(Some(old_path)) if old_path != path => {
+                if let Err(error) = database.update_file_path(&old_path, path, &change.name) {
+                    error!("Failed to move indexed path {}: {}", old_path, error);
+                    return false;
+                }
+            }
+            Err(error) => {
+                error!("Failed to find old path for renamed file {}: {}", path, error);
+                return false;
+            }
+            _ => {}
+        }
+        true
     }
 
     fn process_watcher_events(&mut self) {
@@ -669,7 +757,7 @@ impl Daemon {
     }
 
     /// Convert a USN change to a file change event.
-    fn usn_change_to_event(change: &crate::usn::UsnChange, full_path: &str) -> Option<FileChangeEvent> {
+    fn usn_change_to_event(change: &UsnChange, full_path: &str) -> Option<FileChangeEvent> {
         use std::path::PathBuf;
 
         let path = PathBuf::from(full_path);
@@ -713,7 +801,7 @@ impl Daemon {
         None
     }
 
-    fn update_directory_index(&mut self, drive_letter: char, change: &crate::usn::UsnChange, path: &str) -> bool {
+    fn update_directory_index(&mut self, drive_letter: char, change: &UsnChange, path: &str) -> bool {
         let key = (drive_letter, change.file_reference);
         if change.is_delete() {
             if let Some(ref database) = self.database
@@ -735,19 +823,17 @@ impl Daemon {
             if let Some(old_path) = old_path
                 && old_path != path
             {
+                let moved_into_scope = !self.should_index_path(&old_path);
                 if let Some(ref database) = self.database
                     && let Err(error) = database.rebase_files_under_path(&old_path, path, &change.name)
                 {
                     error!("Failed to rebase renamed directory {}: {}", old_path, error);
                     return false;
                 }
-                for ((drive, _), cached_path) in &mut self.path_cache {
-                    if *drive == drive_letter
-                        && Self::path_is_within(cached_path, &old_path)
-                        && let Some(suffix) = cached_path.strip_prefix(&old_path)
-                    {
-                        *cached_path = format!("{path}{suffix}");
-                    }
+                self.rebase_cached_paths(drive_letter, &old_path, path);
+                if moved_into_scope {
+                    self.path_cache.insert(key, path.to_string());
+                    return false;
                 }
             }
             self.path_cache.insert(key, path.to_string());
@@ -762,6 +848,34 @@ impl Daemon {
             || candidate
                 .strip_prefix(parent)
                 .is_some_and(|suffix| suffix.starts_with(['\\', '/']))
+    }
+
+    fn rebase_cached_paths(&mut self, drive_letter: char, old_path: &str, new_path: &str) {
+        for ((drive, _), cached_path) in &mut self.path_cache {
+            if *drive == drive_letter
+                && Self::path_is_within(cached_path, old_path)
+                && let Some(suffix) = cached_path.strip_prefix(old_path)
+            {
+                *cached_path = format!("{new_path}{suffix}");
+            }
+        }
+    }
+
+    fn should_index_path(&self, path: &str) -> bool {
+        if matches_exclude_patterns(path, &self.config.daemon.exclude) {
+            return false;
+        }
+        if self.config.daemon.paths.is_empty() {
+            return true;
+        }
+        let normalized = path.replace('/', "\\").to_lowercase();
+        self.config.daemon.paths.iter().any(|configured| {
+            let root = configured.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+            normalized == root
+                || normalized
+                    .strip_prefix(&root)
+                    .is_some_and(|suffix| root.ends_with(':') || suffix.starts_with('\\'))
+        })
     }
 
     /// Handle a file change event by updating the database.
@@ -1198,10 +1312,61 @@ pub fn list_volumes(database_path: &Path, detailed: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usn::UsnChange;
     use filefind::{FileEntry, IndexedVolume, VolumeType};
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_usn_scope_respects_roots_and_exclusions() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["C:\\Docs".into()];
+        config.daemon.exclude = vec!["*.tmp".into()];
+        let daemon = Daemon::new(config, DaemonOptions::default());
+
+        assert!(daemon.should_index_path("c:\\docs\\report.txt"));
+        assert!(!daemon.should_index_path("C:\\Documents\\report.txt"));
+        assert!(!daemon.should_index_path("C:\\Docs\\draft.tmp"));
+        assert!(!daemon.should_index_path("D:\\Docs\\report.txt"));
+    }
+
+    #[test]
+    fn test_usn_directory_moved_out_of_scope_removes_indexed_subtree() {
+        let mut config = Config::default();
+        config.daemon.paths = vec!["C:\\Docs".into()];
+        let mut daemon = Daemon::new(config, DaemonOptions::default());
+        let database = Database::open_in_memory().expect("open database");
+        let volume = IndexedVolume::new("USN-SCOPE".into(), "C:".into(), VolumeType::Ntfs);
+        let volume_id = database.upsert_volume(&volume).expect("insert volume");
+        for (name, path) in [("Old", "C:\\Docs\\Old"), ("child.txt", "C:\\Docs\\Old\\child.txt")] {
+            database
+                .insert_file(&FileEntry::new(volume_id, name.into(), path.into(), name == "Old"))
+                .expect("insert entry");
+        }
+        daemon.database = Some(database);
+        daemon.path_cache.insert(('C', 42), "C:\\Docs\\Old".into());
+        let change = UsnChange {
+            usn: 1,
+            file_reference: 42,
+            parent_reference: 5,
+            name: "Old".into(),
+            reason: 0x0000_2000,
+            attributes: 0x10,
+            is_directory: true,
+        };
+
+        assert!(daemon.handle_out_of_scope_change('C', &change, "C:\\Other\\Old".into()));
+        assert_eq!(
+            daemon.path_cache.get(&('C', 42)).map(String::as_str),
+            Some("C:\\Other\\Old")
+        );
+        let database = daemon.database.as_ref().expect("database");
+        assert!(
+            database
+                .search_by_path("C:\\Docs\\Old\\child.txt", 1)
+                .expect("search")
+                .is_empty()
+        );
+    }
 
     #[test]
     fn test_daemon_state_display() {

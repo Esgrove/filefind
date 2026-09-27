@@ -977,9 +977,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn test_normalize_drive_root_joins_with_separator() {
         let joined = normalize_drive_root(Path::new("X:")).join("Videos");
         assert_eq!(joined.to_string_lossy(), "X:\\Videos");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_normalize_drive_root_joins_unix_path() {
+        let joined = normalize_drive_root(Path::new("/mnt/media")).join("Videos");
+        assert_eq!(joined, PathBuf::from("/mnt/media/Videos"));
     }
 
     #[test]

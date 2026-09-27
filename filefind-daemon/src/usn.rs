@@ -584,6 +584,51 @@ impl Drop for UsnMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::fs;
+    #[cfg(windows)]
+    use tempfile::tempdir;
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires elevated access to an NTFS USN journal"]
+    fn test_live_usn_tracks_disposable_nested_rename_and_delete() {
+        let temp = tempdir().expect("create disposable directory");
+        let drive = temp.path().to_string_lossy().chars().next().expect("drive letter");
+        let journal = UsnMonitor::new(drive, 0).expect("open elevated NTFS journal");
+        let start = journal.query_journal().expect("query journal").next_usn;
+        let mut journal = UsnMonitor::new(drive, start).expect("open current journal");
+
+        let nested = temp.path().join("filefind-usn-nested");
+        fs::create_dir(&nested).expect("create directory");
+        let file = nested.join("filefind-usn-disposable.txt");
+        fs::write(&file, b"disposable").expect("create file");
+        let renamed = temp.path().join("filefind-usn-renamed");
+        fs::rename(&nested, &renamed).expect("rename directory");
+        fs::remove_file(renamed.join("filefind-usn-disposable.txt")).expect("delete file");
+
+        let (changes, _) = journal.read_changes().expect("read changes");
+        assert!(
+            changes
+                .iter()
+                .any(|change| change.is_rename_new() && change.name == "filefind-usn-renamed")
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|change| change.is_delete() && change.name == "filefind-usn-disposable.txt")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires elevated access to an NTFS USN journal"]
+    fn test_live_usn_rejects_expired_cursor_without_resetting_journal() {
+        let temp = tempdir().expect("create disposable directory");
+        let drive = temp.path().to_string_lossy().chars().next().expect("drive letter");
+        let mut journal = UsnMonitor::new(drive, i64::MAX).expect("open elevated NTFS journal");
+        assert!(journal.read_changes().is_err());
+    }
 
     // ── Test data builders ──────────────────────────────────────────────
 

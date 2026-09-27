@@ -14,6 +14,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension};
 use tracing::{debug, trace};
 
+use crate::get_volume_prefix;
 use crate::types::{FileEntry, IndexedVolume, VolumeType};
 
 /// Batch size for MFT reference delete operations.
@@ -190,6 +191,31 @@ impl Database {
             .context("Failed to query volumes")?;
 
         Ok(volumes)
+    }
+
+    /// Find the most specific indexed volume containing a path.
+    ///
+    /// # Errors
+    /// Returns an error if the volume query fails.
+    pub fn get_volume_id_for_path(&self, path: &str) -> Result<Option<i64>> {
+        let normalized = path.replace('/', "\\");
+        Ok(self
+            .get_all_volumes()?
+            .into_iter()
+            .filter_map(|volume| {
+                let mount = volume.mount_point.replace('/', "\\");
+                let suffix = normalized.get(mount.len()..)?;
+                let prefix = normalized.get(..mount.len())?;
+                if prefix.eq_ignore_ascii_case(&mount)
+                    && (suffix.is_empty() || mount.ends_with(['\\', ':']) || suffix.starts_with('\\'))
+                {
+                    volume.id.map(|id| (mount.len(), id))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(length, _)| *length)
+            .map(|(_, id)| id))
     }
 
     /// Insert a file entry into the database.
@@ -920,6 +946,7 @@ impl Database {
         new_name: &str,
         overwrite: bool,
     ) -> Result<bool> {
+        let indexed_volume = self.get_volume_id_for_path(new_path)?;
         let transaction = self.connection.unchecked_transaction()?;
         let source_exists: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM files WHERE full_path = ?1)",
@@ -937,6 +964,11 @@ impl Database {
                 |row| row.get(0),
             )
             .optional()?;
+        if destination_volume_id.or(indexed_volume).is_none()
+            && get_volume_prefix(old_path) != get_volume_prefix(new_path)
+        {
+            anyhow::bail!("Destination volume is not indexed: {new_path}");
+        }
         if overwrite {
             transaction.execute("DELETE FROM files WHERE full_path = ?1", rusqlite::params![new_path])?;
         }
@@ -944,9 +976,43 @@ impl Database {
         let rows_affected = transaction.execute(
             "UPDATE files SET full_path = ?1, name = ?2, mft_reference = NULL, \
              volume_id = COALESCE(?4, volume_id) WHERE full_path = ?3",
-            rusqlite::params![new_path, new_name, old_path, destination_volume_id],
+            rusqlite::params![new_path, new_name, old_path, destination_volume_id.or(indexed_volume)],
         )?;
         if rows_affected != 1 {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Remove the source index entry after verifying the destination contains identical bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the database transaction fails or the destination volume is unknown.
+    pub fn reconcile_identical_file(&self, old_path: &str, new_path: &str, new_name: &str) -> Result<bool> {
+        let destination_volume = self.get_volume_id_for_path(new_path)?;
+        let transaction = self.connection.unchecked_transaction()?;
+        let destination_exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM files WHERE full_path = ?1)",
+            rusqlite::params![new_path],
+            |row| row.get(0),
+        )?;
+        if !destination_exists
+            && destination_volume.is_none()
+            && get_volume_prefix(old_path) != get_volume_prefix(new_path)
+        {
+            anyhow::bail!("Destination volume is not indexed: {new_path}");
+        }
+        let updated = if destination_exists {
+            transaction.execute("DELETE FROM files WHERE full_path = ?1", rusqlite::params![old_path])?
+        } else {
+            transaction.execute(
+                "UPDATE files SET full_path = ?1, name = ?2, mft_reference = NULL, \
+                 volume_id = COALESCE(?4, volume_id) WHERE full_path = ?3",
+                rusqlite::params![new_path, new_name, old_path, destination_volume],
+            )?
+        };
+        if updated != 1 {
             return Ok(false);
         }
         transaction.commit()?;
@@ -3835,6 +3901,115 @@ mod tests {
         assert_eq!(destination.len(), 1);
         assert_eq!(destination[0].size, 12);
         assert_eq!(destination[0].volume_id, dest_volume);
+    }
+
+    #[test]
+    fn test_reconcile_moved_file_uses_indexed_destination_volume_without_destination_row() {
+        let database = Database::open_in_memory().expect("open database");
+        let source_volume = database
+            .upsert_volume(&create_test_volume("SOURCE", "C:"))
+            .expect("source volume");
+        let destination_volume = database
+            .upsert_volume(&create_test_volume("DESTINATION", "D:"))
+            .expect("destination volume");
+        database
+            .insert_file(&create_test_file(source_volume, "data.txt", "C:\\data.txt", 12))
+            .expect("source");
+
+        assert!(
+            database
+                .reconcile_moved_file("C:\\data.txt", "D:\\new\\data.txt", "data.txt", false)
+                .expect("reconcile")
+        );
+        let moved = database.search_by_path("D:\\new\\data.txt", 10).expect("search moved");
+        assert_eq!(moved[0].volume_id, destination_volume);
+    }
+
+    #[test]
+    fn test_reconcile_moved_file_rejects_unindexed_destination_volume() {
+        let database = Database::open_in_memory().expect("open database");
+        let volume_id = database
+            .upsert_volume(&create_test_volume("SOURCE-ONLY", "C:"))
+            .expect("source volume");
+        database
+            .insert_file(&create_test_file(volume_id, "data.txt", "C:\\data.txt", 12))
+            .expect("source");
+
+        assert!(
+            database
+                .reconcile_moved_file("C:\\data.txt", "D:\\data.txt", "data.txt", false)
+                .is_err()
+        );
+        assert_eq!(
+            database.search_by_path("C:\\data.txt", 1).expect("search source").len(),
+            1
+        );
+        assert!(
+            database
+                .search_by_path("D:\\data.txt", 1)
+                .expect("search destination")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_reconcile_moved_file_uses_indexed_destination_row_when_mount_differs() {
+        let database = Database::open_in_memory().expect("open database");
+        let source_volume = database
+            .upsert_volume(&create_test_volume("ROW-SOURCE", "C:"))
+            .expect("source volume");
+        let destination_volume = database
+            .upsert_volume(&create_test_volume("ROW-DESTINATION", "X:"))
+            .expect("destination volume");
+        database
+            .insert_file(&create_test_file(source_volume, "data.txt", "C:\\data.txt", 12))
+            .expect("source");
+        database
+            .insert_file(&create_test_file(destination_volume, "data.txt", "D:\\data.txt", 8))
+            .expect("destination");
+
+        assert!(
+            database
+                .reconcile_moved_file("C:\\data.txt", "D:\\data.txt", "data.txt", true)
+                .expect("reconcile")
+        );
+        assert_eq!(
+            database.search_by_path("D:\\data.txt", 1).expect("search destination")[0].volume_id,
+            destination_volume
+        );
+    }
+
+    #[test]
+    fn test_reconcile_identical_file_keeps_indexed_destination() {
+        let database = Database::open_in_memory().expect("open database");
+        let volume = database
+            .upsert_volume(&create_test_volume("SAME", "C:"))
+            .expect("volume");
+        database
+            .insert_file(&create_test_file(volume, "data.txt", "C:\\source\\data.txt", 12))
+            .expect("source");
+        database
+            .insert_file(&create_test_file(volume, "data.txt", "C:\\dest\\data.txt", 42))
+            .expect("destination");
+
+        assert!(
+            database
+                .reconcile_identical_file("C:\\source\\data.txt", "C:\\dest\\data.txt", "data.txt")
+                .expect("reconcile")
+        );
+        assert!(
+            database
+                .search_by_path("C:\\source\\data.txt", 1)
+                .expect("search source")
+                .is_empty()
+        );
+        assert_eq!(
+            database
+                .search_by_path("C:\\dest\\data.txt", 1)
+                .expect("search destination")[0]
+                .size,
+            42
+        );
     }
 
     #[test]

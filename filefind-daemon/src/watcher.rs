@@ -42,6 +42,9 @@ pub struct FileWatcher {
 
     /// Shutdown flag.
     shutdown: Arc<AtomicBool>,
+
+    /// A watcher error means changes may have been missed.
+    rescan_needed: Arc<AtomicBool>,
 }
 
 /// Entry from a directory scan.
@@ -76,6 +79,7 @@ impl FileWatcher {
             debounce_ms,
             recursive,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -89,6 +93,7 @@ impl FileWatcher {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -120,7 +125,7 @@ impl FileWatcher {
     ///
     /// Events for the same path within `debounce_ms` milliseconds are coalesced
     /// to avoid processing rapid duplicate events.
-    pub fn start(self) -> Result<(mpsc::Receiver<FileChangeEvent>, Arc<AtomicBool>)> {
+    pub fn start(&self) -> Result<(mpsc::Receiver<FileChangeEvent>, Arc<AtomicBool>)> {
         let (event_tx, event_rx) = mpsc::channel(1000);
         let shutdown = self.shutdown.clone();
         let watched_paths = self.watched_paths.clone();
@@ -133,6 +138,7 @@ impl FileWatcher {
 
         // Create the watcher
         let watcher_shutdown = shutdown.clone();
+        let rescan_needed = Arc::clone(&self.rescan_needed);
         let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if watcher_shutdown.load(Ordering::Relaxed) {
                 return;
@@ -141,10 +147,13 @@ impl FileWatcher {
             match res {
                 Ok(event) => {
                     // Use blocking send since we're in a sync callback
-                    let _ = notify_tx.blocking_send(event);
+                    if notify_tx.blocking_send(event).is_err() {
+                        rescan_needed.store(true, Ordering::Release);
+                    }
                 }
                 Err(error) => {
                     error!("File watcher error: {}", error);
+                    rescan_needed.store(true, Ordering::Release);
                 }
             }
         })
@@ -324,6 +333,11 @@ impl FileWatcher {
         self.shutdown.store(true, Ordering::Relaxed);
     }
 
+    /// Return whether the watcher reported potentially missed changes since the last check.
+    pub fn take_rescan_request(&self) -> bool {
+        self.rescan_needed.swap(false, Ordering::AcqRel)
+    }
+
     /// Get the paths being watched.
     #[must_use]
     pub fn watched_paths(&self) -> &[PathBuf] {
@@ -369,6 +383,7 @@ impl Default for FileWatcher {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -420,6 +435,7 @@ pub async fn scan_directory_with_concurrency(
 
     // Process directories with bounded concurrency using a semaphore
     let mut dirs_to_process = vec![root.clone()];
+    let mut failed_directories = 0usize;
 
     while !dirs_to_process.is_empty() {
         // Process current batch with concurrency limit
@@ -433,7 +449,7 @@ pub async fn scan_directory_with_concurrency(
 
             tasks.push(tokio::spawn(async move {
                 // Acquire permit before scanning (limits concurrent I/O)
-                let permit = semaphore.acquire().await.expect("Semaphore should not be closed");
+                let permit = semaphore.acquire().await.context("Directory scan semaphore closed")?;
                 let result = scan_single_directory(dir, exclude_patterns, entries).await;
                 drop(permit);
                 result
@@ -442,13 +458,31 @@ pub async fn scan_directory_with_concurrency(
 
         // Collect results (subdirectories to process next)
         for task in tasks {
-            dirs_to_process.extend(task.await.context("Directory scan task failed")??);
+            match task.await {
+                Ok(Ok(subdirectories)) => dirs_to_process.extend(subdirectories),
+                Ok(Err(error)) => {
+                    warn!("Directory scan failed: {error:#}");
+                    failed_directories += 1;
+                }
+                Err(error) => {
+                    warn!("Directory scan task failed: {error}");
+                    failed_directories += 1;
+                }
+            }
         }
     }
 
-    let mut result = Arc::try_unwrap(entries)
-        .expect("All references should be dropped")
-        .into_inner();
+    if failed_directories > 0 {
+        anyhow::bail!(
+            "{failed_directories} directories could not be scanned under {}",
+            root.display()
+        );
+    }
+
+    let mut result = match Arc::try_unwrap(entries) {
+        Ok(entries) => entries.into_inner(),
+        Err(entries) => entries.lock().await.clone(),
+    };
 
     // Sort by path for consistent ordering
     result.sort_by(|a, b| a.path.cmp(&b.path));
@@ -592,6 +626,14 @@ mod tests {
     use std::time::SystemTime;
     use tempfile::tempdir;
 
+    #[test]
+    fn test_watcher_rescan_request_is_consumed() {
+        let watcher = FileWatcher::for_path(PathBuf::from("missing"));
+        watcher.rescan_needed.store(true, Ordering::Release);
+        assert!(watcher.take_rescan_request());
+        assert!(!watcher.take_rescan_request());
+    }
+
     #[tokio::test]
     async fn test_scan_single_directory_reports_missing_directory() {
         let temp = tempdir().expect("create temp directory");
@@ -613,6 +655,7 @@ mod tests {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(watcher.should_exclude(Path::new("test.tmp")));
@@ -630,6 +673,7 @@ mod tests {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         };
 
         // Should match - ends with .bak
@@ -651,6 +695,7 @@ mod tests {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         };
 
         // Should match - contains "cache"
@@ -674,6 +719,7 @@ mod tests {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(watcher.should_exclude(Path::new("Thumbs.db")));
@@ -694,6 +740,7 @@ mod tests {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         };
 
         // With no patterns, nothing should be excluded
@@ -710,6 +757,7 @@ mod tests {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         };
 
         // Each pattern can independently match
@@ -1041,6 +1089,7 @@ mod tests {
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             recursive: true,
             shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(watcher.should_exclude(Path::new("file.TMP")));

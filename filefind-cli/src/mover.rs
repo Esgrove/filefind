@@ -645,6 +645,89 @@ fn restore_destination_backup(
     Ok(())
 }
 
+fn hash_file(path: &Path) -> Result<blake3::Hash> {
+    let mut file = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let chunk = buffer
+            .get(..count)
+            .context("Read returned more bytes than the hash buffer")?;
+        hasher.update(chunk);
+    }
+    Ok(hasher.finalize())
+}
+
+fn files_have_same_contents(source: &Path, destination: &Path) -> Result<bool> {
+    if fs::metadata(source)?.len() != fs::metadata(destination)?.len() {
+        return Ok(false);
+    }
+    Ok(hash_file(source)? == hash_file(destination)?)
+}
+
+fn deduplicate_identical_file(
+    file: &FileEntry,
+    source: &Path,
+    destination: &Path,
+    file_name: &str,
+    progress_bar: &ProgressBar,
+    database: &Database,
+) -> Result<(), MoveError> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| MoveError::Failed(anyhow::anyhow!("Source has no parent directory")))?;
+    let backup = tempfile::Builder::new()
+        .prefix(".filefind-source-")
+        .tempdir_in(parent)
+        .map_err(|error| MoveError::Failed(error.into()))?;
+    let staged_source = backup.path().join(file_name);
+    fs::rename(source, &staged_source).map_err(|error| MoveError::Failed(error.into()))?;
+
+    match database.reconcile_identical_file(&file.full_path, &destination.to_string_lossy(), file_name) {
+        Ok(true) => {
+            if let Err(error) = fs::remove_file(&staged_source) {
+                let preserved = backup.keep();
+                print_warning!(
+                    "Duplicate source was indexed as removed but remains at {}: {}",
+                    preserved.display(),
+                    error
+                );
+            }
+            progress_bar.inc(file.size);
+            Ok(())
+        }
+        result => {
+            let error = match result {
+                Ok(false) => anyhow::anyhow!("Source path was absent from the index: {}", file.full_path),
+                Err(error) => error,
+                Ok(true) => return Ok(()),
+            };
+            if source.exists() || fs::rename(&staged_source, source).is_err() {
+                let preserved = backup.keep();
+                return Err(MoveError::Failed(anyhow::anyhow!(
+                    "Could not reconcile identical file: {error}. Source is preserved at {}",
+                    preserved.display()
+                )));
+            }
+            Err(MoveError::Failed(error))
+        }
+    }
+}
+
+fn reject_unexpected_destination(destination: &Path, force_overwrite: bool) -> Result<(), MoveError> {
+    if destination.exists() && !force_overwrite {
+        return Err(MoveError::Failed(anyhow::anyhow!(
+            "Destination appeared after filtering: {}",
+            destination.display()
+        )));
+    }
+    Ok(())
+}
+
 fn move_indexed_file(
     file: &FileEntry,
     source: &Path,
@@ -653,11 +736,23 @@ fn move_indexed_file(
     progress_bar: &ProgressBar,
     context: &MoveContext<'_>,
 ) -> Result<(), MoveError> {
-    if destination.exists() && !context.force_overwrite {
-        return Err(MoveError::Failed(anyhow::anyhow!(
-            "Destination appeared after filtering: {}",
-            destination.display()
-        )));
+    reject_unexpected_destination(destination, context.force_overwrite)?;
+
+    if destination.exists() && context.force_overwrite {
+        match files_have_same_contents(source, destination) {
+            Ok(true) => {
+                return deduplicate_identical_file(
+                    file,
+                    source,
+                    destination,
+                    file_name,
+                    progress_bar,
+                    context.database,
+                );
+            }
+            Ok(false) => {}
+            Err(error) => return Err(MoveError::Failed(error)),
+        }
     }
 
     let backup = if destination.exists() {
@@ -711,7 +806,7 @@ fn move_indexed_file(
     let error = match reconciliation {
         Ok(false) => anyhow::anyhow!("Source path was absent from the index: {}", file.full_path),
         Err(error) => error,
-        Ok(true) => unreachable!("successful reconciliation returned above"),
+        Ok(true) => return Ok(()),
     };
     let rollback = if source.exists() {
         Err(anyhow::anyhow!("Source path already exists; cannot safely roll back"))
@@ -2573,6 +2668,96 @@ mod tests {
     }
 
     #[test]
+    fn test_force_overwrite_identical_file_keeps_original_destination() {
+        let temp = TempDir::new().expect("temp directory");
+        let source_dir = temp.path().join("source");
+        let dest_dir = temp.path().join("destination");
+        fs::create_dir_all(&source_dir).expect("source directory");
+        fs::create_dir_all(&dest_dir).expect("destination directory");
+        let source = source_dir.join("data.txt");
+        let destination = dest_dir.join("data.txt");
+        fs::write(&source, "same bytes").expect("write source");
+        fs::write(&destination, "same bytes").expect("write destination");
+        let database = overwrite_test_database();
+        let source_entry = make_file("data.txt", &source.to_string_lossy(), 10);
+        let dest_entry = make_file("data.txt", &destination.to_string_lossy(), 42);
+        database.insert_file(&source_entry).expect("index source");
+        database.insert_file(&dest_entry).expect("index destination");
+        let abort_flag = AtomicBool::new(false);
+        let context = MoveContext {
+            destination: &dest_dir,
+            force_overwrite: true,
+            database: &database,
+            abort_flag: &abort_flag,
+        };
+
+        assert!(
+            move_indexed_file(
+                &source_entry,
+                &source,
+                &destination,
+                "data.txt",
+                &ProgressBar::hidden(),
+                &context
+            )
+            .is_ok()
+        );
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(&destination).expect("read destination"),
+            "same bytes"
+        );
+        assert_eq!(
+            database
+                .search_by_path(&destination.to_string_lossy(), 1)
+                .expect("lookup")[0]
+                .size,
+            42
+        );
+        assert!(
+            database
+                .search_by_path(&source.to_string_lossy(), 1)
+                .expect("lookup")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_non_force_move_does_not_replace_late_destination() {
+        let temp = TempDir::new().expect("temp directory");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        fs::write(&source, "source").expect("write source");
+        fs::write(&destination, "destination").expect("write destination");
+        let database = overwrite_test_database();
+        let abort_flag = AtomicBool::new(false);
+        let context = MoveContext {
+            destination: temp.path(),
+            force_overwrite: false,
+            database: &database,
+            abort_flag: &abort_flag,
+        };
+        let source_entry = make_file("source.txt", &source.to_string_lossy(), 6);
+
+        assert!(
+            move_indexed_file(
+                &source_entry,
+                &source,
+                &destination,
+                "destination.txt",
+                &ProgressBar::hidden(),
+                &context
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&source).expect("read source"), "source");
+        assert_eq!(
+            fs::read_to_string(&destination).expect("read destination"),
+            "destination"
+        );
+    }
+
+    #[test]
     fn test_force_overwrite_missing_source_row_restores_both_files() {
         let temp = TempDir::new().expect("temp directory");
         let source_dir = temp.path().join("source");
@@ -2656,6 +2841,18 @@ mod tests {
             "old contents"
         );
         assert_eq!(fs::read_dir(&dest_dir).expect("list directory").count(), 1);
+    }
+
+    #[test]
+    fn test_files_have_same_contents_compares_bytes() {
+        let temp = TempDir::new().expect("temp directory");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::write(&source, "equal").expect("source");
+        fs::write(&destination, "equal").expect("destination");
+        assert!(files_have_same_contents(&source, &destination).expect("compare files"));
+        fs::write(&destination, "other").expect("destination update");
+        assert!(!files_have_same_contents(&source, &destination).expect("compare files"));
     }
 
     #[test]
