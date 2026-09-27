@@ -32,16 +32,18 @@ repos:
     hooks:
       - id: rust-fmt
         name: cargo fmt format
-        description: Run cargo fmt on files included in the commit. rustfmt should be installed before-hand.
+        description: Run cargo fmt on files included in the commit.
         entry: cargo fmt
         pass_filenames: false
         types: [file, rust]
         language: system
+        priority: 1
 
       - id: rust-clippy
         name: cargo clippy lint
-        description: Run cargo clippy on files included in the commit. clippy should be installed before-hand.
+        description: Run cargo clippy on files included in the commit.
         entry: cargo clippy -- -Dwarnings
         pass_filenames: false
         types: [file, rust]
         language: system
+        priority: 2
