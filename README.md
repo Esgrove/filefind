@@ -332,20 +332,29 @@ An initial `--quick` run on an AMD Ryzen 9 7950X with a 100,000-row in-memory fi
 and 86 to 118 ms for duplicate detection depending on duplicate density.
 These are local quick-run baselines, not performance targets or an optimization comparison.
 
-## Review Follow-Ups
+## Index Recovery
 
-- **P1, feature:** Compare file contents before a forced overwrite and define whether identical files should keep
-  the existing destination and remove the source. The current `--force` behavior replaces it.
-- **P1, reliability:** Add non-NTFS watcher overflow and interrupted-scan reconciliation tests,
-  especially for network paths. Investigate recovery from dropped watcher events.
-- **P1, correctness:** Track destination volume IDs for moves to a volume with no already-indexed destination row.
-  The database currently retains the source volume ID until a later scan.
-- **P1, correctness:** Verify how USN events outside a configured NTFS subdirectory interact with path filtering
-  and excludes. Unresolved creates request a rescan, which may be expensive on a busy drive.
-- **P2, validation:** Add disposable elevated NTFS end-to-end tests for journal reset, nested directory rename,
-  create/delete bursts, and concurrent rescan. Current automated tests use synthetic records and SQLite fixtures.
-- **P2, coverage:** Add a non-Windows CI job for portable database and directory-walk code;
-  the existing workflow runs only on Windows.
+Configured paths are scanned independently. An inaccessible directory is logged without interrupting scans of other paths.
+Failed scans retain their previous entries and USN position, and the daemon retries reconciliation while it runs.
+Watcher errors request a rescan; non-NTFS paths are also reconciled at `scan_interval_seconds` intervals.
+On NTFS, live changes respect configured roots and exclusion patterns, including directories renamed out of scope.
+
+Forced moves compare BLAKE3 hashes when a destination exists.
+If both files are identical, the destination remains untouched and the source is removed after index reconciliation.
+Moves into an indexed destination volume record its volume ID even when the destination file was not indexed.
+An unindexed cross-volume destination is rejected rather than recording the wrong volume ID.
+
+The elevated NTFS tests are ignored by default and operate only in disposable temporary directories.
+From an elevated terminal on an NTFS volume, run:
+
+```shell
+cargo test -p filefind-daemon test_live_ -- --ignored
+```
+
+These tests inspect journal changes and expired cursors without resetting the system journal.
+CI runs the full suite on Windows and portable database and directory-walk checks on Linux and macOS.
+Filesystem and SQLite updates still cannot share a single atomic transaction: after a process crash,
+an interrupted file move may require manual inspection of a preserved `.filefind-backup-*` directory.
 
 ## License
 

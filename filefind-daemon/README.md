@@ -367,7 +367,8 @@ The scan records a pre-enumeration journal position so changes during the scan c
 Directory references are scoped by drive and updated on create, rename, and delete.
 If the journal has reset or expired, or an indexed USN change cannot be applied,
 the daemon requests a clean rescan and restarts its USN monitors from the stored position.
-If a recovery or requested rescan fails, the daemon stops rather than serving an incomplete index.
+If a recovery or requested rescan fails, the daemon logs the affected path and retries while other paths stay available.
+Watcher errors request reconciliation, and non-NTFS paths are rescanned at the configured interval.
 
 ### File System Watcher
 

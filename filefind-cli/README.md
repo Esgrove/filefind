@@ -253,6 +253,8 @@ after displaying the normal search results.
 - **Forced overwrite**: The previous destination is staged in a temporary sibling directory until the move
   and index update succeed. On failure it is restored when possible; if restoration fails, the preserved path
   is reported. Filesystem and SQLite operations cannot share a single atomic transaction.
+- If source and destination hashes match, the existing destination is retained and only the source is removed.
+  Moves to a volume not present in the index fail safely rather than keeping the source volume ID.
 - **File already in the destination directory**: silently counted, not moved or reported as a skip.
 
 ## Duplicates Feature

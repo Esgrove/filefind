@@ -26,8 +26,10 @@ env:
 
 jobs:
   build:
-    # Windows-only since this project uses NTFS-specific APIs
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -41,13 +43,26 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
+        if: runner.os == 'Windows'
         run: cargo build
 
       - name: Run tests
+        if: runner.os == 'Windows'
         run: cargo test --no-fail-fast
+
+      - name: Test portable database and directory walker
+        if: runner.os != 'Windows'
+        run: |
+          cargo test -p filefind --lib
+          cargo test -p filefind-daemon --bin filefindd watcher::tests::
 
       - name: Check formatting
         run: cargo fmt --check --verbose
 
       - name: Lint
+        if: runner.os == 'Windows'
         run: cargo clippy -- -Dwarnings
+
+      - name: Lint portable crates
+        if: runner.os != 'Windows'
+        run: cargo clippy -p filefind -p filefind-daemon --all-targets -- -Dwarnings
