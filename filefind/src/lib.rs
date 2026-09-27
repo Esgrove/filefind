@@ -2,22 +2,38 @@
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::Command;
-use clap_complete::Shell;
-use colored::Colorize;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, NO_ERROR};
+#[cfg(windows)]
+use windows_sys::Win32::NetworkManagement::WNet::WNetGetConnectionW;
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+#[cfg(windows)]
+use windows_sys::Win32::System::Registry::{
+    HKEY_CURRENT_USER, KEY_READ, REG_SZ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
+};
 
+mod completion;
 pub mod config;
 pub mod database;
 pub mod ipc;
+mod output;
 pub mod types;
 
+pub use completion::generate_shell_completion;
 pub use config::{CONFIG_PATH, LogLevel, PathMapping, UserConfig as Config};
 pub use database::{Database, VolumeStats};
 pub use ipc::{
     DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, IpcClient, get_ipc_path, read_message, write_message,
+};
+pub use output::{
+    format_number, format_size, print_bold_magenta, print_bold_red, print_bold_yellow, print_cyan, print_error,
+    print_success, print_warning,
 };
 pub use types::{FileChangeEvent, FileEntry, IndexedVolume, VolumeType};
 
@@ -122,9 +138,6 @@ pub fn is_unc_path(path: &Path) -> bool {
 #[cfg(windows)]
 #[must_use]
 pub fn is_mapped_network_drive(path: &Path) -> bool {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
-
     const DRIVE_REMOTE: u32 = 4;
 
     // UNC paths are not mapped drives
@@ -354,9 +367,6 @@ pub fn get_volume_prefix(path: &str) -> Option<String> {
 #[cfg(windows)]
 #[must_use]
 pub fn get_unc_for_drive(drive_letter: char) -> Option<String> {
-    use windows_sys::Win32::Foundation::NO_ERROR;
-    use windows_sys::Win32::NetworkManagement::WNet::WNetGetConnectionW;
-
     let drive_letter = drive_letter.to_ascii_uppercase();
     let local_name: Vec<u16> = format!("{drive_letter}:")
         .encode_utf16()
@@ -417,11 +427,6 @@ pub const fn get_unc_for_drive(_drive_letter: char) -> Option<String> {
 #[cfg(windows)]
 #[must_use]
 pub fn get_persistent_drive_mapping(drive_letter: char) -> Option<String> {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        HKEY_CURRENT_USER, KEY_READ, REG_SZ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
-    };
-
     let drive_letter = drive_letter.to_ascii_uppercase();
     let key_path: Vec<u16> = format!("Network\\{drive_letter}")
         .encode_utf16()
@@ -630,210 +635,6 @@ pub fn strip_prefix_ignore_case<'a>(text: &'a str, prefix_lower: &str) -> Option
     remaining_prefix.is_empty().then_some("")
 }
 
-/// Print an error message in red to stderr.
-///
-/// # Examples
-///
-/// ```
-/// filefind::print_error("something went wrong");
-/// ```
-pub fn print_error(message: &str) {
-    eprintln!("{}", message.red());
-}
-
-/// Print an error message in red with formatting support.
-#[macro_export]
-macro_rules! print_error {
-    ($($arg:tt)*) => {
-        $crate::print_error(&format!($($arg)*))
-    };
-}
-
-/// Print a warning message in yellow to stderr.
-///
-/// # Examples
-///
-/// ```
-/// filefind::print_warning("this might be a problem");
-/// ```
-pub fn print_warning(message: &str) {
-    eprintln!("{}", message.yellow());
-}
-
-/// Print a warning message in yellow with formatting support.
-#[macro_export]
-macro_rules! print_warning {
-    ($($arg:tt)*) => {
-        $crate::print_warning(&format!($($arg)*))
-    };
-}
-
-/// Print a success message in green to stdout.
-///
-/// # Examples
-///
-/// ```
-/// filefind::print_success("operation completed");
-/// ```
-pub fn print_success(message: &str) {
-    println!("{}", message.green());
-}
-
-/// Print a success message in green with formatting support.
-#[macro_export]
-macro_rules! print_success {
-    ($($arg:tt)*) => {
-        $crate::print_success(&format!($($arg)*))
-    };
-}
-
-/// Print an info message in cyan to stdout.
-///
-/// # Examples
-///
-/// ```
-/// filefind::print_cyan("indexing files...");
-/// ```
-pub fn print_cyan(message: &str) {
-    println!("{}", message.cyan());
-}
-
-/// Print an info message in cyan with formatting support.
-#[macro_export]
-macro_rules! print_cyan {
-    ($($arg:tt)*) => {
-        $crate::print_cyan(&format!($($arg)*))
-    };
-}
-
-/// Print a message in bold magenta to stdout.
-///
-/// # Examples
-///
-/// ```
-/// filefind::print_bold_magenta("highlighted info");
-/// ```
-pub fn print_bold_magenta(message: &str) {
-    println!("{}", message.bold().magenta());
-}
-
-/// Print a message in bold magenta with formatting support.
-#[macro_export]
-macro_rules! print_bold_magenta {
-    ($($arg:tt)*) => {
-        $crate::print_bold_magenta(&format!($($arg)*))
-    };
-}
-
-/// Print a message in bold yellow to stdout.
-///
-/// # Examples
-///
-/// ```
-/// filefind::print_bold_yellow("important notice");
-/// ```
-pub fn print_bold_yellow(message: &str) {
-    println!("{}", message.bold().yellow());
-}
-
-/// Print a message in bold yellow with formatting support.
-#[macro_export]
-macro_rules! print_bold_yellow {
-    ($($arg:tt)*) => {
-        $crate::print_bold_yellow(&format!($($arg)*))
-    };
-}
-
-/// Print a message in bold red to stdout.
-///
-/// # Examples
-///
-/// ```
-/// filefind::print_bold_red("critical error");
-/// ```
-pub fn print_bold_red(message: &str) {
-    println!("{}", message.bold().red());
-}
-
-/// Print a message in bold red with formatting support.
-#[macro_export]
-macro_rules! print_bold_red {
-    ($($arg:tt)*) => {
-        $crate::print_bold_red(&format!($($arg)*))
-    };
-}
-
-/// Format a file size in bytes to a human-readable string.
-///
-/// Uses binary units (1 KB = 1024 bytes).
-///
-/// # Examples
-///
-/// ```
-/// use filefind::format_size;
-///
-/// assert_eq!(format_size(0), "0 B");
-/// assert_eq!(format_size(512), "512 B");
-/// assert_eq!(format_size(1024), "1.00 KB");
-/// assert_eq!(format_size(1_048_576), "1.00 MB");
-/// assert_eq!(format_size(1_073_741_824), "1.00 GB");
-/// ```
-#[must_use]
-pub fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    const TB: u64 = GB * 1024;
-
-    if bytes >= TB {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
-    } else if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-/// Format a large number with thousands separators (e.g., 1234567 -> "1,234,567").
-///
-/// # Examples
-///
-/// ```
-/// use filefind::format_number;
-///
-/// assert_eq!(format_number(0), "0");
-/// assert_eq!(format_number(999), "999");
-/// assert_eq!(format_number(1_000), "1,000");
-/// assert_eq!(format_number(1_234_567), "1,234,567");
-/// ```
-#[must_use]
-pub fn format_number(number: u64) -> String {
-    let string = number.to_string();
-    let bytes = string.as_bytes();
-    let len = bytes.len();
-
-    if len <= 3 {
-        return string;
-    }
-
-    // Pre-allocate: original length + number of commas
-    let comma_count = (len - 1) / 3;
-    let mut result = String::with_capacity(len + comma_count);
-
-    for (index, &byte) in bytes.iter().enumerate() {
-        if index > 0 && (len - index).is_multiple_of(3) {
-            result.push(',');
-        }
-        result.push(byte as char);
-    }
-
-    result
-}
-
 /// Get the log directory path: `~/logs/filefind/`.
 ///
 /// # Examples
@@ -848,102 +649,6 @@ pub fn format_number(number: u64) -> String {
 pub fn get_log_directory() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
     Ok(home.join("logs").join(PROJECT_NAME))
-}
-
-/// Determine the appropriate directory for storing shell completions.
-///
-/// First checks if the user-specific directory exists,
-/// then checks for the global directory.
-/// If neither exist, creates and uses the user-specific dir.
-fn get_shell_completion_dir(shell: Shell, name: &str) -> Result<PathBuf> {
-    let home = dirs::home_dir().expect("Failed to get home directory");
-
-    // Special handling for oh-my-zsh.
-    // Create custom "plugin", which will then have to be loaded in .zshrc
-    if shell == Shell::Zsh {
-        let omz_plugins = home.join(".oh-my-zsh/custom/plugins");
-        if omz_plugins.exists() {
-            let plugin_dir = omz_plugins.join(name);
-            std::fs::create_dir_all(&plugin_dir)?;
-            return Ok(plugin_dir);
-        }
-    }
-
-    let user_dir = match shell {
-        Shell::PowerShell => {
-            if cfg!(windows) {
-                home.join(r"Documents\PowerShell\completions")
-            } else {
-                home.join(".config/powershell/completions")
-            }
-        }
-        Shell::Bash => home.join(".bash_completion.d"),
-        Shell::Elvish => home.join(".elvish/lib"),
-        Shell::Fish => home.join(".config/fish/completions"),
-        Shell::Zsh => home.join(".zsh/completions"),
-        _ => anyhow::bail!("Unsupported shell"),
-    };
-
-    if user_dir.exists() {
-        return Ok(user_dir);
-    }
-
-    // PowerShell has no separate global directory. Skip the global fallback for it.
-    let global_dir = match shell {
-        Shell::Bash => Some(PathBuf::from("/etc/bash_completion.d")),
-        Shell::Fish => Some(PathBuf::from("/usr/share/fish/completions")),
-        Shell::Zsh => Some(PathBuf::from("/usr/share/zsh/site-functions")),
-        _ => None,
-    };
-
-    if let Some(global) = global_dir
-        && global.exists()
-    {
-        return Ok(global);
-    }
-
-    std::fs::create_dir_all(&user_dir)?;
-    Ok(user_dir)
-}
-
-/// Generate a shell completion script for the given shell.
-///
-/// When `install` is `true`, the completion file is written to the appropriate shell-specific directory.
-/// When `false`, the completion script is printed to stdout.
-///
-/// # Examples
-///
-/// ```no_run
-/// use clap::Command;
-/// use clap_complete::Shell;
-/// use filefind::generate_shell_completion;
-///
-/// let command = Command::new("myapp").about("example app");
-/// // Print the Bash completion script to stdout
-/// generate_shell_completion(Shell::Bash, command, false, false, "myapp").expect("generation failed");
-/// ```
-///
-/// # Errors
-/// Returns an error if:
-/// - The shell completion directory cannot be determined or created
-/// - The completion file cannot be generated or written
-pub fn generate_shell_completion(
-    shell: Shell,
-    mut command: Command,
-    install: bool,
-    verbose: bool,
-    command_name: &str,
-) -> Result<()> {
-    if install {
-        let out_dir = get_shell_completion_dir(shell, command_name)?;
-        let path = clap_complete::generate_to(shell, &mut command, command_name, out_dir)?;
-        if verbose {
-            println!("Completion file generated to: {}", path.display());
-        }
-    } else {
-        clap_complete::generate(shell, &mut command, command_name, &mut std::io::stdout());
-    }
-    Ok(())
 }
 
 /// Decode a UTF-16 buffer filled by a Windows API call, stopping at the first null terminator.

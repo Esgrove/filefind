@@ -6,6 +6,8 @@
 mod app;
 mod icons;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -15,6 +17,8 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+#[cfg(windows)]
+use windows_sys::Win32::System::Console::GetConsoleWindow;
 
 use filefind::{LogLevel, generate_shell_completion, get_log_directory};
 
@@ -126,7 +130,6 @@ fn init_logging_file(filter: LevelFilter) -> Result<()> {
 /// Check if this process has a console attached.
 #[cfg(windows)]
 fn has_console() -> bool {
-    use windows_sys::Win32::System::Console::GetConsoleWindow;
     unsafe { !GetConsoleWindow().is_null() }
 }
 
@@ -138,8 +141,6 @@ fn has_console() -> bool {
 /// Spawn the tray app as a detached background process.
 #[cfg(windows)]
 fn spawn_background_tray(args: &TrayArgs) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;

@@ -3,6 +3,12 @@
 //! This module handles the tray icon, menu creation,
 //! and event loop for the filefind tray application.
 
+#[cfg(windows)]
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(not(windows))]
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -10,6 +16,12 @@ use anyhow::{Context, Result};
 use tracing::{error, info, trace, warn};
 use tray_icon::menu::{AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
+#[cfg(windows)]
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, SW_HIDE, TranslateMessage, WM_QUIT,
+};
 
 use filefind::{DaemonStateInfo, DaemonStatus, IpcClient, format_number};
 
@@ -66,10 +78,6 @@ pub fn run() -> Result<()> {
     // Run the Windows message loop
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
-        };
-
         let mut msg: MSG = unsafe { std::mem::zeroed() };
 
         loop {
@@ -183,7 +191,6 @@ fn handle_menu_event(
             #[cfg(windows)]
             {
                 // Post WM_QUIT to exit the message loop
-                use windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage;
                 // SAFETY: PostQuitMessage is always safe to call
                 unsafe {
                     PostQuitMessage(0);
@@ -389,12 +396,6 @@ fn format_status_tooltip(status: &DaemonStatus) -> String {
 /// If the tray app is already running as administrator, no UAC prompt is shown.
 #[cfg(windows)]
 fn start_daemon() -> Result<()> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
-
     /// Encode an `OsStr` as a null-terminated UTF-16 vector for Windows API calls.
     fn to_wide(s: &OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
@@ -433,8 +434,6 @@ fn start_daemon() -> Result<()> {
 /// Start the daemon process (non-Windows).
 #[cfg(not(windows))]
 fn start_daemon() -> Result<()> {
-    use std::process::Command;
-
     Command::new("filefindd")
         .arg("start")
         .spawn()

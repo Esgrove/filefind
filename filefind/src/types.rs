@@ -7,19 +7,6 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-/// Type of volume/drive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VolumeType {
-    /// NTFS formatted drive (supports MFT reading).
-    Ntfs,
-    /// Other local file system (FAT32, exFAT, etc.).
-    Local,
-    /// Network share or mapped network drive.
-    Network,
-    /// Removable drive (USB, etc.).
-    Removable,
-}
-
 /// Information about an indexed volume/drive.
 #[derive(Debug, Clone)]
 pub struct IndexedVolume {
@@ -117,6 +104,19 @@ pub struct IndexStats {
     pub last_updated: Option<SystemTime>,
 }
 
+/// Type of volume/drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VolumeType {
+    /// NTFS formatted drive (supports MFT reading).
+    Ntfs,
+    /// Other local file system (FAT32, exFAT, etc.).
+    Local,
+    /// Network share or mapped network drive.
+    Network,
+    /// Removable drive (USB, etc.).
+    Removable,
+}
+
 /// File change event from the watcher.
 #[derive(Debug, Clone)]
 pub enum FileChangeEvent {
@@ -139,17 +139,6 @@ pub enum FileChangeEvent {
 }
 
 impl VolumeType {
-    /// Convert to a string representation for database storage.
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Ntfs => "ntfs",
-            Self::Local => "local",
-            Self::Network => "network",
-            Self::Removable => "removable",
-        }
-    }
-
     /// Parse from a string representation.
     #[must_use]
     pub fn parse(string: &str) -> Self {
@@ -158,6 +147,17 @@ impl VolumeType {
             "network" => Self::Network,
             "removable" => Self::Removable,
             _ => Self::Local,
+        }
+    }
+
+    /// Convert to a string representation for database storage.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ntfs => "ntfs",
+            Self::Local => "local",
+            Self::Network => "network",
+            Self::Removable => "removable",
         }
     }
 }

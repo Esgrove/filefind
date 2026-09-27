@@ -17,24 +17,6 @@ use crate::hyperlink::Hyperlinker;
 use crate::mover;
 use crate::{SortBy, VolumeSortBy, utils};
 
-/// Status of an entry for display purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EntryStatus {
-    /// A regular file.
-    File,
-    /// Directory exists and contains files.
-    Directory {
-        /// Total size of files under this directory.
-        size: Option<u64>,
-        /// Number of matching files under this directory.
-        file_count: usize,
-    },
-    /// Directory exists but is empty on disk.
-    EmptyDirectory,
-    /// Directory no longer exists on disk.
-    MissingDirectory,
-}
-
 /// Data for displaying volume information.
 struct VolumeDisplayData {
     /// Mount point and label combined (e.g., "C: Windows").
@@ -51,6 +33,24 @@ struct VolumeDisplayData {
     size_formatted: String,
     /// Total size in bytes for sorting.
     total_size_bytes: u64,
+}
+
+/// Status of an entry for display purposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryStatus {
+    /// A regular file.
+    File,
+    /// Directory exists and contains files.
+    Directory {
+        /// Total size of files under this directory.
+        size: Option<u64>,
+        /// Number of matching files under this directory.
+        file_count: usize,
+    },
+    /// Directory exists but is empty on disk.
+    EmptyDirectory,
+    /// Directory no longer exists on disk.
+    MissingDirectory,
 }
 
 /// List all indexed volumes.

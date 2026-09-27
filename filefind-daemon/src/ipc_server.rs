@@ -5,6 +5,14 @@
 //!
 //! Uses postcard binary serialization for efficient, compact messages.
 
+#[cfg(windows)]
+use std::ffi::OsStr;
+#[cfg(not(windows))]
+use std::os::unix::net::UnixListener;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
@@ -14,35 +22,25 @@ use std::time::Instant;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+#[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
+use windows::Win32::Security::{
+    InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+    SetSecurityDescriptorDacl,
+};
+#[cfg(windows)]
+use windows::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
+#[cfg(windows)]
+use windows::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+};
 
 use filefind::{DaemonCommand, DaemonResponse, DaemonStateInfo, DaemonStatus, Database, get_ipc_path};
 
-/// Commands that can be sent to the daemon from the IPC server.
-#[derive(Debug)]
-pub enum IpcToDaemon {
-    /// Request to stop the daemon.
-    Stop,
-    /// Request to rescan.
-    Rescan,
-    /// Request to pause indexing.
-    Pause,
-    /// Request to resume indexing.
-    Resume,
-    /// Request to prune missing entries from the database.
-    Prune,
-}
-
-/// IPC server that handles client connections.
-pub struct IpcServer {
-    /// Shared state for reporting daemon status.
-    state: Arc<IpcServerState>,
-    /// Channel to send commands to the daemon.
-    command_sender: mpsc::Sender<IpcToDaemon>,
-    /// Shutdown signal.
-    shutdown: Arc<AtomicBool>,
-    /// Custom pipe/socket path. When `None`, uses the default from [`get_ipc_path`].
-    pipe_path: Option<PathBuf>,
-}
+/// Atomic wrapper for daemon state.
+pub struct AtomicDaemonState(AtomicU8);
 
 /// Shared state that the IPC server uses to report daemon status.
 pub struct IpcServerState {
@@ -60,8 +58,32 @@ pub struct IpcServerState {
     pub start_time: Instant,
 }
 
-/// Atomic wrapper for daemon state.
-pub struct AtomicDaemonState(AtomicU8);
+/// IPC server that handles client connections.
+pub struct IpcServer {
+    /// Shared state for reporting daemon status.
+    state: Arc<IpcServerState>,
+    /// Channel to send commands to the daemon.
+    command_sender: mpsc::Sender<IpcToDaemon>,
+    /// Shutdown signal.
+    shutdown: Arc<AtomicBool>,
+    /// Custom pipe/socket path. When `None`, uses the default from [`get_ipc_path`].
+    pipe_path: Option<PathBuf>,
+}
+
+/// Commands that can be sent to the daemon from the IPC server.
+#[derive(Debug)]
+pub enum IpcToDaemon {
+    /// Request to stop the daemon.
+    Stop,
+    /// Request to rescan.
+    Rescan,
+    /// Request to pause indexing.
+    Pause,
+    /// Request to resume indexing.
+    Resume,
+    /// Request to prune missing entries from the database.
+    Prune,
+}
 
 impl AtomicDaemonState {
     /// Create a new atomic daemon state.
@@ -143,6 +165,12 @@ impl IpcServerState {
     }
 }
 
+impl Default for IpcServerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IpcServer {
     /// Create a new IPC server.
     #[must_use]
@@ -196,17 +224,6 @@ impl IpcServer {
     /// Run the IPC server on Windows using named pipes (blocking version).
     #[cfg(windows)]
     fn run_windows_blocking(&self) {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
-        use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows::Win32::Security::{SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR};
-        use windows::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
-        use windows::Win32::System::Pipes::{
-            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-            PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-        };
-
         let pipe_path = self.effective_pipe_path();
         let pipe_path_wide: Vec<u16> = OsStr::new(pipe_path.to_str().unwrap_or(r"\\.\pipe\filefind-daemon"))
             .encode_wide()
@@ -324,10 +341,6 @@ impl IpcServer {
     fn create_permissive_security_attributes(
         security_descriptor: &mut windows::Win32::Security::SECURITY_DESCRIPTOR,
     ) -> Result<windows::Win32::Security::SECURITY_ATTRIBUTES> {
-        use windows::Win32::Security::{
-            InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, SetSecurityDescriptorDacl,
-        };
-
         /// Revision level for `InitializeSecurityDescriptor` (always 1).
         const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
 
@@ -386,8 +399,6 @@ impl IpcServer {
     /// Run the IPC server on Unix using domain sockets (blocking version).
     #[cfg(not(windows))]
     fn run_unix_blocking(&self) {
-        use std::os::unix::net::UnixListener;
-
         let socket_path = self.effective_pipe_path();
 
         // Remove existing socket file if it exists
@@ -529,12 +540,6 @@ impl IpcServer {
     }
 }
 
-impl Default for IpcServerState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Spawn the IPC server as a background thread.
 ///
 /// Returns a channel receiver for commands from clients.
@@ -570,6 +575,10 @@ pub fn spawn_ipc_server_with_path(
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
+    use filefind::{FileEntry, IndexedVolume, VolumeType};
+
     use super::*;
 
     #[test]
@@ -722,9 +731,6 @@ mod tests {
 
     #[test]
     fn test_ipc_server_state_concurrent_updates() {
-        use std::sync::Arc;
-        use std::thread;
-
         let state = Arc::new(IpcServerState::new());
 
         let handles: Vec<_> = (0..4)
@@ -1174,8 +1180,6 @@ mod tests {
 
     #[test]
     fn test_update_from_database_with_data() {
-        use filefind::{FileEntry, IndexedVolume, VolumeType};
-
         let state = IpcServerState::new();
         let database = Database::open_in_memory().expect("Failed to create in-memory database");
 
@@ -1344,9 +1348,7 @@ mod tests {
     }
 
     /// Generate a batch of test [`FileEntry`] values for a given volume and index range.
-    fn make_test_file_entries(volume_id: i64, range: std::ops::Range<usize>) -> Vec<filefind::FileEntry> {
-        use filefind::FileEntry;
-
+    fn make_test_file_entries(volume_id: i64, range: std::ops::Range<usize>) -> Vec<FileEntry> {
         range
             .map(|index| FileEntry {
                 id: None,
@@ -1365,8 +1367,6 @@ mod tests {
 
     #[test]
     fn test_ipc_server_state_update_from_database_multiple_times() {
-        use filefind::{IndexedVolume, VolumeType};
-
         let state = IpcServerState::new();
         let mut database = Database::open_in_memory().expect("Failed to create in-memory database");
 

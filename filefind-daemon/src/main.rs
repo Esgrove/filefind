@@ -21,6 +21,8 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+#[cfg(windows)]
+use windows::Win32::System::Console::FreeConsole;
 
 use filefind::{Config, LogLevel, format_number, get_log_directory, print_cyan, print_success};
 
@@ -309,8 +311,6 @@ fn run_prune(config: &Config) -> Result<()> {
 /// console window.
 #[cfg(windows)]
 fn hide_console_window() {
-    use windows::Win32::System::Console::FreeConsole;
-
     unsafe {
         // FreeConsole returns an error if the process is not attached to a console, which is harmless.
         // Just ignore it.

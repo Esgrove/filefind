@@ -5,7 +5,13 @@
 //!
 //! Uses postcard binary serialization for efficient, compact messages.
 
+#[cfg(windows)]
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
+#[cfg(not(windows))]
+use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -36,6 +42,31 @@ static IPC_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
         runtime_dir.join(format!("{IPC_PIPE_NAME}.sock"))
     }
 });
+
+/// Current daemon status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    /// Current state of the daemon.
+    pub state: DaemonStateInfo,
+    /// Number of indexed files.
+    pub indexed_files: u64,
+    /// Number of indexed directories.
+    pub indexed_directories: u64,
+    /// Number of monitored volumes.
+    pub monitored_volumes: u32,
+    /// Uptime in seconds.
+    pub uptime_seconds: u64,
+    /// Whether indexing is currently paused.
+    pub is_paused: bool,
+}
+
+/// IPC client for communicating with the daemon.
+pub struct IpcClient {
+    /// Timeout for operations.
+    timeout: Duration,
+    /// Custom pipe/socket path. When `None`, uses the default path.
+    pipe_path: Option<PathBuf>,
+}
 
 /// Commands that can be sent to the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,23 +100,6 @@ pub enum DaemonResponse {
     Pong,
 }
 
-/// Current daemon status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DaemonStatus {
-    /// Current state of the daemon.
-    pub state: DaemonStateInfo,
-    /// Number of indexed files.
-    pub indexed_files: u64,
-    /// Number of indexed directories.
-    pub indexed_directories: u64,
-    /// Number of monitored volumes.
-    pub monitored_volumes: u32,
-    /// Uptime in seconds.
-    pub uptime_seconds: u64,
-    /// Whether indexing is currently paused.
-    pub is_paused: bool,
-}
-
 /// Simplified daemon state for IPC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonStateInfo {
@@ -99,14 +113,6 @@ pub enum DaemonStateInfo {
     Scanning,
     /// Daemon is stopping.
     Stopping,
-}
-
-/// IPC client for communicating with the daemon.
-pub struct IpcClient {
-    /// Timeout for operations.
-    timeout: Duration,
-    /// Custom pipe/socket path. When `None`, uses the default path.
-    pipe_path: Option<PathBuf>,
 }
 
 impl DaemonCommand {
@@ -186,6 +192,31 @@ impl DaemonResponse {
     /// Returns an error if deserialization fails.
     pub fn deserialize(bytes: &[u8]) -> Result<Self> {
         postcard::from_bytes(bytes).context("Failed to deserialize response")
+    }
+}
+
+impl std::fmt::Display for DaemonStateInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => write!(f, "stopped"),
+            Self::Starting => write!(f, "starting"),
+            Self::Running => write!(f, "running"),
+            Self::Scanning => write!(f, "scanning"),
+            Self::Stopping => write!(f, "stopping"),
+        }
+    }
+}
+
+impl Default for DaemonStatus {
+    fn default() -> Self {
+        Self {
+            state: DaemonStateInfo::Stopped,
+            indexed_files: 0,
+            indexed_directories: 0,
+            monitored_volumes: 0,
+            uptime_seconds: 0,
+            is_paused: false,
+        }
     }
 }
 
@@ -325,10 +356,6 @@ impl IpcClient {
 
     #[cfg(windows)]
     fn send_command_windows(&self, command: DaemonCommand) -> Result<DaemonResponse> {
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        use std::os::windows::fs::OpenOptionsExt;
-
         const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 
         let pipe_path = self.pipe_path();
@@ -361,8 +388,6 @@ impl IpcClient {
 
     #[cfg(not(windows))]
     fn send_command_unix(&self, command: DaemonCommand) -> Result<DaemonResponse> {
-        use std::os::unix::net::UnixStream;
-
         let socket_path = self.pipe_path();
 
         // Connect to Unix domain socket
@@ -376,31 +401,6 @@ impl IpcClient {
 
         // Read response
         DaemonResponse::read_from(&mut stream)
-    }
-}
-
-impl std::fmt::Display for DaemonStateInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stopped => write!(f, "stopped"),
-            Self::Starting => write!(f, "starting"),
-            Self::Running => write!(f, "running"),
-            Self::Scanning => write!(f, "scanning"),
-            Self::Stopping => write!(f, "stopping"),
-        }
-    }
-}
-
-impl Default for DaemonStatus {
-    fn default() -> Self {
-        Self {
-            state: DaemonStateInfo::Stopped,
-            indexed_files: 0,
-            indexed_directories: 0,
-            monitored_volumes: 0,
-            uptime_seconds: 0,
-            is_paused: false,
-        }
     }
 }
 
@@ -491,12 +491,20 @@ pub fn read_message<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+    #[cfg(windows)]
+    use std::sync::mpsc;
+    #[cfg(windows)]
+    use std::thread;
+
     use super::*;
 
     #[cfg(windows)]
     use std::os::windows::io::FromRawHandle;
     #[cfg(windows)]
     use std::os::windows::io::OwnedHandle;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Pipes::CreatePipe;
 
     #[test]
     fn test_daemon_command_serialization() {
@@ -653,8 +661,6 @@ mod tests {
 
     #[test]
     fn test_read_write_message_roundtrip() {
-        use std::io::Cursor;
-
         let original_data = b"test message data";
 
         // Write message (write_message now adds length prefix automatically)
@@ -670,8 +676,6 @@ mod tests {
 
     #[test]
     fn test_read_message_too_large() {
-        use std::io::Cursor;
-
         // Create a message claiming to be larger than MAX_MESSAGE_SIZE
         let large_len: u16 = 2000; // Greater than MAX_MESSAGE_SIZE (1024)
         let mut data = Vec::new();
@@ -949,8 +953,6 @@ mod tests {
 
     #[test]
     fn test_read_message_exact_max_size() {
-        use std::io::Cursor;
-
         // Create a message exactly at MAX_MESSAGE_SIZE
         let len: u16 = 1024; // MAX_MESSAGE_SIZE
         let mut data = Vec::new();
@@ -966,8 +968,6 @@ mod tests {
 
     #[test]
     fn test_read_message_just_over_max_size() {
-        use std::io::Cursor;
-
         // Create a message just over MAX_MESSAGE_SIZE
         let len: u16 = 1025; // MAX_MESSAGE_SIZE + 1
         let mut data = Vec::new();
@@ -982,8 +982,6 @@ mod tests {
 
     #[test]
     fn test_write_message_empty() {
-        use std::io::Cursor;
-
         let mut cursor = Cursor::new(Vec::new());
         let result = write_message(&mut cursor, &[]);
 
@@ -998,8 +996,6 @@ mod tests {
     /// Simulates the full client->server command flow using in-memory buffers.
     #[test]
     fn test_integration_command_roundtrip() {
-        use std::io::Cursor;
-
         let commands = [
             DaemonCommand::Stop,
             DaemonCommand::GetStatus,
@@ -1025,8 +1021,6 @@ mod tests {
     /// Simulates the full server->client response flow using in-memory buffers.
     #[test]
     fn test_integration_response_roundtrip() {
-        use std::io::Cursor;
-
         let responses = [
             DaemonResponse::Ok,
             DaemonResponse::Pong,
@@ -1059,8 +1053,6 @@ mod tests {
     /// Simulates a full request/response cycle (client sends command, server responds).
     #[test]
     fn test_integration_full_request_response_cycle() {
-        use std::io::Cursor;
-
         // Step 1: Client sends GetStatus command
         let command = DaemonCommand::GetStatus;
         let mut request_buffer = Vec::new();
@@ -1107,8 +1099,6 @@ mod tests {
     /// Tests multiple commands/responses in sequence on same buffer.
     #[test]
     fn test_integration_multiple_messages_in_sequence() {
-        use std::io::Cursor;
-
         let mut buffer = Vec::new();
 
         // Write multiple commands to buffer
@@ -1129,8 +1119,6 @@ mod tests {
     /// Tests that the message framing handles various payload sizes correctly.
     #[test]
     fn test_integration_various_payload_sizes() {
-        use std::io::Cursor;
-
         // Test with error messages of various lengths
         let sizes = [0, 1, 10, 100, 255, 256, 500, 1000];
 
@@ -1156,8 +1144,6 @@ mod tests {
     /// Tests status with all daemon states.
     #[test]
     fn test_integration_all_daemon_states() {
-        use std::io::Cursor;
-
         let states = [
             DaemonStateInfo::Stopped,
             DaemonStateInfo::Starting,
@@ -1194,8 +1180,6 @@ mod tests {
     /// Tests that paused flag is correctly transmitted.
     #[test]
     fn test_integration_paused_flag_transmission() {
-        use std::io::Cursor;
-
         for is_paused in [true, false] {
             let status = DaemonStatus {
                 state: DaemonStateInfo::Running,
@@ -1223,8 +1207,6 @@ mod tests {
     /// Tests error message with unicode characters.
     #[test]
     fn test_integration_unicode_error_message() {
-        use std::io::Cursor;
-
         let unicode_messages = [
             "文件未找到",
             "Ошибка доступа",
@@ -1252,8 +1234,6 @@ mod tests {
     /// Tests boundary values for numeric fields in `DaemonStatus`.
     #[test]
     fn test_integration_status_boundary_values() {
-        use std::io::Cursor;
-
         let test_cases = [
             // (indexed_files, indexed_directories, monitored_volumes, uptime_seconds)
             (0, 0, 0, 0),
@@ -1295,8 +1275,6 @@ mod tests {
     /// Tests that partial reads fail gracefully.
     #[test]
     fn test_integration_partial_read_fails() {
-        use std::io::Cursor;
-
         // Create a valid message
         let response = DaemonResponse::Ok;
         let mut buffer = Vec::new();
@@ -1315,8 +1293,6 @@ mod tests {
     /// Tests that corrupted length prefix is handled.
     #[test]
     fn test_integration_corrupted_length_prefix() {
-        use std::io::Cursor;
-
         // Create a buffer with a length prefix that claims more data than available
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&100u16.to_le_bytes()); // Claims 100 bytes
@@ -1332,8 +1308,6 @@ mod tests {
     /// Tests that invalid postcard data is handled gracefully.
     #[test]
     fn test_integration_invalid_postcard_data() {
-        use std::io::Cursor;
-
         // Create a message with valid framing but invalid postcard content
         let mut buffer = Vec::new();
         let garbage_data = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB];
@@ -1356,8 +1330,6 @@ mod tests {
     /// Tests bidirectional communication simulation.
     #[test]
     fn test_integration_bidirectional_communication() {
-        use std::io::Cursor;
-
         // Simulate a conversation:
         // Client: Ping
         // Server: Pong
@@ -1429,8 +1401,6 @@ mod tests {
     /// Tests that zero-length messages work correctly.
     #[test]
     fn test_integration_zero_length_payload() {
-        use std::io::Cursor;
-
         // Write a zero-length message
         let mut buffer = Vec::new();
         write_message(&mut buffer, &[]).expect("write empty");
@@ -1448,8 +1418,6 @@ mod tests {
     /// Tests message at maximum allowed size.
     #[test]
     fn test_integration_max_size_message() {
-        use std::io::Cursor;
-
         // Create a message at exactly MAX_MESSAGE_SIZE (1024 bytes)
         let large_payload = vec![0xABu8; 1024];
 
@@ -1470,8 +1438,6 @@ mod tests {
     /// Returns (reader, writer) file handles.
     #[cfg(windows)]
     fn create_test_pipe() -> (std::fs::File, std::fs::File) {
-        use windows_sys::Win32::System::Pipes::CreatePipe;
-
         let mut read_handle = std::ptr::null_mut();
         let mut write_handle = std::ptr::null_mut();
 
@@ -1617,9 +1583,6 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_real_pipe_threaded_communication() {
-        use std::sync::mpsc;
-        use std::thread;
-
         let (mut reader, mut writer) = create_test_pipe();
 
         let (tx, rx) = mpsc::channel();

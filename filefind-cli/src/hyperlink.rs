@@ -69,6 +69,41 @@ pub struct TerminalEnvironment {
 }
 
 impl Hyperlinker {
+    /// Create a hyperlinker for the given mode and URI scheme.
+    ///
+    /// In [`HyperlinkMode::Auto`] mode, links are only emitted when standard output is a terminal
+    /// that is known to support OSC 8 hyperlinks. An empty scheme falls back to `file`.
+    #[must_use]
+    pub fn new(mode: HyperlinkMode, scheme: &str) -> Self {
+        let enabled = match mode {
+            HyperlinkMode::Always => true,
+            HyperlinkMode::Never => false,
+            HyperlinkMode::Auto => {
+                std::io::stdout().is_terminal() && TerminalEnvironment::from_env().supports_hyperlinks()
+            }
+        };
+
+        let scheme = if scheme.trim().is_empty() {
+            FILE_SCHEME.to_string()
+        } else {
+            scheme.trim().to_lowercase()
+        };
+
+        Self { enabled, scheme }
+    }
+
+    /// Create a hyperlinker that never emits hyperlink sequences.
+    ///
+    /// Only used by unit tests that assert on plain, unlinked output.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            scheme: String::new(),
+        }
+    }
+
     /// Wrap `text` in an OSC 8 hyperlink that points at `path`.
     ///
     /// Returns `text` unchanged when hyperlinks are disabled or the path is empty,
@@ -113,44 +148,21 @@ impl Hyperlinker {
             None => format!("{scheme}:///{encoded}"),
         }
     }
-
-    /// Create a hyperlinker for the given mode and URI scheme.
-    ///
-    /// In [`HyperlinkMode::Auto`] mode, links are only emitted when standard output is a terminal
-    /// that is known to support OSC 8 hyperlinks. An empty scheme falls back to `file`.
-    #[must_use]
-    pub fn new(mode: HyperlinkMode, scheme: &str) -> Self {
-        let enabled = match mode {
-            HyperlinkMode::Always => true,
-            HyperlinkMode::Never => false,
-            HyperlinkMode::Auto => {
-                std::io::stdout().is_terminal() && TerminalEnvironment::from_env().supports_hyperlinks()
-            }
-        };
-
-        let scheme = if scheme.trim().is_empty() {
-            FILE_SCHEME.to_string()
-        } else {
-            scheme.trim().to_lowercase()
-        };
-
-        Self { enabled, scheme }
-    }
-
-    /// Create a hyperlinker that never emits hyperlink sequences.
-    ///
-    /// Only used by unit tests that assert on plain, unlinked output.
-    #[cfg(test)]
-    #[must_use]
-    pub const fn disabled() -> Self {
-        Self {
-            enabled: false,
-            scheme: String::new(),
-        }
-    }
 }
 
 impl TerminalEnvironment {
+    /// Read the relevant environment variables of the current process.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            term_program: env::var("TERM_PROGRAM").ok(),
+            term: env::var("TERM").ok(),
+            windows_terminal: env::var_os("WT_SESSION").is_some(),
+            konsole_or_domterm: env::var_os("KONSOLE_VERSION").is_some() || env::var_os("DOMTERM").is_some(),
+            vte_version: env::var("VTE_VERSION").ok(),
+        }
+    }
+
     /// Whether the described terminal is known to render OSC 8 hyperlinks.
     #[must_use]
     pub fn supports_hyperlinks(&self) -> bool {
@@ -173,18 +185,6 @@ impl TerminalEnvironment {
             .as_ref()
             .and_then(|version| version.parse::<u32>().ok())
             .is_some_and(|version| version >= MINIMUM_VTE_VERSION)
-    }
-
-    /// Read the relevant environment variables of the current process.
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            term_program: env::var("TERM_PROGRAM").ok(),
-            term: env::var("TERM").ok(),
-            windows_terminal: env::var_os("WT_SESSION").is_some(),
-            konsole_or_domterm: env::var_os("KONSOLE_VERSION").is_some() || env::var_os("DOMTERM").is_some(),
-            vte_version: env::var("VTE_VERSION").ok(),
-        }
     }
 }
 

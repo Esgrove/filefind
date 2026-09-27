@@ -352,6 +352,19 @@ impl FileWatcher {
     }
 }
 
+impl Default for FileWatcher {
+    fn default() -> Self {
+        Self {
+            watched_paths: Vec::new(),
+            exclude_patterns: Vec::new(),
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            recursive: true,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            rescan_needed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
 impl ScanEntry {
     /// Convert to a `FileEntry` for database storage, consuming self.
     #[must_use]
@@ -371,19 +384,6 @@ impl ScanEntry {
             created_time: self.created,
             modified_time: self.modified,
             mft_reference: None,
-        }
-    }
-}
-
-impl Default for FileWatcher {
-    fn default() -> Self {
-        Self {
-            watched_paths: Vec::new(),
-            exclude_patterns: Vec::new(),
-            debounce_ms: DEFAULT_DEBOUNCE_MS,
-            recursive: true,
-            shutdown: Arc::new(AtomicBool::new(false)),
-            rescan_needed: Arc::new(AtomicBool::new(false)),
         }
     }
 }

@@ -127,6 +127,17 @@ pub enum DaemonState {
     Stopping,
 }
 
+impl std::fmt::Display for DaemonState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => write!(f, "stopped"),
+            Self::Starting => write!(f, "starting"),
+            Self::Running => write!(f, "running"),
+            Self::Stopping => write!(f, "stopping"),
+        }
+    }
+}
+
 impl Daemon {
     /// Create a new daemon instance.
     #[must_use]
@@ -758,8 +769,6 @@ impl Daemon {
 
     /// Convert a USN change to a file change event.
     fn usn_change_to_event(change: &UsnChange, full_path: &str) -> Option<FileChangeEvent> {
-        use std::path::PathBuf;
-
         let path = PathBuf::from(full_path);
 
         if change.is_create() {
@@ -1019,6 +1028,13 @@ impl Daemon {
     }
 }
 
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        // Ensure shutdown is signalled
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
 impl Default for DaemonOptions {
     fn default() -> Self {
         Self {
@@ -1027,24 +1043,6 @@ impl Default for DaemonOptions {
             usn_poll_interval_ms: DEFAULT_USN_POLL_INTERVAL_MS,
             watcher_debounce_ms: DEFAULT_WATCHER_DEBOUNCE_MS,
         }
-    }
-}
-
-impl std::fmt::Display for DaemonState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stopped => write!(f, "stopped"),
-            Self::Starting => write!(f, "starting"),
-            Self::Running => write!(f, "running"),
-            Self::Stopping => write!(f, "stopping"),
-        }
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        // Ensure shutdown is signalled
-        self.shutdown.store(true, Ordering::Relaxed);
     }
 }
 

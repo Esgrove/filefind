@@ -42,10 +42,12 @@ cargo test -p filefind
 ## Project Structure
 
 - `filefind/` - Shared library code
-    - `src/lib.rs` - Library root, re-exports, path utilities
+    - `src/lib.rs` - Library root, re-exports, path and drive-mapping utilities
+    - `src/completion.rs` - Shell completion generation and installation paths
     - `src/config.rs` - User configuration file handling
     - `src/database.rs` - SQLite database operations
     - `src/ipc.rs` - Inter-process communication for daemon control
+    - `src/output.rs` - Terminal messages and human-readable formatting
     - `src/types.rs` - Common types and structures
 - `filefind-daemon/` - Background file monitoring service
     - `src/main.rs` - Daemon entry point, CLI argument handling
@@ -62,7 +64,8 @@ cargo test -p filefind
     - `src/cli.rs` - Search execution, result display, and move dispatch
     - `src/config.rs` - CLI configuration merging (user config + CLI args)
     - `src/hyperlink.rs` - OSC 8 terminal hyperlinks for result paths
-    - `src/mover.rs` - File move operations with progress, abort handling, and disk space checks
+    - `src/mover.rs` - Move planning, progress, database reconciliation, and abort handling
+    - `src/mover/transfer.rs` - Filesystem rename, copy, and verification
 - `filefind-tray/` - System tray application
     - `src/main.rs` - Tray app entry point
     - `src/app.rs` - Main application logic and event loop
@@ -70,21 +73,34 @@ cargo test -p filefind
 
 ## Code Organization
 
-All Rust source files should be organized in this order:
+Organize Rust source files in this order:
 
 1. Structs (public before private)
 2. Enums (public before private)
-3. Trait implementations and impl blocks (in the order structs/enums are defined)
+3. Trait implementations and impl blocks (in the order the types are defined)
 4. Public functions
 5. Private functions
-6. Tests module
+6. Root-level test modules
 
 Within implementation blocks:
 
-- Public methods before private methods
 - Methods creating a new instance of Self should be first,
   `new` always first when there is one and other similar methods such as `from_*` after that
-- Associated functions (those without `self` parameter) last
+- Public methods before private methods
+- Other associated functions (those without `self` that are not constructors) after instance methods
+
+### Module size and boundaries
+
+- Review a source file when its non-test code exceeds roughly 1000 lines.
+  This is a signal to look for separate concerns, not a hard limit.
+  Long test sections or one tightly coupled implementation do not require splitting.
+- Split along independent concerns when doing so makes ownership clearer.
+  Give each new Rust file module-level `//!` documentation describing its purpose.
+- Keep helpers specific to a crate in that crate.
+  Put reusable helpers in the shared `filefind` library rather than copying them across binaries.
+- Use the narrowest practical visibility.
+  Prefer `pub(super)` when only a sibling module needs an item.
+- Keep test modules at the root of their source module and avoid nesting test modules.
 
 ## Updating CLI Usage
 

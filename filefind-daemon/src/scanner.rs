@@ -408,6 +408,19 @@ pub async fn scan_directory_to_db(
 }
 
 /// Scan local directories using MFT with path filtering, fallback to directory walking.
+/// Find deleted MFT references that were not subsequently recreated or renamed.
+pub fn deleted_references(changes: &[UsnChange]) -> Vec<u64> {
+    let mut deleted = std::collections::HashSet::new();
+    for change in changes {
+        if change.is_delete() {
+            deleted.insert(change.file_reference);
+        } else if change.is_create() || change.is_rename_new() {
+            deleted.remove(&change.file_reference);
+        }
+    }
+    deleted.into_iter().collect()
+}
+
 fn report_scan_completion(total_entries: usize, failed_paths: usize, started: Instant) -> Result<()> {
     info!(
         "Scan complete: {} entries in {:.2}s",
@@ -867,18 +880,6 @@ fn cleanup_stale_entries_usn(database: &Database, volume_id: i64, drive_letter: 
     let deleted = database.delete_files_by_mft_references(volume_id, &stale_refs)?;
 
     Ok(deleted)
-}
-
-pub fn deleted_references(changes: &[UsnChange]) -> Vec<u64> {
-    let mut deleted = std::collections::HashSet::new();
-    for change in changes {
-        if change.is_delete() {
-            deleted.insert(change.file_reference);
-        } else if change.is_create() || change.is_rename_new() {
-            deleted.remove(&change.file_reference);
-        }
-    }
-    deleted.into_iter().collect()
 }
 
 /// Run volume pruning for non-NTFS volumes after incremental scan.
