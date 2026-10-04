@@ -132,9 +132,9 @@ pub struct CliConfig {
 
     /// URI scheme used for terminal hyperlinks.
     ///
-    /// `file` (the default) lets the operating system open each path with its
-    /// registered default application. Any other value is emitted verbatim as
-    /// `<scheme>://<path>`, which allows routing clicks to a custom protocol handler.
+    /// `file` (the default) lets the operating system open each path with its registered default application.
+    /// Any other value is emitted verbatim as `<scheme>://<path>`,
+    /// which allows routing clicks to a custom protocol handler.
     #[serde(default = "default_hyperlink_scheme")]
     pub hyperlink_scheme: String,
 }

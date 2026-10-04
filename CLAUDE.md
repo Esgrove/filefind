@@ -98,8 +98,7 @@ Within implementation blocks:
   Give each new Rust file module-level `//!` documentation describing its purpose.
 - Keep helpers specific to a crate in that crate.
   Put reusable helpers in the shared `filefind` library rather than copying them across binaries.
-- Use the narrowest practical visibility.
-  Prefer `pub(super)` when only a sibling module needs an item.
+- Use the narrowest practical visibility. Prefer `pub(super)` when only a sibling module needs an item.
 - Keep test modules at the root of their source module and avoid nesting test modules.
 
 ## Updating CLI Usage
@@ -232,7 +231,8 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
 - `--force` overwrites existing files at the destination. Without it, conflicts are skipped
 - Move strategy: try `fs::rename` first (atomic, instant on same device),
   fall back to chunked copy+verify+delete for cross-device moves (e.g., local drive → network share)
-- Disk space check only counts cross-device files; same-device renames need no free space.
+- Disk space check only counts cross-device files.
+  Same-device renames need no free space.
   Volume detection uses `get_volume_prefix()` from the shared library to compare drive letters
   or UNC server/share roots.
 - Progress bar via `indicatif`, graceful Ctrl+C abort via `ctrlc` (finish current file, second Ctrl+C force-quits)
@@ -282,8 +282,8 @@ Shared state (`IpcServerState`) uses atomic types to safely share status informa
   UNC paths become `file://server/share/...`, and drive paths become `file:///C:/...`.
   Links use the mapped display path, so `path_mappings` are respected.
 - Missing directories are never linked because they no longer exist on disk.
-- A non-`file` `hyperlink_scheme` emits `<scheme>://<path>` and requires a protocol handler
-  registered with the operating system.
+- A non-`file` `hyperlink_scheme` emits `<scheme>://<path>`
+  and requires a protocol handler registered with the operating system.
 
 ### System Tray Application
 

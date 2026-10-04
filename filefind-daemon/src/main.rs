@@ -306,9 +306,9 @@ fn run_prune(config: &Config) -> Result<()> {
 /// Detach from the console window so the process runs silently in the background.
 ///
 /// This is intended for use with Task Scheduler or other launchers that would
-/// otherwise spawn a visible terminal window. Calling `FreeConsole` releases the
-/// process's association with its console, which causes Windows to close the
-/// console window.
+/// otherwise spawn a visible terminal window.
+/// Calling `FreeConsole` releases the process's association with its console,
+/// which causes Windows to close the console window.
 #[cfg(windows)]
 fn hide_console_window() {
     unsafe {

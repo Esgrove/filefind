@@ -1714,8 +1714,8 @@ mod tests {
 
     #[test]
     fn test_golden_buffer_to_resolved_paths() {
-        // Build a complete FSCTL_ENUM_USN_DATA output buffer using
-        // golden hand-verified V2 records, parse it, then resolve paths.
+        // Build a complete FSCTL_ENUM_USN_DATA output buffer using golden hand-verified V2 records,
+        // parse it, then resolve paths.
         //
         // Simulated tree on E:\
         //   E:\

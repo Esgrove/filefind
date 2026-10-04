@@ -486,9 +486,9 @@ fn get_available_space(path: &Path) -> Result<u64> {
 ///
 /// Apple's `statvfs` narrows block counts to 32-bit `fsblkcnt_t` fields,
 /// which truncates free space on volumes with more than 16 TiB available,
-/// so the 64-bit `statfs` interface is used instead. Returns the space
-/// available to unprivileged processes (`f_bavail`, not `f_bfree`), matching
-/// what a file move can actually use.
+/// so the 64-bit `statfs` interface is used instead.
+/// Returns the space available to unprivileged processes (`f_bavail`, not `f_bfree`),
+/// matching what a file move can actually use.
 #[cfg(target_vendor = "apple")]
 fn get_available_space(path: &Path) -> Result<u64> {
     let path_bytes = path_to_cstring(path)?;
@@ -848,8 +848,8 @@ fn move_indexed_file(
 
 /// Check whether two paths refer to the same file by comparing canonical paths.
 ///
-/// The `dest_canonical_cache` parameter caches the canonical form of the
-/// destination file's parent directory to avoid repeated syscalls.
+/// The `dest_canonical_cache` parameter caches the canonical form of
+/// the destination file's parent directory to avoid repeated syscalls.
 /// Returns `false` if either path cannot be canonicalized (e.g., file not found).
 fn is_same_file(source: &Path, dest_file: &Path, dest_canonical_cache: &mut Option<std::path::PathBuf>) -> bool {
     let Some(source_canonical) = source.canonicalize().ok() else {
@@ -870,14 +870,14 @@ fn is_same_file(source: &Path, dest_file: &Path, dest_canonical_cache: &mut Opti
 
 /// Normalize a canonicalized destination path back to drive-letter form.
 ///
-/// On Windows, [`std::path::Path::canonicalize`] converts mapped network drives
-/// to their UNC form with a `\\?\UNC\` prefix (e.g., `Z:\DATA` becomes
-/// `\\?\UNC\192.168.1.107\NAS\DATA`). This breaks string comparisons against
-/// database paths which use drive letters.
+/// On Windows, [`std::path::Path::canonicalize`]
+/// converts mapped network drives to their UNC form with a `\\?\UNC\` prefix
+/// (e.g., `Z:\DATA` becomes `\\?\UNC\192.168.1.107\NAS\DATA`).
+/// This breaks string comparisons against database paths which use drive letters.
 ///
-/// This function converts the canonicalized path back to the drive-letter form
-/// by looking up the original path's drive mapping. If no mapping is found, it
-/// at least normalizes the `\\?\UNC\` prefix to `\\` and strips plain `\\?\`.
+/// This function converts the canonicalized path back to the
+/// drive-letter form by looking up the original path's drive mapping.
+/// If no mapping is found, it at least normalizes the `\\?\UNC\` prefix to `\\` and strips plain `\\?\`.
 fn normalize_destination(canonical: &Path, original: &Path) -> std::path::PathBuf {
     let canonical_str = canonical.to_string_lossy();
 
@@ -1440,10 +1440,10 @@ mod tests {
 
     #[test]
     fn test_filter_files_force_with_already_at_dest_and_same_name_source() {
-        // Edge case: a file named X is already at destination, AND another file
-        // named X exists in a different source directory.
-        // With force=true, the source file should be allowed through (it will
-        // overwrite the one at the destination during the actual move).
+        // Edge case: a file named X is already at destination,
+        // AND another file named X exists in a different source directory.
+        // With force=true, the source file should be allowed through
+        // (it will overwrite the one at the destination during the actual move).
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let destination = temp_dir.path().to_path_buf();
 
@@ -1782,8 +1782,8 @@ mod tests {
     #[test]
     fn test_filter_files_already_at_destination_not_counted_as_duplicate() {
         // A file at the destination should NOT poison the seen_names set.
-        // A different source file with the same name should still be considered
-        // for moving (subject to force/exists checks).
+        // A different source file with the same name should still be considered for moving
+        // (subject to force/exists checks).
         let destination = PathBuf::from(native_path(&["dest"]));
         let files = vec![
             make_file("shared.txt", &native_path(&["dest", "shared.txt"]), 100),
@@ -2317,11 +2317,11 @@ mod tests {
         // We simulate this by making the destination directory not exist at first
         // (so rename fails), then creating it before the copy.
         //
-        // Since we can't inject code between rename and copy, we instead
-        // verify the end-to-end behavior: create source in one temp dir
-        // and destination dir in another. On the same filesystem rename
-        // succeeds, so we make rename fail by targeting a non-existent
-        // intermediate directory, then verify the source is preserved.
+        // Since we can't inject code between rename and copy, we instead verify the end-to-end behavior:
+        // create source in one temp dir and destination dir in another.
+        // On the same filesystem rename succeeds,
+        // so we make rename fail by targeting a non-existent intermediate directory,
+        // then verify the source is preserved.
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let source_dir = temp_dir.path().join("src");
         fs::create_dir_all(&source_dir).expect("failed to create source dir");

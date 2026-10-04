@@ -330,10 +330,10 @@ impl IpcServer {
 
     /// Create a [`SECURITY_ATTRIBUTES`] with a null DACL.
     ///
-    /// A null DACL grants full access to everyone, which is acceptable for a
-    /// local-only named pipe used for desktop IPC. This allows non-elevated
-    /// processes (CLI, tray app) to connect when the daemon runs with admin
-    /// privileges (e.g. started by a scheduled task for MFT/USN access).
+    /// A null DACL grants full access to everyone,
+    /// which is acceptable for a local-only named pipe used for desktop IPC.
+    /// This allows non-elevated processes (CLI, tray app) to connect
+    /// when the daemon runs with admin privileges (e.g. started by a scheduled task for MFT/USN access).
     ///
     /// The returned struct borrows `security_descriptor`,
     /// so the caller must keep it alive for as long as the attributes are in use.
@@ -1445,8 +1445,8 @@ mod tests {
         filefind::IpcClient::new().with_pipe_path(pipe_path.to_path_buf())
     }
 
-    /// Send a command with retries to handle the brief window between named pipe
-    /// instances where no pipe exists on Windows.
+    /// Send a command with retries to handle the brief window between named pipe instances
+    /// where no pipe exists on Windows.
     ///
     /// The server destroys the old pipe and creates a new one after each client,
     /// so a client connecting during that gap gets "file not found".

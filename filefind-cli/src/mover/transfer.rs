@@ -87,14 +87,15 @@ pub(super) fn move_single_file(
     }
 
     // Cross-device move: copy with progress, verify, then delete.
-    // The copy function returns Ok only when the destination file has been
-    // fully written, flushed, and its handle closed. On error or abort the
-    // partial destination file is cleaned up *after* the handle is dropped.
+    // The copy function returns Ok only
+    // when the destination file has been fully written, flushed, and its handle closed.
+    // On error or abort the partial destination file is cleaned up *after* the handle is dropped.
     copy_file_with_progress(source, destination, expected_size, progress_bar, abort_flag)?;
 
-    // Verify the copy by checking the on-disk file size (defense-in-depth:
-    // the copy function already verifies the byte count, but the metadata
-    // check guards against silent filesystem corruption).
+    // Verify the copy by checking the on-disk file size.
+    // defense-in-depth:
+    // the copy function already verifies the byte count,
+    // but the metadata check guards against silent filesystem corruption.
     let dest_metadata = fs::metadata(destination).map_err(|error| {
         MoveError::Failed(anyhow::Error::new(error).context(format!(
             "Failed to read metadata of copied file: {}",

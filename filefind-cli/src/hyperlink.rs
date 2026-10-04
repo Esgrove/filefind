@@ -71,8 +71,9 @@ pub struct TerminalEnvironment {
 impl Hyperlinker {
     /// Create a hyperlinker for the given mode and URI scheme.
     ///
-    /// In [`HyperlinkMode::Auto`] mode, links are only emitted when standard output is a terminal
-    /// that is known to support OSC 8 hyperlinks. An empty scheme falls back to `file`.
+    /// In [`HyperlinkMode::Auto`] mode, links are only emitted
+    /// when standard output is a terminal that is known to support OSC 8 hyperlinks.
+    /// An empty scheme falls back to `file`.
     #[must_use]
     pub fn new(mode: HyperlinkMode, scheme: &str) -> Self {
         let enabled = match mode {

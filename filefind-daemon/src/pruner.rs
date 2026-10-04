@@ -2,8 +2,8 @@
 //!
 //! This module provides functions for removing database entries
 //! that reference files or directories that no longer exist on disk.
-//! It optimizes by first checking parent directories to avoid
-//! unnecessary filesystem queries for children of missing directories.
+//! It optimizes by first checking parent directories to avoid unnecessary
+//! filesystem queries for children of missing directories.
 //!
 //! Pruning is parallelized by volume/drive to maximize throughput.
 

@@ -2,7 +2,8 @@
 
 System tray application for easily controlling the filefind daemon when it is running in the background.
 
-This application provides a convenient graphical interface for managing the filefind background indexing service from the Windows system tray.
+This application provides a convenient graphical interface for managing
+the filefind background indexing service from the Windows system tray.
 
 ## Features
 

@@ -1351,8 +1351,8 @@ mod tests {
 
     #[test]
     fn test_categorize_paths_unc_path_inaccessible() {
-        // Use an invalid UNC-like path so the check fails immediately without
-        // depending on network name resolution timing.
+        // Use an invalid UNC-like path so the check fails immediately
+        // without depending on network name resolution timing.
         let categorized = categorize_paths(vec![r"\\invalid|server\share".to_string()]);
         assert!(
             categorized.unc_paths.is_empty(),
@@ -1395,8 +1395,8 @@ mod tests {
 
     #[test]
     fn test_categorize_paths_drive_root_removes_local_duplicates() {
-        // When we scan a full drive root, local subdirectory paths on that
-        // same drive should be removed to avoid double-scanning.
+        // When we scan a full drive root, local subdirectory paths on
+        // that same drive should be removed to avoid double-scanning.
         // We can only test the logic with accessible paths, so use the temp dir drive.
         let temp = tempdir().expect("Failed to create temp directory");
         let sub_path = temp.path().join("subdir");

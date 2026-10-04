@@ -327,16 +327,17 @@ Search queries return at most 100 rows, and duplicate fixtures vary the repeated
 Criterion writes HTML reports to `target/criterion/`.
 For comparisons, run the standard benchmark on the same machine with the same fixture sizes.
 
-An initial `--quick` run on an AMD Ryzen 9 7950X with a 100,000-row in-memory fixture measured approximately
-7.3 ms for common-name search, 8.2 ms for glob search, 8.9 ms for regex search,
+An initial `--quick` run on an AMD Ryzen 9 7950X with a 100,000-row in-memory fixture measured
+approximately 7.3 ms for common-name search, 8.2 ms for glob search, 8.9 ms for regex search,
 and 86 to 118 ms for duplicate detection depending on duplicate density.
 These are local quick-run baselines, not performance targets or an optimization comparison.
 
 ## Index Recovery
 
-Configured paths are scanned independently. An inaccessible directory is logged without interrupting scans of other paths.
+Configured paths are scanned independently.
+An inaccessible directory is logged without interrupting scans of other paths.
 Failed scans retain their previous entries and USN position, and the daemon retries reconciliation while it runs.
-Watcher errors request a rescan; non-NTFS paths are also reconciled at `scan_interval_seconds` intervals.
+Watcher errors request a rescan. Non-NTFS paths are also reconciled at `scan_interval_seconds` intervals.
 On NTFS, live changes respect configured roots and exclusion patterns, including directories renamed out of scope.
 
 Forced moves compare BLAKE3 hashes when a destination exists.

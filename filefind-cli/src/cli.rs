@@ -1073,9 +1073,9 @@ mod tests {
     #[test]
     fn test_search_any_pattern_deduplicates() {
         let database = setup_database();
-        // ".txt" will match readme.txt, notes.txt, report.txt
-        // "readme" will also match readme.txt
-        // readme.txt should appear only once
+        // ".txt" will match readme.txt, notes.txt, report.txt.
+        // "readme" will also match readme.txt.
+        // readme.txt should appear only once.
         let config = search_config(vec![".txt", "readme"]);
         let results = search_any_pattern(&config, &database).expect("Search failed");
         let readme_count = results.iter().filter(|entry| entry.name == "readme.txt").count();
@@ -1924,7 +1924,7 @@ mod tests {
             ..search_config(vec![".txt"])
         };
         let results = search_any_pattern(&config, &database).expect("Search failed");
-        // The search returns both files and dirs; run_search partitions them
+        // The search returns both files and dirs. `run_search` partitions them.
         let (dirs, files): (Vec<_>, Vec<_>) = results.iter().partition(|entry| entry.is_directory);
         assert!(!files.is_empty(), "Should find .txt files");
         // In files_only mode, dirs would be ignored during display but the data layer returns everything.

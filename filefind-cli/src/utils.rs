@@ -14,8 +14,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_millis(250);
 /// Highlight multiple patterns within the given text (case-insensitive).
 ///
 /// Finds all matches for all patterns, merges overlapping ranges, and highlights them.
-/// Returns a borrowed `Cow` if no matches are found, or an owned `Cow` with ANSI
-/// color codes applied to matched regions.
+/// Returns a borrowed `Cow` if no matches are found,
+/// or an owned `Cow` with ANSI color codes applied to matched regions.
 ///
 /// # Examples
 ///

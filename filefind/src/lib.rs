@@ -154,8 +154,8 @@ pub fn is_mapped_network_drive(path: &Path) -> bool {
             root.push(u16::from(b'\\'));
             root.push(0); // null terminator
 
-            // SAFETY: GetDriveTypeW is a safe Windows API call that only reads
-            // the null-terminated string to determine drive type
+            // SAFETY: GetDriveTypeW is a safe Windows API call
+            // that only reads the null-terminated string to determine drive type
             #[allow(unsafe_code)]
             let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
             return drive_type == DRIVE_REMOTE;
