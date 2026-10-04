@@ -1601,7 +1601,7 @@ mod tests {
         let daemon = Daemon::new(config, options);
 
         let drives = daemon.get_configured_drives();
-        assert!(drives.is_empty());
+        assert_eq!(drives, [] as [char; 0]);
     }
 
     #[test]
@@ -1874,7 +1874,7 @@ mod tests {
         let daemon = Daemon::new(config, options);
 
         let paths = daemon.get_non_ntfs_paths();
-        assert!(paths.is_empty());
+        assert_eq!(paths, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]
@@ -1894,7 +1894,7 @@ mod tests {
         );
 
         let paths = daemon.get_non_ntfs_paths();
-        assert!(paths.is_empty());
+        assert_eq!(paths, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]
@@ -1960,7 +1960,7 @@ mod tests {
         );
 
         let paths = daemon.get_non_ntfs_paths();
-        assert!(paths.is_empty());
+        assert_eq!(paths, [] as [std::path::PathBuf; 0]);
     }
 
     // --- usn_change_to_event() tests ---

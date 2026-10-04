@@ -981,7 +981,7 @@ mod tests {
         change.usn = 11;
         change.name = "new.txt".into();
         change.reason = 0x0000_0100;
-        assert!(deleted_references(&[deleted.clone(), change.clone()]).is_empty());
+        assert_eq!(deleted_references(&[deleted.clone(), change.clone()]), [] as [u64; 0]);
         assert_eq!(deleted_references(&[change, deleted]), vec![42]);
     }
 
@@ -1320,10 +1320,10 @@ mod tests {
     fn test_categorize_paths_empty() {
         let categorized = categorize_paths(Vec::new());
         assert_eq!(categorized.task_count(), 0);
-        assert!(categorized.ntfs_drive_roots.is_empty());
+        assert_eq!(categorized.ntfs_drive_roots, [] as [char; 0]);
         assert!(categorized.local_paths_by_drive.is_empty());
-        assert!(categorized.mapped_network_drives.is_empty());
-        assert!(categorized.unc_paths.is_empty());
+        assert_eq!(categorized.mapped_network_drives, [] as [(char, std::path::PathBuf); 0]);
+        assert_eq!(categorized.unc_paths, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]
@@ -1360,9 +1360,9 @@ mod tests {
         );
         assert_eq!(categorized.task_count(), 0, "Inaccessible UNC should produce 0 tasks");
         // It should not end up in any other category either
-        assert!(categorized.ntfs_drive_roots.is_empty());
+        assert_eq!(categorized.ntfs_drive_roots, [] as [char; 0]);
         assert!(categorized.local_paths_by_drive.is_empty());
-        assert!(categorized.mapped_network_drives.is_empty());
+        assert_eq!(categorized.mapped_network_drives, [] as [(char, std::path::PathBuf); 0]);
     }
 
     #[test]
@@ -2476,9 +2476,9 @@ mod tests {
         let temp_path = temp.path().to_string_lossy().to_string();
         let categorized = categorize_paths(vec![temp_path]);
         assert_eq!(categorized.task_count(), 1);
-        assert!(categorized.ntfs_drive_roots.is_empty());
-        assert!(categorized.unc_paths.is_empty());
-        assert!(categorized.mapped_network_drives.is_empty());
+        assert_eq!(categorized.ntfs_drive_roots, [] as [char; 0]);
+        assert_eq!(categorized.unc_paths, [] as [std::path::PathBuf; 0]);
+        assert_eq!(categorized.mapped_network_drives, [] as [(char, std::path::PathBuf); 0]);
     }
 
     #[test]
@@ -2490,10 +2490,10 @@ mod tests {
             temp.path().join("fake_path_three").to_string_lossy().to_string(),
         ]);
         assert_eq!(categorized.task_count(), 0);
-        assert!(categorized.ntfs_drive_roots.is_empty());
+        assert_eq!(categorized.ntfs_drive_roots, [] as [char; 0]);
         assert!(categorized.local_paths_by_drive.is_empty());
-        assert!(categorized.mapped_network_drives.is_empty());
-        assert!(categorized.unc_paths.is_empty());
+        assert_eq!(categorized.mapped_network_drives, [] as [(char, std::path::PathBuf); 0]);
+        assert_eq!(categorized.unc_paths, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]

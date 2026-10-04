@@ -987,7 +987,7 @@ mod tests {
 
         assert_eq!(watcher.watched_paths().len(), 1);
         assert_eq!(watcher.watched_paths()[0], path);
-        assert!(watcher.exclude_patterns().is_empty());
+        assert_eq!(watcher.exclude_patterns(), [] as [String; 0]);
     }
 
     #[test]
