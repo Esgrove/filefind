@@ -969,7 +969,7 @@ impl Database {
         {
             anyhow::bail!("Destination volume is not indexed: {new_path}");
         }
-        if overwrite {
+        if overwrite || old_path != new_path {
             transaction.execute("DELETE FROM files WHERE full_path = ?1", rusqlite::params![new_path])?;
         }
 
@@ -3980,6 +3980,35 @@ mod tests {
     }
 
     #[test]
+    fn test_reconcile_moved_file_replaces_stale_destination_row_without_overwrite() {
+        let database = Database::open_in_memory().expect("open database");
+        let volume_id = database
+            .upsert_volume(&create_test_volume("MOVE-STALE", "C:"))
+            .expect("volume");
+        database
+            .insert_file(&create_test_file(volume_id, "data.txt", "C:\\source\\data.txt", 12))
+            .expect("source");
+        database
+            .insert_file(&create_test_file(volume_id, "data.txt", "C:\\dest\\data.txt", 4))
+            .expect("stale destination");
+
+        assert!(
+            database
+                .reconcile_moved_file("C:\\source\\data.txt", "C:\\dest\\data.txt", "data.txt", false)
+                .expect("reconcile")
+        );
+        assert!(
+            database
+                .search_by_path("C:\\source\\data.txt", 10)
+                .expect("search source")
+                .is_empty()
+        );
+        let destination = database.search_by_path("C:\\dest\\data.txt", 10).expect("search dest");
+        assert_eq!(destination.len(), 1);
+        assert_eq!(destination[0].size, 12);
+    }
+
+    #[test]
     fn test_reconcile_identical_file_keeps_indexed_destination() {
         let database = Database::open_in_memory().expect("open database");
         let volume = database
@@ -4049,18 +4078,17 @@ mod tests {
         assert!(
             database
                 .reconcile_moved_file("C:\\source\\data.txt", "C:\\dest\\data.txt", "data.txt", false)
-                .is_err()
+                .expect("reconcile")
         );
-        assert_eq!(
+        assert!(
             database
                 .search_by_path("C:\\source\\data.txt", 10)
-                .expect("search source")[0]
-                .size,
-            12
+                .expect("search source")
+                .is_empty()
         );
         assert_eq!(
             database.search_by_path("C:\\dest\\data.txt", 10).expect("search dest")[0].size,
-            4
+            12
         );
     }
 

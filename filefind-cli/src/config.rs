@@ -342,7 +342,7 @@ mod tests {
     fn test_expand_patterns_empty_input() {
         let patterns: Vec<String> = Vec::new();
         let expanded = CliConfig::expand_patterns(&patterns);
-        assert!(expanded.is_empty());
+        assert_eq!(expanded, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         let mut args = args_with_patterns(vec![]);
         args.all = true;
         let config = CliConfig::from_args(args).unwrap();
-        assert!(config.patterns.is_empty());
+        assert_eq!(config.patterns, [] as [std::string::String; 0]);
         assert!(config.match_all);
     }
 

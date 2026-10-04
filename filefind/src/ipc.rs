@@ -1412,7 +1412,7 @@ mod tests {
         // Read it back
         let mut cursor = Cursor::new(buffer);
         let received = read_message(&mut cursor).expect("read empty");
-        assert!(received.is_empty());
+        assert_eq!(received, [] as [u8; 0]);
     }
 
     /// Tests message at maximum allowed size.

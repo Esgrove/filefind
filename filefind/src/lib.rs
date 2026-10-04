@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn test_project_name_constant() {
         assert_eq!(PROJECT_NAME, "filefind");
-        assert!(!PROJECT_NAME.is_empty());
+        assert_ne!(PROJECT_NAME, "");
     }
 
     #[test]

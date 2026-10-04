@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn test_no_args() {
         let cli = parse(&[]);
-        assert!(cli.patterns.is_empty());
+        assert_eq!(cli.patterns, [] as [std::string::String; 0]);
         assert!(cli.command.is_none());
         assert!(!cli.all);
         assert!(!cli.regex);
@@ -259,7 +259,7 @@ mod tests {
         assert!(!cli.name);
         assert!(!cli.info);
         assert_eq!(cli.limit, 20);
-        assert!(cli.drive.is_empty());
+        assert_eq!(cli.drive, [] as [std::string::String; 0]);
     }
 
     // ── Patterns ──────────────────────────────────────────────────

@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = UserConfig::default();
-        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.daemon.paths, [] as [std::string::String; 0]);
         assert_eq!(config.daemon.scan_interval_seconds, 3600);
         assert_eq!(config.cli.max_results, 100);
         assert!(config.cli.color);
@@ -431,9 +431,9 @@ mod tests {
     fn test_daemon_config_default() {
         let config = DaemonConfig::default();
 
-        assert!(config.paths.is_empty());
-        assert!(!config.exclude.is_empty()); // Has default exclusions
-        assert!(config.exclude_patterns.is_empty());
+        assert_eq!(config.paths, [] as [std::string::String; 0]);
+        assert_ne!(config.exclude, [] as [std::string::String; 0]); // Has default exclusions
+        assert_eq!(config.exclude_patterns, [] as [std::string::String; 0]);
         assert_eq!(config.scan_interval_seconds, 3600);
         assert_eq!(config.log_level, LogLevel::Info);
         assert!(!config.verbose);
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn test_load_nonexistent_config() {
         let config = UserConfig::load_from_path(Some(std::path::Path::new("/nonexistent/path.toml")));
-        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.daemon.paths, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -498,7 +498,7 @@ mod tests {
         let config = UserConfig::load_from_path(None);
 
         // Should return default config
-        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.daemon.paths, [] as [std::string::String; 0]);
         assert_eq!(config.daemon.scan_interval_seconds, 3600);
         assert_eq!(config.cli.max_results, 100);
     }
@@ -617,7 +617,7 @@ max_results = 200
 
         // Should return default config on parse error
         let config = UserConfig::load_from_path(Some(temp_file.path()));
-        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.daemon.paths, [] as [std::string::String; 0]);
         assert_eq!(config.cli.max_results, 100);
     }
 
@@ -630,7 +630,7 @@ max_results = 200
         let config = UserConfig::load_from_path(Some(temp_file.path()));
 
         // Should use defaults
-        assert!(config.daemon.paths.is_empty());
+        assert_eq!(config.daemon.paths, [] as [std::string::String; 0]);
         assert_eq!(config.daemon.scan_interval_seconds, 3600);
     }
 
