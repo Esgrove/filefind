@@ -860,7 +860,7 @@ mod tests {
     #[cfg(not(windows))]
     fn test_detect_ntfs_volumes_non_windows() {
         let volumes = detect_ntfs_volumes();
-        assert!(volumes.is_empty());
+        assert_eq!(volumes, [] as [char; 0]);
     }
 
     // ── V2 record parsing ───────────────────────────────────────────────
