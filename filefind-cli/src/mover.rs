@@ -317,8 +317,7 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
         // Do not flatten files that are already anywhere in the destination tree.
         let file_parent = Path::new(&file.full_path)
             .parent()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_default();
+            .map_or_default(|path| path.to_string_lossy().to_string());
 
         let parent_normalized = normalize_extended_prefix(&file_parent);
 
@@ -330,8 +329,7 @@ fn filter_files<'a>(files: &'a [FileEntry], destination: &Path, force_overwrite:
         // Check for duplicate filenames across search results (keep first occurrence)
         let file_name = Path::new(&file.full_path)
             .file_name()
-            .map(|name| name.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
+            .map_or_default(|name| name.to_string_lossy().to_lowercase());
 
         if !seen_names.insert(file_name) {
             skipped_files.push(SkippedFile {
@@ -861,10 +859,7 @@ fn is_same_file(source: &Path, dest_file: &Path, dest_canonical_cache: &mut Opti
             .and_then(|path| path.canonicalize().ok())
             .unwrap_or_default()
     });
-    let dest_file_canonical = dest_file
-        .file_name()
-        .map(|name| dest_canonical.join(name))
-        .unwrap_or_default();
+    let dest_file_canonical = dest_file.file_name().map_or_default(|name| dest_canonical.join(name));
     source_canonical == dest_file_canonical
 }
 

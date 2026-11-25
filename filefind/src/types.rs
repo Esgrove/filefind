@@ -202,8 +202,7 @@ impl FileEntry {
     pub fn from_metadata(volume_id: i64, path: &Path, metadata: &Metadata) -> Self {
         let name = path
             .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
+            .map_or_default(|name| name.to_string_lossy().to_string());
 
         Self {
             id: None,
