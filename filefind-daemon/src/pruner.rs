@@ -564,8 +564,7 @@ mod tests {
     fn insert_test_file(database: &mut Database, volume_id: i64, path: &str, is_directory: bool) {
         let name = Path::new(path)
             .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
+            .map_or_default(|name| name.to_string_lossy().to_string());
 
         let entry = FileEntry::new(volume_id, name, path.to_string(), is_directory);
 

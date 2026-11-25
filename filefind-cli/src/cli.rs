@@ -1787,8 +1787,7 @@ mod tests {
         for file in &files {
             let parent = PathBuf::from(&file.full_path)
                 .parent()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default();
+                .map_or_default(|path| path.to_string_lossy().to_string());
             files_by_dir.entry(parent).or_default().push(file);
         }
         assert_eq!(files_by_dir.len(), 2, "Should group into 2 directories");
