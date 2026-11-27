@@ -1,5 +1,10 @@
 # filefind
 
+> [!IMPORTANT]
+> filefind has moved to the [cli-tools](https://github.com/Esgrove/cli-tools) repository,
+> where it lives in the `crates/filefind-*` crates with its full commit history.
+> This repository is no longer updated.
+
 Fast file indexing and search tool for Windows.
 
 Uses NTFS Master File Table (MFT) direct reading for extremely fast initial indexing,
